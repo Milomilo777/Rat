@@ -1,6 +1,6 @@
 {
     "lane": "qa-app-logic",
-    "step": 2,
+    "step": 3,
     "requirements": [
         {
             "id": "R1",
@@ -120,6 +120,14 @@
         {
             "what": "Check cross-module mapping for FAIL R6",
             "why": "The supervisor requested that for every FAIL, we check if the same behaviour exists in RatFilter/Sources and rank FAILs by user impact."
+        },
+        {
+            "what": "Updated R1 for v1.2.0 changes",
+            "why": "In v1.2.0, Rat no longer blocks remote addresses. Instead, it blocks local ports of live denied sockets (and all sockets of denied apps). This was verified and the documentation for R1 was updated to reflect the new behavior."
+        },
+        {
+            "what": "Re-verified R6 for v1.2.0 changes",
+            "why": "Checked if the malformed state file issue was fixed upstream in v1.2.0. It is still not fixed; RulesModel.init still triggers an overwrite on a malformed rules.json load."
         }
     ]
 }

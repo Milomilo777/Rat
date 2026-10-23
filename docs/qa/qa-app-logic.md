@@ -19,9 +19,9 @@
 ## Detailed Analysis
 
 ### R1: a removed rule shrinks the pf blocklist
-**PASS**
-*   **Evidence:** `App/Model/Ledger.swift:344` (`wantedBlocklist` re-evaluates all active `denied` socket entries against `rules.engine`). In `App/Model/Ledger.swift:178`, the background sampler loop runs every 1.5 seconds and calls `refreshBlocklist()`, which pushes `wantedBlocklist` to `enforcer.sync(wantedBlocklist)`.
-*   **Reason:** If a `.deny` rule is removed, the corresponding denied connection history will evaluate to `.ask` or `.allow`, dropping it from `wantedBlocklist`, and the enforcer will update the pf tables with the newly shrunk list.
+**PASS** (Changed by v1.2.0)
+*   **Evidence:** `App/Model/Ledger.swift` (`refreshEnforcement()`). In v1.2.0, Rat never blocks remote addresses. Instead, the pf blocklist consists of the local ports of live denied sockets (`deniedPorts`) and the paths of all apps explicitly denied (`deniedAppPaths`).
+*   **Reason:** If a `.deny` rule is removed, on the very next `ingest` (which runs every 1.5 seconds), the live connection that was previously denied will now evaluate to `.allow` or `.ask` in `judge(...)`. It will not be added to `portsNow` (the accumulator for `deniedPorts`). Then `refreshEnforcement()` is called, which invokes `enforcer.syncPorts(deniedPorts, loopback: deniedLoopbackPorts)`, directly shrinking the pf blocklist of local ports.
 
 ### R2: an app with a rule never prompts
 **PASS**
