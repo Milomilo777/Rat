@@ -7,17 +7,18 @@ def main():
         content = json.load(f)
 
     content["requirements"].append({
-      "id": "Deep Layer 3 (Windows Check via Wine)",
+      "id": "Deep Layer 4 (Performance & Budgets)",
       "status": "MET",
       "tests": [
-        "rat_core::tests::*"
+        "rat_core::perf_tests::test_performance_budget_5000_rules"
       ],
       "evidence": [
-        "Tested Windows build via x86_64-pc-windows-gnu runner using Wine. All tests natively pass execution including the specific case normalization paths."
+        "port/crates/rat-core/benches/engine_bench.rs",
+        "port/crates/rat-core/src/lib.rs:530-555"
       ],
       "mutation": {
-        "where": "port/crates/rat-core/src/lib.rs:37",
-        "caught_by": "rat_core::property_tests::test_app_identity_normalization"
+        "where": "port/crates/rat-core/src/lib.rs:1330",
+        "caught_by": "rat_core::perf_tests::test_performance_budget_5000_rules"
       }
     })
 
