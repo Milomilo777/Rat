@@ -44,3 +44,8 @@ Changed by v1.2.0:
 - ProxyHandshake.swift reads SOCKS4/SOCKS5/HTTP handshakes.
 
 **Note:** Testing Swift sources natively on Ubuntu failed deeply within `clang::RawComment` segmentation faults on all provided `swift-6.0.1` and `swift-5.10.1` distributions via swift.org, blocking `swift test`. The requirement evaluation has been analyzed statically through the codebase sources and test suites instead since runtime evaluation could not be fully executed.
+
+## Final state
+
+Follow-ups:
+1. Run and execute native testing tests from `RatMonitorTests` in an appropriate OS environment (e.g. macOS). The provided Swift linux distributions (`5.10.1`, `6.0.1`) crashed unpredictably deep within the compiler via internal segmentation faults (specifically in `clang::RawComment`). Furthermore, specific system utilities (`proc_pidinfo` and `sysctl CTL_KERN`) heavily referenced via `.c` Darwin frameworks and tests relying on `NetworkExtension` and XCTest are fundamentally incompatible with linux constraints. Fuzzer validations also aborted entirely on segmentation faults before executing correctly. Thus, testing had to be bypassed from this step.
