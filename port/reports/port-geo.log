@@ -1,0 +1,45 @@
+   Compiling rat-geo v0.1.0 (/app/port/crates/rat-geo)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.79s
+     Running unittests src/lib.rs (port/target/debug/deps/rat_geo-60c2e3635271b018)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/test_fixture.rs (port/target/debug/deps/test_fixture-e056d9d12e73d83c)
+
+running 1 test
+test test_dummy ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/test_geo.rs (port/target/debug/deps/test_geo-0d28fca0bbdf4aa8)
+
+running 12 tests
+test test_default_db_path ... ok
+test test_default_asn_db_path ... ok
+test test_asn_lookup ... ok
+test test_geoip_edge_cases ... ok
+test test_parse_deg_edge_cases ... ok
+test test_parse_iso6709 ... ok
+test test_geoip_ipv4_mapped_edge ... ok
+test test_geoip_lookup ... ok
+test test_zone_tab ... ok
+test test_zone_tab_edge_cases ... ok
+test test_parse_iso6709_proptest ... ok
+test test_parse_iso6709_no_panic ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/test_perf.rs (port/target/debug/deps/test_perf-7d7261b4060bf377)
+
+running 1 test
+test test_perf_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+   Doc-tests rat_geo
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
