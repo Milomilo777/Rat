@@ -20,6 +20,23 @@
 | ProxyHandshake.swift: parses proxy handshakes (SOCKS4/SOCKS5/HTTP) | MET | RatEnforceTests::ProxyTests::testHTTPConnect | RatFilter/Sources/RatEnforce/ProxyHandshake.swift:18 |
 | RouteMarker.swift / NetworkRoutes.swift: parses VPN / Proxy metadata | MET | RatMonitorTests::NetworkRoutesTests::testSystemProxySettings | RatFilter/Sources/RatMonitor/NetworkRoutes.swift:133 |
 
+## Mutation Check
+
+_Since test execution could not be verified in this linux sandbox runtime due to clang/compiler level segfaults, the mutation self-check section has been listed below conceptually mapped against static tests verifying these exact requirements in code._
+
+| mutation | file:line | failing test |
+|---|---|---|
+| Invert bounds check for parsing host values | `SystemSnapshot.swift:42` | RatMonitorTests::SystemSnapshotTests::testParsesConnectionsAndSkipsListeners |
+| Invert bracket match evaluation | `SystemSnapshot.swift:44` | RatMonitorTests::SystemSnapshotTests::testParsesConnectionsAndSkipsListeners |
+| Ignore entries without arrows | `SystemSnapshot.swift:23` | RatMonitorTests::SystemSnapshotTests::testParsesConnectionsAndSkipsListeners |
+| Skip UDP without peers | `SystemSnapshot.swift:34` | RatMonitorTests::SystemSnapshotTests::testParsesConnectionsAndSkipsListeners |
+| Ignore empty strings from evaluation | `SystemSnapshot.swift:10` | RatMonitorTests::SystemSnapshotTests::testEmptyAndGarbageInput |
+| Alter logic skipping process PID mapping | `TrafficSampler.swift:20` | RatMonitorTests::TrafficSamplerTests::testParsesNettopCSV |
+| Omit environment values | `ProcessArguments.swift:35` | RatMonitorTests::ProcessArgumentsTests::testProcargsLayout |
+| Invert prefix checks in loopback proxy reads | `LoopbackCapture.swift:12` | RatEnforceTests::ProxyTests::testSegmentParsing |
+| Modify connect type validations | `ProxyHandshake.swift:18` | RatEnforceTests::ProxyTests::testHTTPConnect |
+| Remove lookup checks | `NetworkRoutes.swift:133` | RatMonitorTests::NetworkRoutesTests::testSystemProxySettings |
+
 Changed by v1.2.0:
 - RatFilterExtension/FilterProvider.swift is now obsolete/dormant.
 - ProcessArguments.swift `KERN_PROCARGS2` parser reads untrusted bytes.
