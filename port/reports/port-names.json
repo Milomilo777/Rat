@@ -1,6 +1,6 @@
 {
   "lane": "port-names",
-  "step": 6,
+  "step": 7,
   "requirements": [
     {
       "id": "R1",
@@ -47,6 +47,10 @@
     "port/crates/rat-names/src/resolver.rs",
     "port/crates/rat-names/src/services.rs",
     "port/crates/rat-names/src/tests.rs",
+    "port/crates/rat-names/benches/resolver_bench.rs",
+    "port/crates/rat-names/tests/budget_test.rs",
+    "port/crates/rat-names/fuzz/Cargo.toml",
+    "port/crates/rat-names/fuzz/fuzz_targets/fuzz_target_1.rs",
     "port/reports/port-names.md",
     "port/docs/rat-names.md"
   ],
