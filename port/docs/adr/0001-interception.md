@@ -86,3 +86,28 @@ For Version 2, which requires holding connections:
 * **Good:** Version 1 can be shipped quickly without going through Microsoft's driver signing process.
 * **Good:** Linux implementation for Version 2 is straightforward and uses built-in kernel features (`nfqueue`).
 * **Bad:** Windows Version 2 will have a high barrier to entry due to the cost and complexity of obtaining an EV certificate and Microsoft attestation signing for the WFP callout driver.
+
+## Implementation Details
+
+### Windows WFP Setup (User-Mode)
+To implement Version 1 enforcement on Windows using the Windows Filtering Platform (WFP), the following setup is recommended:
+
+*   **Provider and Sublayer:** Create a dedicated WFP Provider and a high-weight custom Sublayer (e.g., `FWPM_SUBLAYER_WEIGHT_MAX`) so Rat's rules take precedence over standard filters.
+    *   *Docs:* [Providers](https://learn.microsoft.com/en-us/windows/win32/fwp/providers), [Sublayers](https://learn.microsoft.com/en-us/windows/win32/fwp/sublayers)
+*   **Layers:** Hook into `FWPM_LAYER_ALE_AUTH_CONNECT_V4` and `FWPM_LAYER_ALE_AUTH_CONNECT_V6` to control outbound TCP connections, and `FWPM_LAYER_ALE_AUTH_SEND_RECV_V4`/`V6` for UDP.
+    *   *Docs:* [ALE Layers](https://learn.microsoft.com/en-us/windows/win32/fwp/ale-layers)
+*   **App Identification:** Use `FwpmGetAppIdFromFileName0` to derive the `FWP_BYTE_BLOB` for matching a process by its executable path, allowing per-app rules via the `FWPM_CONDITION_ALE_APP_ID` filter condition.
+    *   *Docs:* [FwpmGetAppIdFromFileName0](https://learn.microsoft.com/en-us/windows/win32/api/fwpmu/nf-fwpmu-fwpmgetappidfromfilename0)
+*   **Persistence:** Use Dynamic Sessions (`FWPM_SESSION_FLAG_DYNAMIC`) for rules so they automatically clean up if Rat crashes.
+    *   *Docs:* [Object Management (Dynamic Sessions)](https://learn.microsoft.com/en-us/windows/win32/fwp/object-management)
+
+### Linux nftables / nfqueue Setup
+To implement Version 2 (and V1 enforcement) on Linux, the following setup is recommended:
+
+*   **Base Table & Chain:** Create an `nftables` family `inet` (or separate `ip`/`ip6`) table with a base chain hooked to the `output` hook.
+    *   *Docs:* [nftables Base chains](https://wiki.nftables.org/wiki-nftables/index.php/Configuring_chains#Base_chain)
+*   **Queue Target:** Use the `queue` statement to divert matching outbound traffic to userspace via `nfqueue`.
+    *   Example rule: `nft add rule inet filter output tcp dport { 80, 443 } queue num 1`
+    *   *Docs:* [nftables queueing to userspace](https://wiki.nftables.org/wiki-nftables/index.php/Queueing_to_userspace)
+*   **Userspace Handling:** A daemon binds to the netlink queue (e.g., queue number 1). It reads the packet, correlates it with a socket/process using Netlink/procfs, holds it while a user prompt is active (V2), and issues an `NF_ACCEPT` or `NF_DROP` verdict.
+    *   *Docs:* [libnetfilter_queue](https://netfilter.org/projects/libnetfilter_queue/doxygen/html/)
