@@ -1,6 +1,6 @@
 {
     "lane": "port-geo",
-    "step": 4,
+    "step": 6,
     "requirements": [
         {
             "id": "R1",
@@ -94,6 +94,9 @@
         "port/crates/rat-geo/src/windows_tz.rs",
         "port/crates/rat-geo/tests/test_geo.rs",
         "port/crates/rat-geo/tests/test_fixture.rs",
+        "port/crates/rat-geo/fuzz/Cargo.toml",
+        "port/crates/rat-geo/fuzz/fuzz_targets/fuzz_iso6709.rs",
+        "port/crates/rat-geo/fuzz/fuzz_targets/fuzz_zone_tab.rs",
         "port/reports/port-geo.md",
         "port/reports/port-geo.json",
         "port/reports/port-geo.log",
@@ -117,6 +120,10 @@
         {
             "what": "Added edge case tests and docs",
             "why": "As per instructions."
+        },
+        {
+            "what": "Fixed UTF-8 char boundary slicing panic in parse_iso6709",
+            "why": "Proptests and fuzzing revealed index out of bounds panics for non-ASCII text due to byte slicing `s[1..]`. It was replaced with `char_indices`."
         }
     ]
 }

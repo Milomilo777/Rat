@@ -157,12 +157,14 @@ fn test_asn_lookup() {
 #[test]
 fn test_default_asn_db_path() {
     unsafe {
+        std::env::remove_var("RAT_GEOIP_DB");
         std::env::set_var("RAT_GEOIP_ASN_DB", "/tmp/rat/asn.mmdb");
     }
     let path = rat_geo::default_asn_db_path();
     assert_eq!(path.to_str().unwrap(), "/tmp/rat/asn.mmdb");
 
     unsafe {
+        std::env::remove_var("RAT_GEOIP_DB");
         std::env::remove_var("RAT_GEOIP_ASN_DB");
         std::env::set_var("XDG_DATA_HOME", "/custom/xdg");
     }
@@ -285,4 +287,34 @@ fn test_parse_deg_edge_cases() {
     assert!(rat_geo::TimeZoneLocator::parse_iso6709("A5230+01322").is_none()); // Bad sign
     assert!(rat_geo::TimeZoneLocator::parse_iso6709("+XX30+01322").is_none()); // Parse float error
     assert!(rat_geo::TimeZoneLocator::parse_iso6709("+5230+XX322").is_none());
+}
+
+use proptest::prelude::*;
+
+proptest! {
+    #[test]
+    fn test_parse_iso6709_proptest(
+        sign1 in "[+-]",
+        deg1 in 0u32..90,
+        min1 in 0u32..60,
+        sign2 in "[+-]",
+        deg2 in 0u32..180,
+        min2 in 0u32..60,
+    ) {
+        let lat_str = format!("{}{:02}{:02}", sign1, deg1, min1);
+        let lon_str = format!("{}{:03}{:02}", sign2, deg2, min2);
+        let combined = format!("{}{}", lat_str, lon_str);
+
+        if let Some((lat, lon)) = rat_geo::TimeZoneLocator::parse_iso6709(&combined) {
+            let expected_lat = (deg1 as f64 + min1 as f64 / 60.0) * if sign1 == "+" { 1.0 } else { -1.0 };
+            let expected_lon = (deg2 as f64 + min2 as f64 / 60.0) * if sign2 == "+" { 1.0 } else { -1.0 };
+            prop_assert!((lat - expected_lat).abs() < 1e-6);
+            prop_assert!((lon - expected_lon).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_parse_iso6709_no_panic(s in "\\PC*") {
+        let _ = rat_geo::TimeZoneLocator::parse_iso6709(&s);
+    }
 }

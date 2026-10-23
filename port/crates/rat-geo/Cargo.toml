@@ -10,3 +10,4 @@ serde = { version = "1.0.229", features = ["derive"] }
 
 [dev-dependencies]
 mmdb-writer = "0.1.0"
+proptest = "1.12.0"

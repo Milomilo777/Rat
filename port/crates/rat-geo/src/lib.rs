@@ -171,10 +171,11 @@ impl TimeZoneLocator {
     }
 
     pub fn parse_iso6709(s: &str) -> Option<(f64, f64)> {
-        let split_idx = s[1..].find(['+', '-'])?;
-        let split = split_idx + 1;
-        let lat = Self::parse_deg(&s[..split], 2)?;
-        let lon = Self::parse_deg(&s[split..], 3)?;
+        let mut chars = s.char_indices();
+        let _ = chars.next()?;
+        let (split_idx, _) = chars.find(|&(_, c)| c == '+' || c == '-')?;
+        let lat = Self::parse_deg(&s[..split_idx], 2)?;
+        let lon = Self::parse_deg(&s[split_idx..], 3)?;
         Some((lat, lon))
     }
 
@@ -187,15 +188,19 @@ impl TimeZoneLocator {
             _ => return None,
         };
 
-        let d = s[1..].to_string();
-        if d.len() < deg_digits + 2 {
+        let d = chars.as_str();
+        if d.chars().count() < deg_digits + 2 {
             return None;
         }
 
-        let deg: f64 = d[..deg_digits].parse().ok()?;
-        let min: f64 = d[deg_digits..deg_digits + 2].parse().ok()?;
-        let sec: f64 = if d.len() >= deg_digits + 4 {
-            d[deg_digits + 2..deg_digits + 4].parse().ok()?
+        let deg_str: String = d.chars().take(deg_digits).collect();
+        let min_str: String = d.chars().skip(deg_digits).take(2).collect();
+
+        let deg: f64 = deg_str.parse().ok()?;
+        let min: f64 = min_str.parse().ok()?;
+        let sec: f64 = if d.chars().count() >= deg_digits + 4 {
+            let sec_str: String = d.chars().skip(deg_digits + 2).take(2).collect();
+            sec_str.parse().ok()?
         } else {
             0.0
         };
