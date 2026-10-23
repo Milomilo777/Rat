@@ -4,9 +4,12 @@
 
 Rat is a reactive application firewall and network monitor on macOS. The goal is to port Rat to Windows and Linux, supporting both Version 1 (reactive, matching the macOS app's current capabilities) and Version 2 (pre-connection prompt, intercepting and pending connections like Little Snitch). We must evaluate available intercept and filtering technologies to choose the right mechanisms for both platforms and phases.
 
+**Update for v1.2.0:** Rat never blocks remote addresses, as an address is shared by every app (including DNS). Instead, the macOS version blocks the **local ports** of every socket that belongs to a denied app. The chosen mechanisms for Windows and Linux must support this approach for Version 1.
+
 ## Decision Drivers
 
 * **Pend connection capability:** Version 2 requires holding a connection while a user prompt is displayed.
+* **Local port blocking (v1.2.0 compatibility):** Version 1 must block by the local port of the socket rather than the remote destination address, to prevent collateral damage to other apps.
 * **Driver signing requirements (Windows):** Kernel drivers require an EV Code Signing certificate and Microsoft attestation signing.
 * **License compatibility:** Mechanisms should be MIT-compatible where possible, or avoid restrictive copyleft (GPL) if statically linked.
 * **Admin requirements:** User-mode versus kernel-mode deployment complexity.
@@ -25,6 +28,7 @@ Rat is a reactive application firewall and network monitor on macOS. The goal is
 
 ### OpenSnitch (Linux)
 * **Mechanism:** `nfqueue` + eBPF.
+* **Local Port Blocking:** Yes. `nfqueue` can match on local ports, or drop packets originating from a specific PID (via eBPF).
 * **Pend connection:** Yes, `nfqueue` allows userspace to hold packets and issue a verdict later.
 * **Privileges:** Requires root / `CAP_NET_ADMIN`. No driver signing needed.
 * **License:** GPLv3.
@@ -33,6 +37,7 @@ Rat is a reactive application firewall and network monitor on macOS. The goal is
 
 ### Portmaster (Windows/Linux)
 * **Mechanism:** Windows kernel driver + Linux `nfqueue`.
+* **Local Port Blocking:** Yes.
 * **Pend connection:** Yes, the custom kernel driver pauses connections for user prompts.
 * **Privileges:** Requires kernel driver installation (EV cert + Microsoft attestation signing).
 * **License:** GPLv3.
@@ -41,6 +46,7 @@ Rat is a reactive application firewall and network monitor on macOS. The goal is
 
 ### simplewall (Windows)
 * **Mechanism:** Windows Filtering Platform (WFP) user-mode API.
+* **Local Port Blocking:** Yes. WFP rules can be configured to block specific local ports or drop traffic from specific PIDs using the `FWPM_CONDITION_ALE_APP_ID` condition.
 * **Pend connection:** No, standard user-mode WFP drops or allows based on rules. It doesn't hold packets for a prompt without a callout driver.
 * **Privileges:** Requires Admin rights to add WFP filters.
 * **License:** GPLv3.
@@ -49,6 +55,7 @@ Rat is a reactive application firewall and network monitor on macOS. The goal is
 
 ### TinyWall (Windows)
 * **Mechanism:** WFP user-mode API.
+* **Local Port Blocking:** Yes.
 * **Pend connection:** No. It blocks outbound by default and waits for the user to whitelist apps.
 * **Privileges:** Requires Admin rights.
 * **License:** Freeware / Proprietary.
@@ -57,6 +64,7 @@ Rat is a reactive application firewall and network monitor on macOS. The goal is
 
 ### WinDivert (Windows)
 * **Mechanism:** Pre-compiled WFP callout driver with user-mode DLL.
+* **Local Port Blocking:** Yes.
 * **Pend connection:** Yes, diverts packets to user-mode where they can be held, modified, or dropped.
 * **Privileges:** Requires Admin rights to load the driver. Pre-signed binaries exist, but for production use without AV flags, a self-signed driver (requiring EV cert and MS attestation) is usually needed.
 * **License:** LGPL.
@@ -65,6 +73,7 @@ Rat is a reactive application firewall and network monitor on macOS. The goal is
 
 ### Windows Firewall (Windows)
 * **Mechanism:** Native firewall rules API.
+* **Local Port Blocking:** Yes.
 * **Pend connection:** No.
 * **Privileges:** Admin rights to modify rules.
 * **License:** N/A (OS built-in).
@@ -73,8 +82,8 @@ Rat is a reactive application firewall and network monitor on macOS. The goal is
 
 ### Version 1 (Reactive)
 For Version 1, which mimics the macOS reactive approach:
-* **Windows:** Use **WFP from user mode** (similar to simplewall). It requires admin privileges but no kernel drivers, avoiding the EV certificate and attestation signing requirements.
-* **Linux:** Use **eBPF or netlink socket polling** for monitoring, and **iptables/nftables** rules for enforcement.
+* **Windows:** Use **WFP from user mode** (similar to simplewall). It requires admin privileges but no kernel drivers, avoiding the EV certificate and attestation signing requirements. To align with Rat v1.2.0, WFP filters will be configured to target specific applications via `FWPM_CONDITION_ALE_APP_ID` (process path matching), which naturally isolates the block to the denied app without needing to enumerate and block its individual local ports.
+* **Linux:** Use **eBPF or netlink socket polling** for monitoring, and **iptables/nftables** rules for enforcement. To align with Rat v1.2.0, nftables rules can be updated dynamically to drop traffic originating from specific local ports or via cgroups/skb matching for specific process IDs.
 
 ### Version 2 (Pre-connection prompt)
 For Version 2, which requires holding connections:
@@ -96,7 +105,7 @@ To implement Version 1 enforcement on Windows using the Windows Filtering Platfo
     *   *Docs:* [Providers](https://learn.microsoft.com/en-us/windows/win32/fwp/providers), [Sublayers](https://learn.microsoft.com/en-us/windows/win32/fwp/sublayers)
 *   **Layers:** Hook into `FWPM_LAYER_ALE_AUTH_CONNECT_V4` and `FWPM_LAYER_ALE_AUTH_CONNECT_V6` to control outbound TCP connections, and `FWPM_LAYER_ALE_AUTH_SEND_RECV_V4`/`V6` for UDP.
     *   *Docs:* [ALE Layers](https://learn.microsoft.com/en-us/windows/win32/fwp/ale-layers)
-*   **App Identification:** Use `FwpmGetAppIdFromFileName0` to derive the `FWP_BYTE_BLOB` for matching a process by its executable path, allowing per-app rules via the `FWPM_CONDITION_ALE_APP_ID` filter condition.
+*   **App Identification / Process Blocking:** Use `FwpmGetAppIdFromFileName0` to derive the `FWP_BYTE_BLOB` for matching a process by its executable path. Use the `FWPM_CONDITION_ALE_APP_ID` filter condition to drop connections directly from the denied app, fulfilling the v1.2.0 requirement to isolate blocking per app without blocking remote addresses.
     *   *Docs:* [FwpmGetAppIdFromFileName0](https://learn.microsoft.com/en-us/windows/win32/api/fwpmu/nf-fwpmu-fwpmgetappidfromfilename0)
 *   **Persistence:** Use Dynamic Sessions (`FWPM_SESSION_FLAG_DYNAMIC`) for rules so they automatically clean up if Rat crashes.
     *   *Docs:* [Object Management (Dynamic Sessions)](https://learn.microsoft.com/en-us/windows/win32/fwp/object-management)
@@ -106,6 +115,8 @@ To implement Version 2 (and V1 enforcement) on Linux, the following setup is rec
 
 *   **Base Table & Chain:** Create an `nftables` family `inet` (or separate `ip`/`ip6`) table with a base chain hooked to the `output` hook.
     *   *Docs:* [nftables Base chains](https://wiki.nftables.org/wiki-nftables/index.php/Configuring_chains#Base_chain)
+*   **Local Port Blocking (v1.2.0 compatibility):** For v1 (reactive), dynamically generate `nftables` rules that drop traffic matching `tcp sport { port1, port2 }` or `udp sport { port1, port2 }`, corresponding to the sockets held by denied apps.
+    *   *Docs:* [nftables Match expression (sport)](https://wiki.nftables.org/wiki-nftables/index.php/Matching_transport_protocol)
 *   **Queue Target:** Use the `queue` statement to divert matching outbound traffic to userspace via `nfqueue`.
     *   Example rule: `nft add rule inet filter output tcp dport { 80, 443 } queue num 1`
     *   *Docs:* [nftables queueing to userspace](https://wiki.nftables.org/wiki-nftables/index.php/Queueing_to_userspace)
