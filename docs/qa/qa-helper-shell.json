@@ -1,12 +1,19 @@
 {
   "lane": "qa-helper-shell",
-  "step": 2,
+  "step": 3,
   "requirements": [
     {
       "id": "R1",
       "status": "MET",
-      "tests": ["tests/shell/qa-helper.bats::tests/shell/qa-helper.bats::R1: shellcheck clean"],
-      "evidence": ["App/Resources/rat-pf-helper.sh:1", "scripts/fetch-geoip.sh:1", "scripts/verify-blocking.sh:1", "scripts/test-proxy.py:1"],
+      "tests": [
+        "tests/shell/qa-helper.bats::tests/shell/qa-helper.bats::R1: shellcheck clean"
+      ],
+      "evidence": [
+        "App/Resources/rat-pf-helper.sh:1",
+        "scripts/fetch-geoip.sh:1",
+        "scripts/verify-blocking.sh:1",
+        "scripts/test-proxy.py:1"
+      ],
       "mutation": {
         "where": "App/Resources/rat-pf-helper.sh:1",
         "caught_by": "tests/shell/qa-helper.bats::tests/shell/qa-helper.bats::R1: shellcheck clean"
@@ -18,7 +25,9 @@
       "tests": [
         "tests/shell/qa-helper.bats::tests/shell/qa-helper.bats::R2: rat-pf-helper snapshot side-effects"
       ],
-      "evidence": ["App/Resources/rat-pf-helper.sh:13"],
+      "evidence": [
+        "App/Resources/rat-pf-helper.sh:13"
+      ],
       "mutation": {
         "where": "App/Resources/rat-pf-helper.sh:14",
         "caught_by": "tests/shell/qa-helper.bats::tests/shell/qa-helper.bats::R2: rat-pf-helper snapshot side-effects"
@@ -28,7 +37,9 @@
       "id": "R3",
       "status": "NOT TESTABLE HERE",
       "tests": [],
-      "evidence": ["RatFilter/Sources/RatEnforce/Rules.swift:10"],
+      "evidence": [
+        "RatFilter/Sources/RatEnforce/Rules.swift:10"
+      ],
       "mutation": {
         "where": "",
         "caught_by": ""
@@ -38,7 +49,9 @@
       "id": "R4",
       "status": "NOT TESTABLE HERE",
       "tests": [],
-      "evidence": ["RatFilter/Sources/RatEnforce/Rules.swift:10"],
+      "evidence": [
+        "RatFilter/Sources/RatEnforce/Rules.swift:10"
+      ],
       "mutation": {
         "where": "",
         "caught_by": ""
@@ -50,7 +63,9 @@
       "tests": [
         "tests/shell/qa-helper.bats::tests/shell/qa-helper.bats::R5: snapshot output format"
       ],
-      "evidence": ["App/Resources/rat-pf-helper.sh:13"],
+      "evidence": [
+        "App/Resources/rat-pf-helper.sh:13"
+      ],
       "mutation": {
         "where": "App/Resources/rat-pf-helper.sh:13",
         "caught_by": "tests/shell/qa-helper.bats::tests/shell/qa-helper.bats::R5: snapshot output format"
@@ -63,7 +78,9 @@
         "tests/shell/qa-helper.bats::tests/shell/qa-helper.bats::R6: fetch script verifies download",
         "tests/shell/qa-helper.bats::tests/shell/qa-helper.bats::R6: fetch script fails cleanly offline"
       ],
-      "evidence": ["scripts/fetch-geoip.sh:12"],
+      "evidence": [
+        "scripts/fetch-geoip.sh:12"
+      ],
       "mutation": {
         "where": "scripts/fetch-geoip.sh:12",
         "caught_by": "tests/shell/qa-helper.bats::tests/shell/qa-helper.bats::R6: fetch script fails cleanly offline"
@@ -79,17 +96,29 @@
     "port/Cargo.toml",
     "port/crates/rat-types/Cargo.toml",
     "port/crates/rat-types/src/lib.rs",
-    "scripts/verify-blocking.sh"
+    "scripts/verify-blocking.sh",
+    "tests/shell/qa-generator.py"
   ],
   "existing_tests_modified": [],
   "commands": [
-    {"cmd": "bats tests/shell/qa-helper.bats", "exit_code": 0}
+    {
+      "cmd": "bats tests/shell/qa-helper.bats",
+      "exit_code": 0
+    }
   ],
   "unverified": [
     "R3 and R4 requirements (app path parsing) changed to swift daemon logic in v1.2.0 and cannot be thoroughly tested via bash/BATS since they involve calling swift parsing components directly, so they are marked NOT TESTABLE HERE. The instructions state macOS-only Swift code can only be read here.",
-    "R5 is PARTIAL because the hardcoded absolute paths to lsof and ps in rat-pf-helper.sh cannot be mocked via PATH or sed without modifying the production script, limiting formatting checks."
+    "R5 is PARTIAL because the hardcoded absolute paths to lsof and ps in rat-pf-helper.sh cannot be mocked via PATH or sed without modifying the production script, limiting formatting checks.",
+    "Deep layer generator execution skipped: The instruction requires testing blocklist parsing, but in v1.2.0 this moved to rat-enforcerd (Swift). The macOS-only Swift daemon cannot be compiled or run in this Linux environment. The generator was written but not executed against the daemon."
   ],
   "decisions": [
-    {"what": "Fixed verify-blocking.sh shellcheck errors", "why": "Turned R1 to MET by making the smallest possible fixes to address SC2015, SC2317, etc., so it passes shellcheck cleanly as required."}
+    {
+      "what": "Fixed verify-blocking.sh shellcheck errors",
+      "why": "Turned R1 to MET by making the smallest possible fixes to address SC2015, SC2317, etc., so it passes shellcheck cleanly as required."
+    },
+    {
+      "what": "Skipped running rat-enforcerd with generated inputs",
+      "why": "The instruction asks to run the helper with the generated blocklists. Since blocklist parsing moved to rat-enforcerd in 1.2.0 and macOS-only Swift code cannot run here, I only wrote the generator."
+    }
   ]
 }
