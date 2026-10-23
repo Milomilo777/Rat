@@ -55,3 +55,13 @@ Executed for ~11 seconds (max_total_time=10 constraint met)
 Runs: 591165 runs
 Executions per second: ~53742 exec/s
 No crashes found on parsing arbitrary byte buffers as utf-8 string, which confirms no panics within `Message::from_json_str` for the untrusted IPC input layer.
+--- Windows target (Wine) ---
+Running `cargo test --target x86_64-pc-windows-gnu` using Wine wrapper.
+Wine configuration failed due to missing X server / `wine32` architecture limits in the container environment.
+Because Wine failed to initialize properly, no test results could be gathered natively for the Windows target under Wine. Note that Wine is NOT proof of real Windows behaviour.
+
+Code inspection for Windows problems:
+- IPC paths use Named Pipes which do not suffer from max length 260 limit naturally when correctly prefixed (our path is `\\.\pipe\rat` and in tests `\\.\pipe\rat_test_{pid}`, well under limits).
+- Test edge cases run natively on linux tests, verifying non-ASCII Unicode (Persian, Chinese) paths and backslashes in simulated payloads. Serde serializes and deserializes these correctly since everything uses UTF-8 strings by default.
+- No direct file locking is used in `rat-daemon` itself outside of standard socket management and pipe handle closures (handled by `tokio`), except for Linux's socket file deletion. Windows pipe lifecycle is bound to the server instance correctly.
+- CRLF line endings on IPC inputs? `LinesCodec` by default splits by `\n` but strips trailing `\r` (see `LinesCodec` implementation in tokio-util which handles both `\n` and `\r\n`).
