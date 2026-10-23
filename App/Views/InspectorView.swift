@@ -44,6 +44,9 @@ struct SummaryInspector: View {
                 group("Top Processes", topApps.map { ($0.identity.name, "\(formatBytes($0.totalIn)) down, \(formatBytes($0.totalOut)) up") })
                 group("Top Domains", ledger.domains().prefix(3).map { ($0.name, "\($0.count) connection\($0.count == 1 ? "" : "s")") })
                 if ledger.geo.available { group("Top Countries", ledger.countries().prefix(3).map { ($0.name, "\($0.count) connection\($0.count == 1 ? "" : "s")") }) }
+                if ledger.geo.networksAvailable, !ledger.networks().isEmpty {
+                    group("Top Networks", ledger.networks().prefix(3).map { ($0.name, "\($0.count) connection\($0.count == 1 ? "" : "s")") })
+                }
             }
         }
     }
@@ -99,13 +102,22 @@ struct ProcessInspector: View {
                         if !r.approved { Circle().fill(.blue).frame(width: 7, height: 7) }
                     }.font(.callout).padding(.leading, 6)
                 }
-                if ledger.rules.policy(for: app.identity.ruleKey) == .deny {
-                    Text("\(ledger.blockedAddresses(for: app.id)) server addresses blocked for every app on this Mac.")
+                if ledger.rules.policy(for: app.identity.ruleKey) == .deny, appRules.contains(where: { $0.verdict == .allow }) {
+                    Text("The allow rules above are overridden while the whole app is denied.")
                         .font(.caption).foregroundStyle(.secondary).padding(.leading, 6)
-                    if !(ledger.enforcer.helperInstalled && ledger.enforcer.autoApply) {
-                        Button(ledger.enforcer.busy ? "Applying…" : "Apply blocking") { ledger.applyBlocking() }
-                            .disabled(ledger.enforcer.busy || !ledger.enforcer.needsApply(for: ledger.wantedBlocklist)).padding(.leading, 6)
-                    }
+                }
+                if ledger.rules.policy(for: app.identity.ruleKey) == .deny {
+                    Group {
+                        if !ledger.enforcer.helperInstalled {
+                            Text("Not enforced: this needs the firewall helper (Settings > Security).").foregroundStyle(.orange)
+                        } else if ledger.enforcer.status == nil {
+                            Text("Not enforced: the firewall helper is not running (Settings > Security).").foregroundStyle(.orange)
+                        } else if let e = ledger.enforcement(for: app.id) {
+                            Text("Blocked by the firewall helper: \(e.processes) processes, \(e.ports) open connections cut.").foregroundStyle(.secondary)
+                        } else {
+                            Text("Blocked by the firewall helper as soon as the app runs.").foregroundStyle(.secondary)
+                        }
+                    }.font(.caption).padding(.leading, 6)
                 }
                 Button("Manage Rules…") { openWindow(id: "rules") }.padding(.leading, 6)
                 if let err = ledger.enforcer.lastError { Text(err).font(.caption).foregroundStyle(.red).padding(.leading, 6) }
@@ -114,28 +126,85 @@ struct ProcessInspector: View {
             if sig { kv("Identifier", ident ?? "none"); kv("Team", team ?? "none") }
             SectionHeader(title: "Connection Details", open: $details)
             if details {
-                ForEach(app.remotes.prefix(50)) { r in
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(r.host).lineLimit(1)
-                        Text("\(r.proto) \(r.address):\(r.port)").font(.caption).foregroundStyle(.secondary)
-                    }.padding(.leading, 6)
+                if app.identity.isSystem {
+                    // The "macOS" row holds many services: grouped by service, never attributed to a guessed app.
+                    let groups = Dictionary(grouping: Array(app.remotes.prefix(80)), by: { $0.process ?? "unknown" }).sorted { $0.key < $1.key }
+                    ForEach(groups, id: \.key) { name, list in
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 6) {
+                                Text(name).font(.callout.weight(.semibold))
+                                if let pid = list.first?.pid { Text("pid \(pid)").font(.caption).foregroundStyle(.secondary) }
+                            }
+                            if let note = SharedServices.note(for: name) {
+                                Text("Works for other apps: \(note)").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            }
+                            ForEach(list) { remoteRow($0, showProcess: false) }
+                        }.padding(.leading, 6).padding(.bottom, 4)
+                    }
+                } else {
+                    ForEach(app.remotes.prefix(50)) { r in
+                        remoteRow(r, showProcess: r.process != nil && r.process != app.identity.mainProcessName).padding(.leading, 6)
+                    }
                 }
                 if app.remotes.isEmpty { Text("None").foregroundStyle(.secondary).padding(.leading, 6) }
             }
             SectionHeader(title: "Geographic Information", open: $geo)
             if geo {
-                let places = Set(app.remotes.compactMap { $0.geo }.map { "\($0.city), \($0.country)" }).sorted()
+                let places = Set(app.remotes.flatMap { [$0.geo, $0.via?.serverGeo] }.compactMap { $0 }.map { "\($0.city), \($0.country)" }).sorted()
                 if places.isEmpty { Text("No locations for these connections").foregroundStyle(.secondary).padding(.leading, 6) }
                 ForEach(places, id: \.self) { Text($0).padding(.leading, 6) }
             }
         }
     }
 
+    /// One remote: the destination, then protocol, address, port and usual service, then the hops (subprocess, proxy).
+    @ViewBuilder private func remoteRow(_ r: RemoteHost, showProcess: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(r.host).lineLimit(1)
+            if let via = r.via {
+                // The real destination first, then the proxy hop it went through.
+                Text((r.address.isEmpty || r.address == r.host ? "\(r.proto) port \(r.port)" : "\(r.proto) \(r.address):\(r.port)") + serviceSuffix(proto: r.proto, port: r.port))
+                    .font(.caption).foregroundStyle(.secondary).help(serviceHelp)
+                ProxyBadge(hop: via)
+            } else {
+                Text("\(r.proto) \(r.address):\(r.port)" + serviceSuffix(proto: r.proto, port: r.port)).font(.caption).foregroundStyle(.secondary).help(serviceHelp)
+            }
+            if let route = r.route {
+                Label(route, systemImage: route.hasPrefix("via VPN") ? "lock.shield" : "arrow.triangle.branch")
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    .help(route.hasPrefix("via VPN") ? "This connection leaves through the VPN tunnel." : "This app talks to the system proxy, not to the server itself: the address and location shown are the proxy's, and a rule for a domain cannot match.")
+            }
+            if let n = r.network {
+                Text(n).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    .help("The organization that runs this server's network (often a cloud or hosting provider), not necessarily who runs the service.")
+            }
+            if showProcess, let p = r.process {
+                Text("via \(p)\(r.pid.map { " (pid \($0))" } ?? "")").font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var serviceHelp: String { "The name is the service usually on this port. The port alone does not prove what the connection carries." }
+
     private func kv(_ k: String, _ v: String) -> some View {
         HStack(alignment: .top) {
             Text(k + ":").foregroundStyle(.secondary).frame(width: 64, alignment: .trailing)
             Text(v).textSelection(.enabled)
         }.font(.callout)
+    }
+}
+
+/// "via ssh proxy (127.0.0.1:1080 → 203.0.113.5)" under a destination that went through a local proxy.
+struct ProxyBadge: View {
+    let hop: ProxyHop
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "arrow.triangle.branch")
+            Text(hop.label).lineLimit(1).truncationMode(.middle)
+            Text(hop.kind).padding(.horizontal, 4).padding(.vertical, 1).overlay(RoundedRectangle(cornerRadius: 3).stroke(.secondary))
+        }
+        .font(.caption2).foregroundStyle(.orange)
+        .help("\(hop.label), \(hop.kind)\(hop.serverGeo.map { ". Proxy server in \($0.city), \($0.country)" } ?? "")")
     }
 }
 
