@@ -1,0 +1,430 @@
+import Foundation
+import os
+
+private let logger = Logger(subsystem: "com.imanmontajabi.Rat", category: "enforcer")
+
+/// Applies "deny" decisions with the macOS packet filter.
+///
+/// Rat has no Network Extension entitlement, so it cannot intercept connections per process.
+/// Instead it collects the server addresses of denied connections and loads them into a `pf` table
+/// through the bundled `rat-pf-helper.sh`, which runs as root. Two ways to run it:
+///
+/// * **Manual** (default): each click on "Apply blocking" runs the helper once behind the standard
+///   macOS password prompt. Nothing stays installed.
+/// * **Automatic** (opt-in, explicitly approved by the user): the helper is installed once as two root
+///   LaunchDaemons. One re-applies the blocklist whenever Rat rewrites it, so Deny takes effect
+///   immediately; the other snapshots all processes' sockets so Rat can see system-wide traffic.
+///   "Remove Helper" uninstalls both and clears the pf anchor.
+///
+/// A blocked address is blocked for every app on the Mac.
+@MainActor
+final class Enforcer: ObservableObject {
+    @Published private(set) var applied: Set<String> = []
+    @Published private(set) var busy = false
+    @Published private(set) var helperInstalled: Bool
+    @Published var autoApply: Bool { didSet { UserDefaults.standard.set(autoApply, forKey: "autoApplyPF") } }
+    @Published var lastError: String?
+
+    static let applyLabel = "com.imanmontajabi.rat.pf"
+    static let samplerLabel = "com.imanmontajabi.rat.sampler"
+    static let helperPath = "/Library/PrivilegedHelperTools/com.imanmontajabi.rat.helper"
+    static func plistPath(_ label: String) -> String { "/Library/LaunchDaemons/\(label).plist" }
+
+    let listURL: URL
+    let snapshotURL: URL
+    private var lastWritten: Set<String>?
+
+    /// `helperInstalled` and `autoApply` can be forced so tests do not depend on (or touch) the machine's real state.
+    init(supportDirectory: URL, helperInstalled: Bool? = nil, autoApply: Bool? = nil) {
+        listURL = supportDirectory.appendingPathComponent("blocklist.txt")
+        snapshotURL = supportDirectory.appendingPathComponent("system-sockets.txt")
+        self.helperInstalled = helperInstalled ?? FileManager.default.fileExists(atPath: Self.plistPath(Self.applyLabel))
+        self.autoApply = autoApply ?? UserDefaults.standard.bool(forKey: "autoApplyPF")
+    }
+
+    func needsApply(for wanted: Set<String>) -> Bool { wanted != applied }
+
+    /// Called whenever the wanted blocklist may have changed. With the helper installed and auto-apply on,
+    /// writing the file is the whole job: the daemon watches it.
+    func sync(_ wanted: Set<String>) {
+        guard helperInstalled, autoApply, wanted != lastWritten else { return }
+        if writeList(wanted) { applied = wanted }
+    }
+
+    /// One-off apply behind an admin prompt (used when the helper is not installed).
+    func applyOnce(_ wanted: Set<String>) {
+        guard !busy else { return }
+        guard let helper = Bundle.main.url(forResource: "rat-pf-helper", withExtension: "sh")?.path else {
+            lastError = "Helper script missing from the app bundle."
+            return
+        }
+        guard writeList(wanted) else { return }
+        let command = "/bin/sh \(Self.shellQuote(helper)) apply \(Self.shellQuote(listURL.path))"
+        runPrivileged(command) { ok in if ok { self.applied = wanted } }
+    }
+
+    func installHelper() {
+        guard let src = Bundle.main.url(forResource: "rat-pf-helper", withExtension: "sh")?.path else {
+            lastError = "Helper script missing from the app bundle."
+            return
+        }
+        let owner = NSUserName()
+        func plist(_ label: String, _ args: [String], extra: String) -> String {
+            """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0"><dict>
+            <key>Label</key><string>\(label)</string>
+            <key>ProgramArguments</key><array>\(args.map { "<string>\(xml($0))</string>" }.joined())</array>
+            \(extra)
+            </dict></plist>
+            """
+        }
+        let apply = plist(Self.applyLabel, [Self.helperPath, "apply", listURL.path],
+                          extra: "<key>WatchPaths</key><array><string>\(xml(listURL.path))</string></array><key>RunAtLoad</key><true/>")
+        let sampler = plist(Self.samplerLabel, [Self.helperPath, "snapshot", snapshotURL.path, owner],
+                            extra: "<key>StartInterval</key><integer>5</integer><key>RunAtLoad</key><true/>")
+        // The owner of the files the daemon writes into the user's support directory is the user, never root.
+        let script = """
+        set -e
+        mkdir -p /Library/PrivilegedHelperTools
+        install -m 755 -o root -g wheel \(Self.shellQuote(src)) \(Self.shellQuote(Self.helperPath))
+        cat > \(Self.shellQuote(Self.plistPath(Self.applyLabel))) <<'PLIST'
+        \(apply)
+        PLIST
+        cat > \(Self.shellQuote(Self.plistPath(Self.samplerLabel))) <<'PLIST'
+        \(sampler)
+        PLIST
+        for f in \(Self.shellQuote(Self.plistPath(Self.applyLabel))) \(Self.shellQuote(Self.plistPath(Self.samplerLabel))); do
+          chown root:wheel "$f"; chmod 644 "$f"
+        done
+        for l in \(Self.applyLabel) \(Self.samplerLabel); do /bin/launchctl bootout system/$l 2>/dev/null || true; done
+        /bin/launchctl bootstrap system \(Self.shellQuote(Self.plistPath(Self.applyLabel)))
+        /bin/launchctl bootstrap system \(Self.shellQuote(Self.plistPath(Self.samplerLabel)))
+        """
+        runPrivilegedScript(script) { ok in
+            if ok { self.helperInstalled = true; self.autoApply = true; self.lastWritten = nil }
+        }
+    }
+
+    func removeHelper() {
+        let script = """
+        for l in \(Self.applyLabel) \(Self.samplerLabel); do /bin/launchctl bootout system/$l 2>/dev/null || true; done
+        /sbin/pfctl -a com.apple/rat -F all >/dev/null 2>&1 || true
+        rm -f \(Self.shellQuote(Self.plistPath(Self.applyLabel))) \(Self.shellQuote(Self.plistPath(Self.samplerLabel))) \(Self.shellQuote(Self.helperPath))
+        """
+        runPrivilegedScript(script) { ok in
+            if ok { self.helperInstalled = false; self.autoApply = false; self.applied = []; self.lastWritten = nil }
+        }
+    }
+
+    /// Latest root snapshot of all processes' sockets, if the helper is installed and the file is fresh.
+    func systemSnapshotText() -> String? {
+        guard helperInstalled,
+              let attrs = try? FileManager.default.attributesOfItem(atPath: snapshotURL.path),
+              let modified = attrs[.modificationDate] as? Date, Date().timeIntervalSince(modified) < 30 else { return nil }
+        return try? String(contentsOf: snapshotURL, encoding: .utf8)
+    }
+
+    // MARK: plumbing
+
+    @discardableResult
+    private func writeList(_ ips: Set<String>) -> Bool {
+        do {
+            try ips.sorted().joined(separator: "\n").appending("\n").write(to: listURL, atomically: true, encoding: .utf8)
+            lastWritten = ips
+            logger.notice("blocklist written: \(ips.count, privacy: .public) addresses")
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            logger.error("could not write blocklist: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
+    private func runPrivilegedScript(_ script: String, done: @escaping (Bool) -> Void) {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("rat-\(UUID().uuidString).sh")
+        do { try script.write(to: url, atomically: true, encoding: .utf8) } catch { lastError = error.localizedDescription; return }
+        runPrivileged("/bin/sh \(Self.shellQuote(url.path))") { ok in
+            try? FileManager.default.removeItem(at: url)
+            done(ok)
+        }
+    }
+
+    private func runPrivileged(_ command: String, done: @escaping (Bool) -> Void) {
+        guard !busy else { return }
+        busy = true
+        lastError = nil
+        Task.detached {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            p.arguments = ["-e", "do shell script \"\(Self.appleScriptEscape(command))\" with administrator privileges with prompt \"Rat needs permission to update the firewall.\""]
+            let err = Pipe()
+            p.standardError = err
+            p.standardOutput = FileHandle.nullDevice
+            try? p.run()
+            p.waitUntilExit()
+            let msg = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            await MainActor.run {
+                self.busy = false
+                if p.terminationStatus == 0 {
+                    logger.notice("privileged step succeeded")
+                    done(true)
+                } else {
+                    self.lastError = msg.contains("-128") ? "Cancelled." : msg.trimmingCharacters(in: .whitespacesAndNewlines)
+                    logger.error("privileged step failed")
+                    done(false)
+                }
+            }
+        }
+    }
+
+    nonisolated private func xml(_ s: String) -> String {
+        s.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;")
+    }
+
+    nonisolated static func shellQuote(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+
+    nonisolated static func appleScriptEscape(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+    }
+}
+import SwiftUI
+import UserNotifications
+import RatFilterCore
+
+/// User-facing preferences (the Settings window), stored in UserDefaults.
+@MainActor
+final class AppSettings: ObservableObject {
+    static let shared = AppSettings()
+
+    enum RateUnit: String, CaseIterable, Identifiable { case bytes = "Bytes/s", bits = "Bits/s"; var id: String { rawValue } }
+    enum RateVisibility: String, CaseIterable, Identifiable { case automatic = "Automatic", always = "Always", never = "Never"; var id: String { rawValue } }
+    enum GroupBy: String, CaseIterable, Identifiable { case process = "Process", domain = "Domain", country = "Country"; var id: String { rawValue } }
+    enum SortKey: String, CaseIterable, Identifiable { case recent = "Recent Activity", name = "Name", traffic = "Traffic"; var id: String { rawValue } }
+
+    private let defaults = UserDefaults.standard
+
+    // Menu bar (Control Center)
+    @Published var showInMenuBar: Bool { didSet { defaults.set(showInMenuBar, forKey: "showInMenuBar") } }
+    @Published var numericRates: Bool { didSet { defaults.set(numericRates, forKey: "numericRates") } }
+    @Published var silentModeSymbol: Bool { didSet { defaults.set(silentModeSymbol, forKey: "silentModeSymbol") } }
+    @Published var trafficRateUnit: RateUnit { didSet { defaults.set(trafficRateUnit.rawValue, forKey: "trafficRateUnit") } }
+
+    // Alert
+    @Published var confirmWithReturn: Bool { didSet { defaults.set(confirmWithReturn, forKey: "confirmWithReturn") } }
+    @Published var alertTimeout: Int { didSet { defaults.set(alertTimeout, forKey: "alertTimeout") } }
+    @Published var alertTimeoutAllows: Bool { didSet { defaults.set(alertTimeoutAllows, forKey: "alertTimeoutAllows") } }
+
+    // Monitor
+    @Published var includeLocalNetwork: Bool { didSet { defaults.set(includeLocalNetwork, forKey: "includeLocalNetwork") } }
+    @Published var includeNetworkExtensions: Bool { didSet { defaults.set(includeNetworkExtensions, forKey: "includeNetworkExtensions") } }
+    @Published var includeOtherUsers: Bool { didSet { defaults.set(includeOtherUsers, forKey: "includeOtherUsers") } }
+    @Published var groupBy: GroupBy { didSet { defaults.set(groupBy.rawValue, forKey: "groupBy") } }
+    @Published var sortKey: SortKey { didSet { defaults.set(sortKey.rawValue, forKey: "sortKey") } }
+    @Published var floatOnTop: Bool { didSet { defaults.set(floatOnTop, forKey: "floatOnTop") } }
+    @Published var additionalLocalRanges: String {
+        didSet { defaults.set(additionalLocalRanges, forKey: "additionalLocalRanges"); LocalRanges.shared.set(additionalLocalRanges) }
+    }
+
+    // Notifications
+    @Published var notifySilentConnections: Bool { didSet { defaults.set(notifySilentConnections, forKey: "notifySilentConnections") } }
+    @Published var notifyProfileSwitch: Bool { didSet { defaults.set(notifyProfileSwitch, forKey: "notifyProfileSwitch") } }
+    @Published var notifyAlertTimeout: Bool { didSet { defaults.set(notifyAlertTimeout, forKey: "notifyAlertTimeout") } }
+
+    // Update
+    @Published var autoCheckUpdates: Bool { didSet { defaults.set(autoCheckUpdates, forKey: "autoCheckUpdates") } }
+    @Published var showPreReleases: Bool { didSet { defaults.set(showPreReleases, forKey: "showPreReleases") } }
+    @Published var lastUpdateCheck: Date? { didSet { defaults.set(lastUpdateCheck, forKey: "lastUpdateCheck") } }
+    @Published var lastUpdateCheckFailed: Bool { didSet { defaults.set(lastUpdateCheckFailed, forKey: "lastUpdateCheckFailed") } }
+
+    // Advanced
+    @Published var approveRulesAutomatically: Bool { didSet { defaults.set(approveRulesAutomatically, forKey: "approveRulesAutomatically") } }
+
+    private init() {
+        func bool(_ k: String, _ d: Bool) -> Bool { UserDefaults.standard.object(forKey: k) as? Bool ?? d }
+        showInMenuBar = bool("showInMenuBar", true)
+        numericRates = bool("numericRates", true)
+        silentModeSymbol = bool("silentModeSymbol", true)
+        trafficRateUnit = RateUnit(rawValue: UserDefaults.standard.string(forKey: "trafficRateUnit") ?? "") ?? .bytes
+        confirmWithReturn = bool("confirmWithReturn", true)
+        alertTimeout = UserDefaults.standard.integer(forKey: "alertTimeout")
+        alertTimeoutAllows = bool("alertTimeoutAllows", false)
+        includeLocalNetwork = bool("includeLocalNetwork", false)
+        includeNetworkExtensions = bool("includeNetworkExtensions", false)
+        includeOtherUsers = bool("includeOtherUsers", false)
+        groupBy = GroupBy(rawValue: UserDefaults.standard.string(forKey: "groupBy") ?? "") ?? .process
+        sortKey = SortKey(rawValue: UserDefaults.standard.string(forKey: "sortKey") ?? "") ?? .recent
+        floatOnTop = bool("floatOnTop", false)
+        additionalLocalRanges = UserDefaults.standard.string(forKey: "additionalLocalRanges") ?? ""
+        notifySilentConnections = bool("notifySilentConnections", true)
+        notifyProfileSwitch = bool("notifyProfileSwitch", true)
+        notifyAlertTimeout = bool("notifyAlertTimeout", true)
+        autoCheckUpdates = bool("autoCheckUpdates", true)
+        showPreReleases = bool("showPreReleases", false)
+        lastUpdateCheck = UserDefaults.standard.object(forKey: "lastUpdateCheck") as? Date
+        lastUpdateCheckFailed = bool("lastUpdateCheckFailed", false)
+        approveRulesAutomatically = bool("approveRulesAutomatically", true)
+        LocalRanges.shared.set(additionalLocalRanges)
+    }
+
+    /// Rate formatted in the chosen unit, e.g. "1.2 MB/s" or "9.6 Mbit/s".
+    func formatRate(_ bytesPerSecond: Double) -> String {
+        switch trafficRateUnit {
+        case .bytes:
+            let f = ByteCountFormatter(); f.countStyle = .file; f.allowsNonnumericFormatting = false
+            return f.string(fromByteCount: Int64(bytesPerSecond)) + "/s"
+        case .bits:
+            let bits = bytesPerSecond * 8
+            for (unit, div) in [("Gbit/s", 1e9), ("Mbit/s", 1e6), ("kbit/s", 1e3)] where bits >= div { return String(format: "%.1f %@", bits / div, unit) }
+            return "\(Int(bits)) bit/s"
+        }
+    }
+}
+
+/// Extra address ranges the user wants treated as the local network ("Additional IP Ranges in Local Network").
+final class LocalRanges: @unchecked Sendable {
+    static let shared = LocalRanges()
+    private let lock = NSLock()
+    private var ranges: [(base: UInt32, mask: UInt32)] = []
+
+    /// Parses "10.5.0.0/16, 100.64.0.0/10" (comma, space or newline separated). Returns the entries that did not parse.
+    @discardableResult
+    func set(_ text: String) -> [String] {
+        var bad: [String] = []
+        var parsed: [(UInt32, UInt32)] = []
+        for token in text.split(whereSeparator: { ", \n".contains($0) }) {
+            if let r = Self.parse(String(token)) { parsed.append(r) } else { bad.append(String(token)) }
+        }
+        lock.withLock { ranges = parsed }
+        return bad
+    }
+
+    func contains(_ address: String) -> Bool {
+        var a = in_addr()
+        guard inet_pton(AF_INET, address, &a) == 1 else { return false }
+        let ip = UInt32(bigEndian: a.s_addr)
+        return lock.withLock { ranges.contains { (ip & $0.mask) == $0.base } }
+    }
+
+    static func parse(_ s: String) -> (base: UInt32, mask: UInt32)? {
+        let parts = s.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count <= 2 else { return nil }
+        var a = in_addr()
+        guard inet_pton(AF_INET, String(parts[0]), &a) == 1 else { return nil }
+        let bits = parts.count == 2 ? Int(parts[1]) : 32
+        guard let bits, (0...32).contains(bits) else { return nil }
+        let mask: UInt32 = bits == 0 ? 0 : ~UInt32(0) << UInt32(32 - bits)
+        return (UInt32(bigEndian: a.s_addr) & mask, mask)
+    }
+}
+
+/// System notifications for the events listed in Settings > Notifications.
+@MainActor
+enum Notifier {
+    static func requestAuthorization() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    static func post(title: String, body: String) {
+        let c = UNMutableNotificationContent()
+        c.title = title
+        c.body = body
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: c, trigger: nil))
+    }
+}
+import AppKit
+import os
+
+private let logger = Logger(subsystem: "com.imanmontajabi.Rat", category: "update")
+
+/// Asks the GitHub Releases API whether a newer version exists. Runs only when the user chooses it.
+enum UpdateChecker {
+    static let repo = "ImanMontajabi/Rat"
+
+    /// True when `latest` is a higher dotted version than `current` ("v0.3.0" vs "0.2.0").
+    static func isNewer(_ latest: String, than current: String) -> Bool {
+        func parts(_ s: String) -> [Int] { s.trimmingCharacters(in: CharacterSet(charactersIn: "vV")).split(separator: ".").map { Int($0) ?? 0 } }
+        let a = parts(latest), b = parts(current)
+        for i in 0..<max(a.count, b.count) {
+            let x = i < a.count ? a[i] : 0, y = i < b.count ? b[i] : 0
+            if x != y { return x > y }
+        }
+        return false
+    }
+
+    /// Silent check at launch when automatic checks are on and the last one is over a day old.
+    @MainActor static func checkIfDue() async {
+        let settings = AppSettings.shared
+        guard settings.autoCheckUpdates else { return }
+        if let last = settings.lastUpdateCheck, Date().timeIntervalSince(last) < 86_400 { return }
+        if let release = await latest(includePreReleases: settings.showPreReleases),
+           isNewer(release.tag, than: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0") {
+            present(release, current: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0")
+        }
+    }
+
+    struct Release { var tag: String; var url: String; var prerelease: Bool }
+
+    /// The newest published release (optionally including pre-releases). Records the attempt in the settings.
+    @MainActor static func latest(includePreReleases: Bool) async -> Release? {
+        let settings = AppSettings.shared
+        do {
+            var req = URLRequest(url: URL(string: "https://api.github.com/repos/\(repo)/releases")!)
+            req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+            let (data, _) = try await URLSession.shared.data(for: req)
+            guard let list = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { throw URLError(.cannotParseResponse) }
+            settings.lastUpdateCheck = Date(); settings.lastUpdateCheckFailed = false
+            return list.compactMap { j -> Release? in
+                guard j["draft"] as? Bool != true, let tag = j["tag_name"] as? String else { return nil }
+                let pre = j["prerelease"] as? Bool ?? false
+                guard includePreReleases || !pre else { return nil }
+                return Release(tag: tag, url: j["html_url"] as? String ?? "https://github.com/\(repo)/releases", prerelease: pre)
+            }.max { !isNewer($1.tag, than: $0.tag) ? false : true }
+        } catch {
+            logger.error("update check failed: \(error.localizedDescription, privacy: .public)")
+            settings.lastUpdateCheck = Date(); settings.lastUpdateCheckFailed = true
+            return nil
+        }
+    }
+
+    @MainActor private static func present(_ r: Release, current: String) {
+        let alert = NSAlert()
+        alert.messageText = "Rat \(r.tag) is available"
+        alert.informativeText = "You have \(current)."
+        alert.addButton(withTitle: "Open Download Page"); alert.addButton(withTitle: "Later")
+        if alert.runModal() == .alertFirstButtonReturn, let u = URL(string: r.url) { NSWorkspace.shared.open(u) }
+    }
+
+    /// "Check Now": always answers.
+    @MainActor static func check() async {
+        let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+        let release = await latest(includePreReleases: AppSettings.shared.showPreReleases)
+        if AppSettings.shared.lastUpdateCheckFailed {
+            let alert = NSAlert(); alert.messageText = "Could not check for updates"; alert.informativeText = "Check your internet connection and try again."; alert.runModal(); return
+        }
+        guard let release else { let a = NSAlert(); a.messageText = "No releases found"; a.runModal(); return }
+        if isNewer(release.tag, than: current) { present(release, current: current) }
+        else { let a = NSAlert(); a.messageText = "Rat is up to date"; a.informativeText = "Version \(current) is the latest."; a.runModal() }
+    }
+}
+import Foundation
+import CoreWLAN
+import SystemConfiguration
+
+/// Identifies the network the Mac is on, for automatic profile switching.
+/// Uses the Wi-Fi name when macOS reveals it (it needs Location access) and otherwise the default gateway.
+enum NetworkWatcher {
+    struct Network: Equatable {
+        var signature: String
+        var name: String
+    }
+
+    static func current() -> Network? {
+        if let ssid = CWWiFiClient.shared().interface()?.ssid(), !ssid.isEmpty { return Network(signature: ssid, name: ssid) }
+        guard let store = SCDynamicStoreCreate(nil, "Rat" as CFString, nil, nil),
+              let info = SCDynamicStoreCopyValue(store, "State:/Network/Global/IPv4" as CFString) as? [String: Any],
+              let router = info["Router"] as? String else { return nil }
+        return Network(signature: "gateway:\(router)", name: "Network via \(router)")
+    }
+}

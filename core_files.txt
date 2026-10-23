@@ -1,0 +1,370 @@
+import Foundation
+
+/// Outcome for a connection. `ask` means: pause the flow and prompt the user.
+public enum Verdict: String, Codable, Sendable {
+    case allow, deny, ask
+}
+
+/// How long a rule created from an alert lives.
+public enum Lifetime: String, Codable, Sendable, CaseIterable {
+    case once        // never stored: applies to the one connection that raised the alert
+    case untilQuit   // kept in memory, dropped when Rat quits
+    case forever
+}
+
+/// Identifies the process behind a flow. Little Snitch matches on code requirement / team ID
+/// rather than path alone, so renamed binaries don't escape rules.
+public struct ProcessIdentity: Codable, Hashable, Sendable {
+    public var signingID: String?
+    public var teamID: String?
+    public var path: String
+
+    public init(signingID: String? = nil, teamID: String? = nil, path: String) {
+        self.signingID = signingID
+        self.teamID = teamID
+        self.path = path
+    }
+}
+
+public struct Connection: Sendable {
+    public var process: ProcessIdentity
+    public var host: String?      // remote hostname if known (SNI / DNS), else nil
+    public var address: String    // remote IP
+    public var port: Int
+    public var proto: Proto
+
+    public enum Proto: String, Codable, Sendable { case tcp, udp }
+
+    public init(process: ProcessIdentity, host: String? = nil, address: String, port: Int, proto: Proto = .tcp) {
+        self.process = process
+        self.host = host
+        self.address = address
+        self.port = port
+        self.proto = proto
+    }
+}
+
+public struct Rule: Codable, Identifiable, Sendable, Equatable {
+    public var id: UUID
+    public var verdict: Verdict
+    /// Application bundle (or executable) path; matches the path itself and anything inside it.
+    public var processPath: String?
+    public var signingID: String?
+    public var teamID: String?
+    /// "example.com" matches the domain and subdomains; "*" or nil = any remote.
+    public var remoteDomain: String?
+    /// Exact hostname, no subdomains.
+    public var remoteHost: String?
+    public var remoteAddress: String?
+    public var ports: ClosedRange<Int>?
+    public var proto: Connection.Proto?
+    public var enabled: Bool
+    /// Review marker. Rules created from alerts while "mark new rules as unapproved" is on stay active but
+    /// carry a blue dot until approved; imported rules also arrive disabled, so they do nothing until approved.
+    public var approved: Bool
+    public var lifetime: Lifetime
+    /// nil = active in every profile.
+    public var profileID: UUID?
+    public var groupID: UUID?
+    public var createdAt: Date
+    public var note: String?
+
+    public init(id: UUID = UUID(), verdict: Verdict, processPath: String? = nil, signingID: String? = nil, teamID: String? = nil,
+                remoteDomain: String? = nil, remoteHost: String? = nil, remoteAddress: String? = nil,
+                ports: ClosedRange<Int>? = nil, proto: Connection.Proto? = nil, enabled: Bool = true, approved: Bool = true,
+                lifetime: Lifetime = .forever, profileID: UUID? = nil, groupID: UUID? = nil,
+                createdAt: Date = Date(), note: String? = nil) {
+        self.id = id; self.verdict = verdict; self.processPath = processPath; self.signingID = signingID; self.teamID = teamID
+        self.remoteDomain = remoteDomain; self.remoteHost = remoteHost; self.remoteAddress = remoteAddress
+        self.ports = ports; self.proto = proto; self.enabled = enabled; self.approved = approved
+        self.lifetime = lifetime; self.profileID = profileID; self.groupID = groupID; self.createdAt = createdAt; self.note = note
+    }
+
+    // Tolerant decoding so rule files written by older versions (and hand edits) still load.
+    enum CodingKeys: String, CodingKey {
+        case id, verdict, processPath, signingID, teamID, remoteDomain, remoteHost, remoteAddress, ports, proto
+        case enabled, approved, lifetime, profileID, groupID, createdAt, note
+    }
+
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        verdict = try c.decode(Verdict.self, forKey: .verdict)
+        processPath = try c.decodeIfPresent(String.self, forKey: .processPath)
+        signingID = try c.decodeIfPresent(String.self, forKey: .signingID)
+        teamID = try c.decodeIfPresent(String.self, forKey: .teamID)
+        remoteDomain = try c.decodeIfPresent(String.self, forKey: .remoteDomain)
+        remoteHost = try c.decodeIfPresent(String.self, forKey: .remoteHost)
+        remoteAddress = try c.decodeIfPresent(String.self, forKey: .remoteAddress)
+        ports = try c.decodeIfPresent(ClosedRange<Int>.self, forKey: .ports)
+        proto = try c.decodeIfPresent(Connection.Proto.self, forKey: .proto)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        approved = try c.decodeIfPresent(Bool.self, forKey: .approved) ?? true
+        lifetime = try c.decodeIfPresent(Lifetime.self, forKey: .lifetime) ?? .forever
+        profileID = try c.decodeIfPresent(UUID.self, forKey: .profileID)
+        groupID = try c.decodeIfPresent(UUID.self, forKey: .groupID)
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date(timeIntervalSince1970: 0)
+        note = try c.decodeIfPresent(String.self, forKey: .note)
+    }
+
+    /// Higher = more specific. Specific rules beat general ones; at equal specificity deny beats allow.
+    public var specificity: Int {
+        var s = 0
+        if processPath != nil { s += 4 } else if signingID != nil { s += 4 } else if teamID != nil { s += 2 }
+        if remoteAddress != nil { s += 5 }
+        if remoteHost != nil { s += 4 } else if let d = remoteDomain, d != "*" { s += 3 }
+        if ports != nil { s += 2 }
+        if proto != nil { s += 1 }
+        return s
+    }
+
+    /// Human-readable scope, e.g. "Any process → example.com:443".
+    public var summary: String {
+        let who = processPath.map { ($0 as NSString).lastPathComponent.replacingOccurrences(of: ".app", with: "") }
+            ?? signingID ?? teamID.map { "Team \($0)" } ?? "Any process"
+        var what = remoteAddress ?? remoteHost ?? remoteDomain.flatMap { $0 == "*" ? nil : "*.\($0)" } ?? "any server"
+        if let ports { what += ports.lowerBound == ports.upperBound ? ":\(ports.lowerBound)" : ":\(ports.lowerBound)-\(ports.upperBound)" }
+        if let proto { what += " (\(proto.rawValue.uppercased()))" }
+        return "\(who) → \(what)"
+    }
+
+    public func matches(_ c: Connection) -> Bool {
+        guard enabled else { return false }
+        if let processPath, !(c.process.path == processPath || c.process.path.hasPrefix(processPath + "/")) { return false }
+        if let signingID, signingID != c.process.signingID { return false }
+        if let teamID, teamID != c.process.teamID { return false }
+        if let proto, proto != c.proto { return false }
+        if let ports, !ports.contains(c.port) { return false }
+        if let remoteAddress, remoteAddress != c.address { return false }
+        if let remoteHost, remoteHost.lowercased() != c.host?.lowercased() { return false }
+        if let d = remoteDomain, d != "*" {
+            guard let host = c.host?.lowercased() else { return false }
+            let dom = d.lowercased()
+            if host != dom && !host.hasSuffix("." + dom) { return false }
+        }
+        return true
+    }
+}
+import Foundation
+
+/// Evaluates connections against the rules of the active profile.
+public final class RuleEngine: @unchecked Sendable {
+    private let lock = NSLock()
+    private var set: RuleSet
+    public var defaultVerdict: Verdict {
+        get { lock.withLock { set.silentVerdict ?? .ask } }
+        set { lock.withLock { set.silentVerdict = newValue == .ask ? nil : newValue } }
+    }
+
+    public init(rules: [Rule] = [], defaultVerdict: Verdict = .ask) {
+        var s = RuleSet.standard()
+        s.rules = rules
+        s.silentVerdict = defaultVerdict == .ask ? nil : defaultVerdict
+        set = s
+    }
+
+    public init(ruleSet: RuleSet) { set = ruleSet }
+
+    public var ruleSet: RuleSet {
+        get { lock.withLock { set } }
+        set { lock.withLock { self.set = newValue } }
+    }
+
+    public var allRules: [Rule] { lock.withLock { set.rules } }
+    public func setRules(_ new: [Rule]) { lock.withLock { set.rules = new } }
+    public func add(_ rule: Rule) { lock.withLock { set.rules.append(rule) } }
+    public func remove(id: UUID) { lock.withLock { set.rules.removeAll { $0.id == id } } }
+
+    /// Rules that can apply right now: active profile, enabled group.
+    private func active(_ s: RuleSet) -> [Rule] {
+        let disabled = Set(s.groups.filter { !$0.enabled }.map(\.id))
+        return s.rules.filter { ($0.profileID == nil || $0.profileID == s.activeProfileID) && !($0.groupID.map(disabled.contains) ?? false) }
+    }
+
+    /// The winning rule, if any. Specificity first, then deny over allow, then newest.
+    public func matchingRule(_ c: Connection) -> Rule? {
+        let snapshot = lock.withLock { set }
+        return active(snapshot).filter { $0.matches(c) }.max { a, b in
+            if a.specificity != b.specificity { return a.specificity < b.specificity }
+            if (a.verdict == .deny) != (b.verdict == .deny) { return a.verdict != .deny }
+            return a.createdAt < b.createdAt
+        }
+    }
+
+    public func evaluate(_ c: Connection) -> Verdict {
+        matchingRule(c)?.verdict ?? lock.withLock { set.silentVerdict ?? .ask }
+    }
+
+    /// Merge imported rules. Imported rules arrive unapproved and disabled when requested; ids already present are skipped.
+    @discardableResult
+    public func importRules(_ export: RuleExport, markUnapproved: Bool) -> Int {
+        lock.withLock {
+            let known = Set(set.rules.map(\.id))
+            let knownGroups = Set(set.groups.map(\.id))
+            for g in export.groups where !knownGroups.contains(g.id) { set.groups.append(g) }
+            var added = 0
+            for var r in export.rules where !known.contains(r.id) {
+                if markUnapproved { r.approved = false; r.enabled = false }
+                r.lifetime = .forever
+                // Profiles are local to a machine: a rule scoped to a profile this set doesn't have would never fire.
+                if let pid = r.profileID, !set.profiles.contains(where: { $0.id == pid }) { r.profileID = nil }
+                if let gid = r.groupID, !set.groups.contains(where: { $0.id == gid }) { r.groupID = nil }
+                set.rules.append(r); added += 1
+            }
+            return added
+        }
+    }
+
+    public func exportRules(includeUnapproved: Bool = true) -> RuleExport {
+        lock.withLock {
+            RuleExport(groups: set.groups, rules: set.rules.filter { $0.lifetime == .forever && (includeUnapproved || $0.approved) })
+        }
+    }
+
+    /// Profile that an automatic-switching trigger selects for this network, if any.
+    public func profile(forNetwork signature: String) -> UUID? {
+        lock.withLock { set.triggers.first { $0.signature == signature }?.profileID }
+    }
+
+    /// Drop session-only rules (called when the app quits).
+    public func purgeSessionRules() { lock.withLock { set.rules.removeAll { $0.lifetime != .forever } } }
+}
+
+/// JSON persistence for the rule set.
+public struct RuleStore {
+    public let url: URL
+    public init(url: URL) { self.url = url }
+
+    /// Loads a full rule set, upgrading a v0.1 bare rule array if that is what is on disk.
+    public func loadSet() throws -> RuleSet {
+        guard FileManager.default.fileExists(atPath: url.path) else { return RuleSet.standard() }
+        let data = try Data(contentsOf: url)
+        let d = JSONDecoder(); d.dateDecodingStrategy = .iso8601
+        if var s = try? d.decode(RuleSet.self, from: data) {
+            // Version 1 files asked about every unknown connection; version 2 allows them silently.
+            if s.version < 2 { s.version = 2; s.silentVerdict = .allow }
+            return s
+        }
+        var s = RuleSet.standard()
+        s.rules = try d.decode([Rule].self, from: data)
+        return s
+    }
+
+    public func saveSet(_ set: RuleSet) throws {
+        var s = set
+        s.rules = s.rules.filter { $0.lifetime == .forever }
+        let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys]; e.dateEncodingStrategy = .iso8601
+        try e.encode(s).write(to: url, options: .atomic)
+    }
+
+    // v0.1 API
+    public func load() throws -> [Rule] { try loadSet().rules }
+    public func save(_ rules: [Rule]) throws { var s = (try? loadSet()) ?? RuleSet.standard(); s.rules = rules; try saveSet(s) }
+}
+import Foundation
+
+public struct Profile: Codable, Identifiable, Hashable, Sendable {
+    public var id: UUID
+    public var name: String
+    public var symbol: String
+    public init(id: UUID = UUID(), name: String, symbol: String = "person.crop.circle") {
+        self.id = id; self.name = name; self.symbol = symbol
+    }
+}
+
+public struct RuleGroup: Codable, Identifiable, Hashable, Sendable {
+    public var id: UUID
+    public var name: String
+    public var enabled: Bool
+    public init(id: UUID = UUID(), name: String, enabled: Bool = true) { self.id = id; self.name = name; self.enabled = enabled }
+}
+
+/// Switches to `profileID` when the Mac joins the network with this signature
+/// (an SSID, or "gateway:<ip>" when the SSID is not readable).
+public struct NetworkTrigger: Codable, Identifiable, Hashable, Sendable {
+    public var id: UUID
+    public var signature: String
+    public var name: String
+    public var profileID: UUID
+    public init(id: UUID = UUID(), signature: String, name: String, profileID: UUID) {
+        self.id = id; self.signature = signature; self.name = name; self.profileID = profileID
+    }
+}
+
+public enum UnknownNetworkAction: Codable, Equatable, Sendable {
+    case ask, doNothing, deactivate
+    case activate(UUID)
+}
+
+/// Everything the rule engine persists.
+public struct RuleSet: Codable, Equatable, Sendable {
+    /// 2: unknown connections are allowed silently by default (version 1 asked).
+    public var version = 2
+    public var profiles: [Profile]
+    public var groups: [RuleGroup]
+    public var triggers: [NetworkTrigger]
+    public var rules: [Rule]
+    public var activeProfileID: UUID
+    /// New rules from alerts and imports wait for approval.
+    public var markNewRulesAsUnapproved = false
+    /// What to do with unknown connections: nil = ask (alert mode); a verdict = silent mode.
+    public var silentVerdict: Verdict?
+    public var automaticProfileSwitching = false
+    /// What to do on a network no trigger knows: ask, do nothing, or switch to / away from a profile.
+    public var unknownNetworkAction = UnknownNetworkAction.ask
+
+    /// `silent` is what happens to connections no rule covers: nil asks (alert mode).
+    public static func standard(silent: Verdict? = .allow) -> RuleSet {
+        let home = Profile(name: "Home", symbol: "house")
+        var set = RuleSet(profiles: [home, Profile(name: "Work", symbol: "briefcase"), Profile(name: "Public Wi-Fi", symbol: "wifi")],
+                          groups: [], triggers: [], rules: [], activeProfileID: home.id)
+        set.silentVerdict = silent
+        return set
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case version, profiles, groups, triggers, rules, activeProfileID, markNewRulesAsUnapproved, silentVerdict, automaticProfileSwitching, unknownNetworkAction
+    }
+
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        profiles = try c.decode([Profile].self, forKey: .profiles)
+        groups = try c.decodeIfPresent([RuleGroup].self, forKey: .groups) ?? []
+        triggers = try c.decodeIfPresent([NetworkTrigger].self, forKey: .triggers) ?? []
+        rules = try c.decodeIfPresent([Rule].self, forKey: .rules) ?? []
+        activeProfileID = try c.decode(UUID.self, forKey: .activeProfileID)
+        markNewRulesAsUnapproved = try c.decodeIfPresent(Bool.self, forKey: .markNewRulesAsUnapproved) ?? false
+        silentVerdict = try c.decodeIfPresent(Verdict.self, forKey: .silentVerdict)
+        automaticProfileSwitching = try c.decodeIfPresent(Bool.self, forKey: .automaticProfileSwitching) ?? false
+        unknownNetworkAction = try c.decodeIfPresent(UnknownNetworkAction.self, forKey: .unknownNetworkAction) ?? .ask
+    }
+
+    public init(profiles: [Profile], groups: [RuleGroup], triggers: [NetworkTrigger], rules: [Rule], activeProfileID: UUID) {
+        self.profiles = profiles; self.groups = groups; self.triggers = triggers; self.rules = rules; self.activeProfileID = activeProfileID
+    }
+}
+
+/// Portable rule file ("Export Rules…").
+public struct RuleExport: Codable, Sendable {
+    public var format = "rat-rules"
+    public var version = 1
+    public var groups: [RuleGroup]
+    public var rules: [Rule]
+    public init(groups: [RuleGroup], rules: [Rule]) { self.groups = groups; self.rules = rules }
+
+    public func encoded() throws -> Data {
+        let e = JSONEncoder()
+        e.outputFormatting = [.prettyPrinted, .sortedKeys]
+        e.dateEncodingStrategy = .iso8601
+        return try e.encode(self)
+    }
+
+    public static func decode(_ data: Data) throws -> RuleExport {
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601
+        if let x = try? d.decode(RuleExport.self, from: data), x.format == "rat-rules" { return x }
+        // Bare array of rules (the v0.1 RuleStore format).
+        return RuleExport(groups: [], rules: try d.decode([Rule].self, from: data))
+    }
+}

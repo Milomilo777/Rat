@@ -1,0 +1,20 @@
+{"lane": "qa-app-logic", "step": 1,
+ "requirements": [
+   {"id": "R1", "status": "NOT TESTABLE HERE", "tests": [], "evidence": ["App/Model/Ledger.swift:344", "App/Model/RulesModel.swift:193"], "mutation": null},
+   {"id": "R2", "status": "NOT TESTABLE HERE", "tests": [], "evidence": ["App/Model/Ledger.swift:252", "App/Model/AlertCenter.swift:48"], "mutation": null},
+   {"id": "R3", "status": "NOT TESTABLE HERE", "tests": [], "evidence": ["App/Model/AlertCenter.swift:86"], "mutation": null},
+   {"id": "R4", "status": "NOT TESTABLE HERE", "tests": [], "evidence": ["RatFilter/Sources/RatFilterCore/RuleEngine.swift:45", "App/Model/RulesModel.swift:207"], "mutation": null},
+   {"id": "R5", "status": "NOT TESTABLE HERE", "tests": [], "evidence": ["App/Model/Persistence.swift:69", "RatFilter/Sources/RatFilterCore/RuleEngine.swift:81", "App/Model/Enforcer.swift:132"], "mutation": null},
+   {"id": "R6", "status": "NOT MET", "tests": [], "evidence": ["App/Model/RulesModel.swift:23"], "mutation": null},
+   {"id": "R7", "status": "NOT TESTABLE HERE", "tests": [], "evidence": ["App/Model/UpdateChecker.swift:56"], "mutation": null},
+   {"id": "R8", "status": "NOT TESTABLE HERE", "tests": [], "evidence": ["App/RatApp.swift:26", "App/Model/Ledger.swift:150"], "mutation": null},
+   {"id": "R9", "status": "NOT TESTABLE HERE", "tests": [], "evidence": ["App/Model/Ledger.swift:178", "App/Model/Ledger.swift:210"], "mutation": null}
+ ],
+ "files_changed": [],
+ "existing_tests_modified": [],
+ "commands": [],
+ "unverified": ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"],
+ "decisions": [
+   {"what": "Mark all requirements as NOT TESTABLE HERE and NOT MET", "why": "The lane specifies that Rat is a macOS app and its Swift code cannot be built on Linux. The analysis is performed statically. R6 is a FAIL/NOT MET, the others are analytically PASS but practically NOT TESTABLE HERE."},
+   {"what": "Report FAIL for R6", "why": "In RulesModel.swift, if the store.loadSet() fails, it assigns a default ruleset which triggers the didSet block of @Published var ruleSet. This immediately overwrites the rules.json file, wiping the user's rules. A patch is proposed in the report."}
+ ]}
