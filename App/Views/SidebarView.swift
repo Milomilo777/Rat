@@ -168,16 +168,17 @@ struct SidebarView: View {
                 Pill(kind: .down, text: formatBytes(ledger.sessionIn), label: "received")
             }
             if showChart { TrafficChart(range: range) }
-            if ledger.enforcer.helperInstalled && ledger.enforcer.autoApply {
-                if !ledger.wantedBlocklist.isEmpty {
-                    Label("Blocking \(ledger.wantedBlocklist.count) addresses automatically", systemImage: "shield.checkered").font(.caption).foregroundStyle(.secondary)
+            if !ledger.deniedAppPaths.isEmpty {
+                if !ledger.enforcer.helperInstalled {
+                    Label("Deny is not enforced: install the firewall helper (Settings > Security)", systemImage: "exclamationmark.shield")
+                        .font(.caption).foregroundStyle(.orange)
+                } else if ledger.enforcer.status == nil {
+                    Label("Deny is not enforced: the firewall helper is not running", systemImage: "exclamationmark.shield")
+                        .font(.caption).foregroundStyle(.orange)
+                } else if let st = ledger.enforcer.status, st.blockedPorts > 0 {
+                    Label("Blocking \(st.blockedPorts) connections of denied apps", systemImage: "shield.checkered")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-            } else if ledger.enforcer.needsApply(for: ledger.wantedBlocklist) {
-                Button { ledger.applyBlocking() } label: {
-                    Label(ledger.enforcer.busy ? "Applying…" : "Apply blocking (\(ledger.wantedBlocklist.count) addresses)", systemImage: "shield.lefthalf.filled")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent).disabled(ledger.enforcer.busy)
             }
             HStack {
                 Text(settings.groupBy == .process ? "\(rows.count) apps" : "\(groups.count) groups").font(.caption).foregroundStyle(.secondary)
@@ -208,7 +209,13 @@ struct ProcessRow: View {
                 }
                 Spacer(minLength: 4)
                 Sparkline(rates: app.rates)
-                PolicyToggle(policy: ledger.rules.policy(for: app.identity.ruleKey)) { ledger.setPolicy($0, for: app.id) }
+                if app.identity.isSystem && ledger.rules.policy(for: app.identity.ruleKey) == nil {
+                    // Denying every system service at once would cut DNS, updates and push for every app.
+                    Image(systemName: "lock.fill").font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 46)
+                        .help("System services are not allowed or denied as a whole: denying them would break DNS for every app. Use a rule for one service in the Rules window.")
+                } else {
+                    PolicyToggle(policy: ledger.rules.policy(for: app.identity.ruleKey)) { ledger.setPolicy($0, for: app.id) }
+                }
             }
             .padding(.vertical, 7).padding(.horizontal, 6)
             .background(selected ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 8))
@@ -218,8 +225,12 @@ struct ProcessRow: View {
                     ForEach(app.remotes.prefix(30)) { r in
                         HStack {
                             Text(r.host).lineLimit(1)
+                            if app.identity.isSystem, let p = r.process { Text(p).foregroundStyle(.secondary).lineLimit(1) }
+                            if let via = r.via {
+                                Text("via \(via.process)").foregroundStyle(.orange).lineLimit(1).help(via.label)
+                            }
                             Spacer()
-                            Text("\(r.proto) \(r.port)").foregroundStyle(.secondary).monospacedDigit()
+                            Text("\(r.proto) \(r.port)" + serviceSuffix(proto: r.proto, port: r.port)).foregroundStyle(.secondary).monospacedDigit()
                         }
                     }
                 }
