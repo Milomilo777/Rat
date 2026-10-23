@@ -48,7 +48,7 @@ mod tests {
         });
 
         let config = ResolverConfig::default();
-        let resolver = Resolver::with_backend(config, backend);
+        let resolver = Resolver::with_backend(config, backend).unwrap();
 
         let info = resolver.resolve("1.1.1.1".parse().unwrap()).unwrap();
         assert_eq!(info.display_name, "www.测试.com");
@@ -64,7 +64,7 @@ mod tests {
         });
 
         let config2 = ResolverConfig::default();
-        let resolver2 = Resolver::with_backend(config2, backend2);
+        let resolver2 = Resolver::with_backend(config2, backend2).unwrap();
         let info2 = resolver2.resolve("2.2.2.2".parse().unwrap()).unwrap();
         assert_eq!(info2.display_name, "ایران.com");
         assert_eq!(info2.punycode, "xn--mgba3a4f16a.com");
@@ -86,7 +86,7 @@ mod tests {
         });
 
         let config = ResolverConfig::default();
-        let resolver = Resolver::with_backend(config, backend);
+        let resolver = Resolver::with_backend(config, backend).unwrap();
         let info = resolver.resolve("10.0.0.1".parse().unwrap()).unwrap();
         assert_eq!(info.display_name, long_name);
         assert_eq!(info.punycode, long_name);
@@ -101,7 +101,7 @@ mod tests {
         });
 
         let config = ResolverConfig::default();
-        let resolver = Resolver::with_backend(config, backend);
+        let resolver = Resolver::with_backend(config, backend).unwrap();
         let info = resolver.resolve("fe80::1".parse().unwrap()).unwrap();
         assert_eq!(info.display_name, "local-router");
 
@@ -115,13 +115,9 @@ mod tests {
         });
 
         let config = ResolverConfig::default();
-        let resolver = Resolver::with_backend(config, backend);
-        let info = resolver
-            .resolve("::ffff:192.168.1.1".parse().unwrap())
-            .unwrap();
+        let resolver = Resolver::with_backend(config, backend).unwrap();
+        let info = resolver.resolve("::ffff:192.168.1.1".parse().unwrap()).unwrap();
         assert_eq!(info.display_name, "mapped-router");
-
-        // IPv6 Scoped (Note: `parse()` doesn't easily support scopes out of the box in std, but we test the IP types)
     }
 
     #[test]
@@ -136,7 +132,7 @@ mod tests {
 
         let mut config = ResolverConfig::default();
         config.lookup_timeout = Duration::from_millis(50);
-        let resolver = Resolver::with_backend(config, backend);
+        let resolver = Resolver::with_backend(config, backend).unwrap();
 
         // Timeout
         let info = resolver.resolve("8.8.8.8".parse().unwrap());
@@ -159,7 +155,7 @@ mod tests {
         });
 
         let config = ResolverConfig::default();
-        let resolver = Resolver::with_backend(config, backend);
+        let resolver = Resolver::with_backend(config, backend).unwrap();
 
         let info = resolver.resolve("8.8.4.4".parse().unwrap());
         assert!(info.is_some());
@@ -168,5 +164,14 @@ mod tests {
         let info2 = resolver.resolve("8.8.4.4".parse().unwrap());
         assert!(info2.is_some());
         assert_eq!(*called.lock().unwrap(), 1); // Not called again, hit positive cache
+    }
+
+    #[test]
+    fn test_bad_input() {
+        let mut config = ResolverConfig::default();
+        config.cache_size = 0;
+        let result = Resolver::new(config);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Cache size must be greater than 0");
     }
 }

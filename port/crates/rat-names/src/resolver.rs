@@ -64,39 +64,53 @@ pub struct Resolver {
     backend: Arc<dyn LookupBackend>,
 }
 
+impl std::fmt::Debug for Resolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Resolver")
+            .field("config", &self.config)
+            .finish()
+    }
+}
+
 impl Resolver {
-    pub fn new(config: ResolverConfig) -> Self {
+    pub fn new(config: ResolverConfig) -> Result<Self, &'static str> {
         Self::with_backend(config, Arc::new(DefaultLookupBackend))
     }
 
-    pub fn with_backend(config: ResolverConfig, backend: Arc<dyn LookupBackend>) -> Self {
-        Self {
+    pub fn with_backend(config: ResolverConfig, backend: Arc<dyn LookupBackend>) -> Result<Self, &'static str> {
+        if config.cache_size == 0 {
+            return Err("Cache size must be greater than 0");
+        }
+        Ok(Self {
             cache: Arc::new(Mutex::new(LruCache::new(
                 std::num::NonZeroUsize::new(config.cache_size).unwrap(),
             ))),
             pool: ThreadPool::new(config.workers),
             config,
             backend,
-        }
+        })
     }
 
     pub fn resolve(&self, ip: IpAddr) -> Option<ReverseDnsInfo> {
         {
-            let mut cache = self.cache.lock().unwrap();
-            let now = Instant::now();
-            if let Some(entry) = cache.get(&ip) {
-                match entry {
-                    CacheEntry::Hit(info, expiry) => {
-                        if now < *expiry {
-                            return Some(info.clone());
+            if let Ok(mut cache) = self.cache.lock() {
+                let now = Instant::now();
+                if let Some(entry) = cache.get(&ip) {
+                    match entry {
+                        CacheEntry::Hit(info, expiry) => {
+                            if now < *expiry {
+                                return Some(info.clone());
+                            }
                         }
-                    }
-                    CacheEntry::Miss(expiry) => {
-                        if now < *expiry {
-                            return None;
+                        CacheEntry::Miss(expiry) => {
+                            if now < *expiry {
+                                return None;
+                            }
                         }
                     }
                 }
+            } else {
+                // If lock fails, proceed with query, but don't cache
             }
         }
 
@@ -120,16 +134,19 @@ impl Resolver {
                     display_name: display,
                     punycode: puny,
                 };
-                let mut cache = self.cache.lock().unwrap();
-                cache.put(
-                    ip,
-                    CacheEntry::Hit(info.clone(), now + self.config.positive_ttl),
-                );
+
+                if let Ok(mut cache) = self.cache.lock() {
+                    cache.put(
+                        ip,
+                        CacheEntry::Hit(info.clone(), now + self.config.positive_ttl),
+                    );
+                }
                 Some(info)
             }
             Ok(None) | Err(_) => {
-                let mut cache = self.cache.lock().unwrap();
-                cache.put(ip, CacheEntry::Miss(now + self.config.negative_ttl));
+                if let Ok(mut cache) = self.cache.lock() {
+                    cache.put(ip, CacheEntry::Miss(now + self.config.negative_ttl));
+                }
                 None
             }
         };

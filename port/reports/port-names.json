@@ -1,13 +1,13 @@
 {
   "lane": "port-names",
-  "step": 3,
+  "step": 4,
   "requirements": [
     {
       "id": "R1",
       "status": "MET",
       "tests": ["rat_names::tests::test_cache_and_timeout"],
-      "evidence": ["port/crates/rat-names/src/resolver.rs:83-125"],
-      "mutation": {"where": "port/crates/rat-names/src/resolver.rs:77", "caught_by": "rat_names::tests::test_cache_and_timeout"}
+      "evidence": ["port/crates/rat-names/src/resolver.rs:91-137"],
+      "mutation": {"where": "port/crates/rat-names/src/resolver.rs:85", "caught_by": "rat_names::tests::test_cache_and_timeout"}
     },
     {
       "id": "R2",
@@ -47,10 +47,11 @@
     "port/crates/rat-names/src/resolver.rs",
     "port/crates/rat-names/src/services.rs",
     "port/crates/rat-names/src/tests.rs",
-    "port/reports/port-names.md"
+    "port/reports/port-names.md",
+    "port/docs/rat-names.md"
   ],
   "existing_tests_modified": [
-    {"file": "port/crates/rat-names/src/tests.rs", "reason": "Added edge case tests and ensured body contents don't violate contract."}
+    {"file": "port/crates/rat-names/src/tests.rs", "reason": "Added test_bad_input to catch zero cache size errors."}
   ],
   "commands": [
     {"cmd": "cargo test --manifest-path port/crates/rat-names/Cargo.toml", "exit_code": 0}
