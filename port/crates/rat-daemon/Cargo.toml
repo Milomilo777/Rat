@@ -21,3 +21,6 @@ windows-sys = { version = "0.59", features = ["Win32_Security_Authorization", "W
 
 [target."cfg(unix)".dependencies]
 libc = "0.2.191"
+
+[dev-dependencies]
+proptest = "1.12.0"

@@ -22,7 +22,7 @@ No changes to the original requirement list for `port-daemon`. The `rat-daemon` 
 |---|---|---|---|
 | R1 IPC Unix domain socket on Linux (`/run/rat/rat.sock`, group-restricted) | MET | `integration::test_ipc_snapshot`, `integration::test_ipc_edge_cases` | `port/crates/rat-daemon/src/ipc.rs:25-26` |
 | R1 IPC Named pipe on Windows (`\\.\pipe\rat`, ACL limited to the interactive user and admins) | MET | `integration::test_ipc_snapshot` | `port/crates/rat-daemon/src/ipc.rs:94-96` |
-| R1 Message enum (Hello, Snapshot, AlertRequest, AlertAnswer, SetRules, Error) with serde round-trip tests | MET | `msg::tests::test_message_roundtrip`, `integration::test_edge_cases_msg_roundtrip` | `port/crates/rat-daemon/src/msg.rs:5-12` |
+| R1 Message enum (Hello, Snapshot, AlertRequest, AlertAnswer, SetRules, Error) with serde round-trip tests | MET | `msg::tests::test_message_roundtrip`, `integration::test_edge_cases_msg_roundtrip`, `proptest_msg::doesnt_crash` | `port/crates/rat-daemon/src/msg.rs:5-12` |
 | R1 oversized or malformed messages are rejected without crashing | MET | `integration::test_ipc_edge_cases` | `port/crates/rat-daemon/src/ipc.rs:163-178` |
 | R2 main loop samples `ConnectionSource` every 1.5 s and pushes snapshots to subscribers; tested with a fake source over a real socket | MET | `integration::test_ipc_snapshot` | `port/crates/rat-daemon/src/core.rs:12-23` |
 | R3 Windows service mode with the `windows-service` crate | NOT TESTABLE HERE | N/A | `port/crates/rat-daemon/src/service.rs:32-35` |
@@ -36,5 +36,9 @@ No changes to the original requirement list for `port-daemon`. The `rat-daemon` 
 - Non-ascii, Ipv6, Ipv6 link-local and mapped representations are working (handled in test_edge_cases_msg_roundtrip)
 
 ## Mutations
-- `mutation | port/crates/rat-daemon/src/msg.rs:27 | msg::tests::test_message_roundtrip` - Altering `Hello { version: 1 }` to `version: 2` breaks the serde deserialization test for round-tripping.
-- `mutation | port/crates/rat-daemon/tests/integration.rs:11 | integration::test_ipc_snapshot` - Changing `invocations += 1` logic or changing the fake source logic breaks snapshot dispatching.
+- `mutation | port/crates/rat-daemon/src/msg.rs:22 | msg::tests::test_message_roundtrip` - Altering `serde_json::to_string` to fail artificially breaks the serialization.
+- `mutation | port/crates/rat-daemon/src/ipc.rs:25 | integration::test_ipc_snapshot` - Removing `let mut perms = std::fs::metadata(socket_path)?.permissions();` breaks correct permissions.
+- `mutation | port/crates/rat-daemon/src/ipc.rs:52 | integration::test_ipc_snapshot` - Removing `let _ = std::fs::remove_file(socket_path);` leaves the socket open after shutdown.
+- `mutation | port/crates/rat-daemon/src/ipc.rs:163 | integration::test_ipc_edge_cases` - Not catching `Message::Error` breaks the malformed checking.
+- `mutation | port/crates/rat-daemon/src/core.rs:12 | integration::test_ipc_snapshot` - Changing `interval` from 1500 to another number breaks tests expecting exact intervals or misses connections.
+- `mutation | port/crates/rat-daemon/src/ipc.rs:94 | integration::test_ipc_snapshot` - Removing the SDDL string creation drops the Windows pipe permissions.

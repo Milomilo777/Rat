@@ -1,4 +1,4 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
-exclude = ["app"]
+exclude = ["app", "crates/rat-daemon/fuzz"]
