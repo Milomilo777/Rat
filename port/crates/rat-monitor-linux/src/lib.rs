@@ -4,13 +4,14 @@ pub mod proc;
 pub mod route;
 
 use rat_types::{Connection, ConnectionSource, ProcessInfo, Protocol};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
 pub struct LinuxMonitor {
     proc_root: PathBuf,
     pub vanished_count: u64,
+    process_cache: HashMap<u32, ProcessInfo>,
 }
 
 impl Default for LinuxMonitor {
@@ -18,13 +19,14 @@ impl Default for LinuxMonitor {
         Self {
             proc_root: PathBuf::from("/proc"),
             vanished_count: 0,
+            process_cache: HashMap::new(),
         }
     }
 }
 
 impl LinuxMonitor {
     pub fn new(proc_root: PathBuf) -> Self {
-        Self { proc_root, vanished_count: 0 }
+        Self { proc_root, vanished_count: 0, process_cache: HashMap::new() }
     }
 }
 
@@ -45,19 +47,21 @@ impl ConnectionSource for LinuxMonitor {
 
         let inode_to_pid = pid::map_inodes_to_pids(&self.proc_root);
 
-        let mut process_cache: HashMap<u32, ProcessInfo> = HashMap::new();
-
         #[cfg(target_os = "linux")]
         let counters = diag::get_socket_counters();
 
         #[cfg(not(target_os = "linux"))]
         let counters: HashMap<u64, diag::SocketCounters> = HashMap::new();
 
+        let mut seen_pids = HashSet::new();
+
         let mut build_connections = |entries: Vec<proc::ProcNetEntry>, protocol: Protocol, vanished: &mut u64| {
             for entry in entries {
                 if let Some(&pid) = inode_to_pid.get(&entry.inode) {
+                    seen_pids.insert(pid);
+
                     use std::collections::hash_map::Entry;
-                    if let Entry::Vacant(e) = process_cache.entry(pid) {
+                    if let Entry::Vacant(e) = self.process_cache.entry(pid) {
                         if let Some(info) = pid::get_process_info(&self.proc_root, pid) {
                             e.insert(info);
                         } else {
@@ -66,7 +70,7 @@ impl ConnectionSource for LinuxMonitor {
                         }
                     }
 
-                    if let Some(process) = process_cache.get(&pid).cloned() {
+                    if let Some(process) = self.process_cache.get(&pid).cloned() {
                         let is_listening = protocol == Protocol::Tcp && entry.state == 10;
 
                         let (bytes_in, bytes_out) = if protocol == Protocol::Tcp {
@@ -99,6 +103,10 @@ impl ConnectionSource for LinuxMonitor {
         build_connections(udp_entries, Protocol::Udp, &mut vanished);
 
         self.vanished_count = vanished;
+
+        // Unbounded cache cleanup: retain only PIDs we saw in this exact sample pass.
+        self.process_cache.retain(|k, _| seen_pids.contains(k));
+
         Ok(connections)
     }
 }

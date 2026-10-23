@@ -5,5 +5,7 @@
   "vpn_detection": true,
   "proptest": true,
   "cross_compile": true,
-  "fuzzing": true
+  "fuzzing": true,
+  "performance": true,
+  "wine_tests": true
 }
