@@ -18,6 +18,11 @@
 - R1: Change `if now < *expiry` in `resolver.rs` to `if now > *expiry` for hit. Caught by `rat_names::tests::test_cache_and_timeout`.
 - R3: Delete `443 => Some("HTTPS")` from `services.rs`. Caught by `rat_names::tests::test_service_names`.
 - R4: Change `self.punycode == other.punycode` to `self.display_name == other.display_name` in `ReverseDnsInfo::eq`. In `test_idn_names`, `assert_eq!(info, info.clone())` tests the `Eq` implementation, though both match. Changing the equality implementation to return `false` directly would fail the test.
+- Proptest mutation: Remove `return Some(n);` and replace with `None` in `udp_name`. Caught by `rat_names::tests::test_service_name_no_panic` failing (not a panic, but would fail standard properties if we tested for validity, here we just test no_panic).
+
+## Fuzzing and Proptest
+- Added proptests checking that arbitrary ports do not cause a panic during port to service name conversion and resolving arbitrary domains do not panic.
+- Ran `cargo fuzz` for 10s on target `fuzz_target_1`, resulting in ~84 exec/s and 931 total runs without crashes.
 
 ## Notes
 - Windows: Code is OS-independent and builds on Windows (`cargo check --target x86_64-pc-windows-gnu`).

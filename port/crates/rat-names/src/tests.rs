@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
+    use proptest::prelude::*;
     use rat_types::Protocol;
     use std::net::IpAddr;
     use std::sync::{Arc, Mutex};
@@ -116,7 +117,9 @@ mod tests {
 
         let config = ResolverConfig::default();
         let resolver = Resolver::with_backend(config, backend).unwrap();
-        let info = resolver.resolve("::ffff:192.168.1.1".parse().unwrap()).unwrap();
+        let info = resolver
+            .resolve("::ffff:192.168.1.1".parse().unwrap())
+            .unwrap();
         assert_eq!(info.display_name, "mapped-router");
     }
 
@@ -173,5 +176,29 @@ mod tests {
         let result = Resolver::new(config);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Cache size must be greater than 0");
+    }
+
+    proptest! {
+        #[test]
+        fn test_service_name_no_panic(port in 0u16..=65535, is_tcp in any::<bool>()) {
+            let proto = if is_tcp { Protocol::Tcp } else { Protocol::Udp };
+            // Should never panic
+            let _ = services::service_name(port, proto);
+        }
+
+        #[test]
+        fn test_resolver_no_panic(name in ".*") {
+            let called = Arc::new(Mutex::new(0));
+            let backend = Arc::new(MockBackend {
+                ip: "1.2.3.4".parse().unwrap(),
+                response: Some(name.clone()),
+                delay: None,
+                called: called.clone(),
+            });
+
+            let config = ResolverConfig::default();
+            let resolver = Resolver::with_backend(config, backend).unwrap();
+            let _ = resolver.resolve("1.2.3.4".parse().unwrap());
+        }
     }
 }

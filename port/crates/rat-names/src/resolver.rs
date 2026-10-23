@@ -77,7 +77,10 @@ impl Resolver {
         Self::with_backend(config, Arc::new(DefaultLookupBackend))
     }
 
-    pub fn with_backend(config: ResolverConfig, backend: Arc<dyn LookupBackend>) -> Result<Self, &'static str> {
+    pub fn with_backend(
+        config: ResolverConfig,
+        backend: Arc<dyn LookupBackend>,
+    ) -> Result<Self, &'static str> {
         if config.cache_size == 0 {
             return Err("Cache size must be greater than 0");
         }
