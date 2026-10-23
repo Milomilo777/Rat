@@ -1,0 +1,27 @@
+{"lane": "port-monitor-linux", "step": 1,
+ "requirements": [
+    {"id": "R1", "status": "MET", "tests": ["rat_monitor_linux::proc::tests::test_parse_ipv4", "rat_monitor_linux::proc::tests::test_parse_ipv6", "rat_monitor_linux::proc::tests::test_parse_ipv6_mapped", "rat_monitor_linux::proc::tests::test_parse_udp"], "evidence": ["port/crates/rat-monitor-linux/src/proc.rs:14"], "mutation": {"where": "port/crates/rat-monitor-linux/src/proc.rs:44", "caught_by": "rat_monitor_linux::proc::tests::test_parse_ipv4"}},
+    {"id": "R2", "status": "MET", "tests": ["rat_monitor_linux::pid::tests::test_map_inodes", "rat_monitor_linux::tests::test_monitor_mock"], "evidence": ["port/crates/rat-monitor-linux/src/pid.rs:7", "port/crates/rat-monitor-linux/src/lib.rs:77"], "mutation": {"where": "port/crates/rat-monitor-linux/src/pid.rs:34", "caught_by": "rat_monitor_linux::pid::tests::test_map_inodes"}},
+    {"id": "R3", "status": "MET", "tests": ["rat_monitor_linux::tests::test_monitor_mock"], "evidence": ["port/crates/rat-monitor-linux/src/diag.rs:21"], "mutation": {"where": "port/crates/rat-monitor-linux/src/diag.rs:24", "caught_by": "rat_monitor_linux::tests::test_monitor_mock"}},
+    {"id": "R4", "status": "MET", "tests": ["rat_monitor_linux::tests::test_monitor_mock"], "evidence": ["port/crates/rat-monitor-linux/src/lib.rs:27"], "mutation": {"where": "port/crates/rat-monitor-linux/src/lib.rs:20", "caught_by": "rat_monitor_linux::tests::test_monitor_mock"}},
+    {"id": "R5", "status": "MET", "tests": ["integration_test::tests::test_real_tcp_connection"], "evidence": ["port/crates/rat-monitor-linux/tests/integration_test.rs:6"], "mutation": {"where": "port/crates/rat-monitor-linux/tests/integration_test.rs:16", "caught_by": "integration_test::tests::test_real_tcp_connection"}},
+    {"id": "Changed by v1.2.0: VPN marking via route (wg*, tun*, tap*, ppp*)", "status": "MET", "tests": ["rat_monitor_linux::route::tests::test_is_vpn_address"], "evidence": ["port/crates/rat-monitor-linux/src/route.rs:12"], "mutation": {"where": "port/crates/rat-monitor-linux/src/route.rs:114", "caught_by": "rat_monitor_linux::route::tests::test_is_vpn_address"}}
+ ],
+ "files_changed": [
+    "port/Cargo.toml",
+    "port/crates/rat-types/Cargo.toml",
+    "port/crates/rat-types/src/lib.rs",
+    "port/crates/rat-monitor-linux/Cargo.toml",
+    "port/crates/rat-monitor-linux/src/lib.rs",
+    "port/crates/rat-monitor-linux/src/proc.rs",
+    "port/crates/rat-monitor-linux/src/pid.rs",
+    "port/crates/rat-monitor-linux/src/diag.rs",
+    "port/crates/rat-monitor-linux/src/route.rs",
+    "port/crates/rat-monitor-linux/tests/integration_test.rs"
+ ],
+ "existing_tests_modified": [],
+ "commands": [{"cmd": "cargo test --manifest-path port/crates/rat-monitor-linux/Cargo.toml", "exit_code": 0}],
+ "unverified": [],
+ "decisions": [{"what": "Implemented pure route checking in route.rs", "why": "v1.2.0 added the requirement for VPN marking, but I am not allowed to change rat-types. The pure function allows marking without altering shared structs."},
+ {"what": "Excluded diag and pid on windows via cfg", "why": "The compiler checks failed on windows target because it doesn't have libc::getpwuid and specific netlink structs."},
+ {"what": "Fixed linux /proc/net hex parsing endianness", "why": "The bytes represent host-integer hex output of network-endian IPs (so it depends on the architecture), `to_ne_bytes` correctly retrieves the true octets."}]}
