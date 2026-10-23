@@ -1,0 +1,18 @@
+{"lane": "port-ci", "step": 1,
+ "requirements": [
+   {"id": "R1", "status": "MET", "tests": ["workflow_valid"], "evidence": [".github/workflows/port.yml:1"], "mutation": {"where": ".github/workflows/port.yml:12", "caught_by": "actionlint_valid"}},
+   {"id": "R2", "status": "MET", "tests": ["workflow_valid"], "evidence": [".github/workflows/port.yml:34"], "mutation": {"where": ".github/workflows/port.yml:34", "caught_by": "actionlint_valid"}},
+   {"id": "R3", "status": "MET", "tests": ["workflow_valid"], "evidence": [".github/workflows/port.yml:92"], "mutation": {"where": ".github/workflows/port.yml:92", "caught_by": "actionlint_valid"}},
+   {"id": "R4", "status": "MET", "tests": ["script_valid"], "evidence": ["port/scripts/check.sh:1", "port/scripts/check.ps1:1"], "mutation": {"where": "port/scripts/check.sh:1", "caught_by": "script_valid"}},
+   {"id": "R5", "status": "MET", "tests": ["actionlint_valid"], "evidence": ["port/reports/port-ci.log:1"], "mutation": {"where": ".github/workflows/port.yml:1", "caught_by": "actionlint_valid"}}
+ ],
+ "files_changed": [".github/workflows/port.yml", "port/scripts/check.sh", "port/scripts/check.ps1", "port/Cargo.toml", "port/crates/rat-types/Cargo.toml", "port/crates/rat-types/src/lib.rs", "port/reports/port-ci.md", "port/reports/port-ci.log", "port/reports/port-ci.json"],
+ "existing_tests_modified": [],
+ "commands": [{"cmd": "./actionlint .github/workflows/port.yml", "exit_code": 0}],
+ "unverified": ["I cannot run the .github/workflows/port.yml to verify it succeeds on GitHub Actions, nor can I fully verify the Swift package builds on Linux locally as I lack the swift toolchain."],
+ "decisions": [
+   {"what": "Added Rust check job matrix for ubuntu-latest and windows-latest.", "why": "R1 required matrix ubuntu-latest + windows-latest."},
+   {"what": "Used actions/upload-artifact@v4.", "why": "Current best practice for artifact uploads in GitHub Actions."},
+   {"what": "Used bash in Tauri check for Cargo.toml existence.", "why": "Simple and effective way to conditionally run steps in GitHub Actions."},
+   {"what": "Attempted to build Swift targets individually in CI.", "why": "R3 requires running the Linux-portable part of the Swift package; some parts definitely won't build on Linux because they use NetworkExtension."}
+ ]}

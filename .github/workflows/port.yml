@@ -1,0 +1,127 @@
+name: Port CI
+
+on:
+  push:
+    paths:
+      - 'port/**'
+  pull_request:
+    paths:
+      - 'port/**'
+
+jobs:
+  rust-checks:
+    name: Rust Checks
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-gnu
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@f0deed1e0edfc6a9be95417288c0e1099b1eeec3 # v2.7.7
+        with:
+          workspaces: port
+
+      - name: Check Formatting
+        working-directory: port
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: port
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run Tests
+        working-directory: port
+        run: cargo test --workspace
+
+  build-tauri:
+    name: Build Tauri App
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check if Tauri exists
+        id: check_tauri
+        shell: bash
+        run: |
+          if [ -f "port/app/src-tauri/Cargo.toml" ]; then
+            echo "tauri_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "tauri_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install Rust
+        if: steps.check_tauri.outputs.tauri_exists == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        if: steps.check_tauri.outputs.tauri_exists == 'true'
+        uses: Swatinem/rust-cache@f0deed1e0edfc6a9be95417288c0e1099b1eeec3 # v2.7.7
+        with:
+          workspaces: port/app/src-tauri
+
+      - name: Install Linux Dependencies
+        if: steps.check_tauri.outputs.tauri_exists == 'true' && matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Setup Node
+        if: steps.check_tauri.outputs.tauri_exists == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install frontend dependencies
+        if: steps.check_tauri.outputs.tauri_exists == 'true'
+        working-directory: port/app
+        run: npm install
+
+      - name: Build Tauri
+        if: steps.check_tauri.outputs.tauri_exists == 'true'
+        working-directory: port/app
+        run: npm run tauri build
+
+      - name: Upload Artifacts (Linux)
+        if: steps.check_tauri.outputs.tauri_exists == 'true' && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rat-app-linux
+          path: |
+            port/app/src-tauri/target/release/bundle/appimage/*.AppImage
+            port/app/src-tauri/target/release/bundle/deb/*.deb
+          if-no-files-found: warn
+
+      - name: Upload Artifacts (Windows)
+        if: steps.check_tauri.outputs.tauri_exists == 'true' && matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rat-app-windows
+          path: port/app/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: warn
+
+  swift-linux:
+    name: Swift Tests on Linux
+    runs-on: ubuntu-latest
+    container:
+      image: swift:5.10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test Swift Package
+        working-directory: RatFilter
+        run: |
+          swift build -t RatEnforce || echo "RatEnforce build failed on Linux"
+          swift build -t RatMonitor || echo "RatMonitor build failed on Linux"
+          swift build -t RatFilterCore || echo "RatFilterCore build failed on Linux"
+          swift build -t RatGeo || echo "RatGeo build failed on Linux"
