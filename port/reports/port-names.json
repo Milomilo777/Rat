@@ -1,0 +1,63 @@
+{
+  "lane": "port-names",
+  "step": 2,
+  "requirements": [
+    {
+      "id": "R1",
+      "status": "MET",
+      "tests": ["rat_names::tests::test_cache_and_timeout"],
+      "evidence": ["port/crates/rat-names/src/resolver.rs:83-125"],
+      "mutation": {"where": "port/crates/rat-names/src/resolver.rs:77", "caught_by": "rat_names::tests::test_cache_and_timeout"}
+    },
+    {
+      "id": "R2",
+      "status": "NOT MET",
+      "tests": [],
+      "evidence": [],
+      "mutation": null
+    },
+    {
+      "id": "R3",
+      "status": "MET",
+      "tests": ["rat_names::tests::test_service_names"],
+      "evidence": ["port/crates/rat-names/src/services.rs:4-72"],
+      "mutation": {"where": "port/crates/rat-names/src/services.rs:40", "caught_by": "rat_names::tests::test_service_names"}
+    },
+    {
+      "id": "R4",
+      "status": "MET",
+      "tests": ["rat_names::tests::test_idn_names"],
+      "evidence": ["port/crates/rat-names/src/resolver.rs:13-21"],
+      "mutation": {"where": "port/crates/rat-names/src/resolver.rs:14", "caught_by": "rat_names::tests::test_idn_names"}
+    },
+    {
+      "id": "R5",
+      "status": "MET",
+      "tests": ["rat_names::tests::test_idn_names"],
+      "evidence": ["port/crates/rat-names/src/tests.rs:9-31"],
+      "mutation": {"where": "port/crates/rat-names/src/tests.rs:26", "caught_by": "rat_names::tests::test_idn_names"}
+    }
+  ],
+  "files_changed": [
+    "port/Cargo.toml",
+    "port/crates/rat-types/Cargo.toml",
+    "port/crates/rat-types/src/lib.rs",
+    "port/crates/rat-names/Cargo.toml",
+    "port/crates/rat-names/src/lib.rs",
+    "port/crates/rat-names/src/resolver.rs",
+    "port/crates/rat-names/src/services.rs",
+    "port/crates/rat-names/src/tests.rs",
+    "port/reports/port-names.md"
+  ],
+  "existing_tests_modified": [
+    {"file": "port/crates/rat-names/src/tests.rs", "reason": "Removed dummy test for systemd-resolved to avoid contract violation."}
+  ],
+  "commands": [
+    {"cmd": "cargo test --manifest-path port/crates/rat-names/Cargo.toml", "exit_code": 0}
+  ],
+  "unverified": [],
+  "decisions": [
+    {"what": "Not implement R2 (dump cache from systemd-resolved)", "why": "API org.freedesktop.resolve1 doesn't support dumping recently resolved names; DnsGetCacheDataTable is undocumented and risky"},
+    {"what": "Update PortNames logic", "why": "To match Rat v1.2.0 logic in Swift, incorporating Protocl checking"}
+  ]
+}

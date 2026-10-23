@@ -1,0 +1,15 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (port/target/debug/deps/rat_names-87f2990e1148aff6)
+
+running 3 tests
+test tests::tests::test_service_names ... ok
+test tests::tests::test_idn_names ... ok
+test tests::tests::test_cache_and_timeout ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+   Doc-tests rat_names
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
