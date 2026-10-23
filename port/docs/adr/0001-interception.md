@@ -122,3 +122,16 @@ To implement Version 2 (and V1 enforcement) on Linux, the following setup is rec
     *   *Docs:* [nftables queueing to userspace](https://wiki.nftables.org/wiki-nftables/index.php/Queueing_to_userspace)
 *   **Userspace Handling:** A daemon binds to the netlink queue (e.g., queue number 1). It reads the packet, correlates it with a socket/process using Netlink/procfs, holds it while a user prompt is active (V2), and issues an `NF_ACCEPT` or `NF_DROP` verdict.
     *   *Docs:* [libnetfilter_queue](https://netfilter.org/projects/libnetfilter_queue/doxygen/html/)
+
+## Linux Prototype (Spike) Results
+A spike was attempted to build a small Rust program in `port/spikes/linux-prompt/` that uses `nfqueue` inside a network namespace (`unshare -n -r`).
+However, the required netfilter kernel modules (`nftables`, `nfnetlink_queue`, `iptable_filter`) are not loaded or not permitted in the current container/VM environment.
+Attempting to insert a rule via `iptables` resulted in:
+`Warning: Extension NFQUEUE revision 0 not supported, missing kernel module?`
+`iptables v1.8.10 (nf_tables):  RULE_APPEND failed (No such file or directory): rule in chain OUTPUT`
+
+Attempting to insert via `nft` resulted in:
+`Error: Could not process rule: Operation not supported`
+`add table inet filter`
+
+Consequently, the spike was stopped as the environment forbids the needed privileges and lacks the required kernel modules for nfqueue interception.
