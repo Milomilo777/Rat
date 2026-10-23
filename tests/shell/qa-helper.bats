@@ -16,12 +16,8 @@ teardown() {
   [ "$status" -eq 0 ]
   run shellcheck scripts/fetch-geoip.sh
   [ "$status" -eq 0 ]
-  # Since verify-blocking.sh has shellcheck errors on main branch we leave it out of this specific test or assert failure?
-  # The requirement in 1.2.0 says "Add scripts/verify-blocking.sh ... to your scope".
-  # "Requirements ... shellcheck clean".
-  # Actually, the user says "Fixes only in the next step" so if it fails, it fails and we mark R1 as PARTIAL.
   run shellcheck scripts/verify-blocking.sh
-  # This is expected to fail on main until fixed.
+  [ "$status" -eq 0 ]
 }
 
 @test "tests/shell/qa-helper.bats::R2: rat-pf-helper snapshot side-effects" {

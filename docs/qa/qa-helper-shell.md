@@ -29,3 +29,16 @@ See `docs/qa/qa-helper-shell.log`.
 
 ## Deep Layer Generation
 A Hypothesis Python generator was written in `tests/shell/qa-generator.py` to produce various blocklist file edge cases (unicode, control characters, CIDR, etc.). However, per the v1.2.0 update, blocklist processing was removed from `rat-pf-helper.sh` and moved to `rat-enforcerd` (Swift). Because macOS-only Swift code cannot be executed in this environment, the test execution loop with `RAT_DRYRUN=1` against the new daemon was skipped.
+
+## Final state
+```
+1..5
+ok 1 tests/shell/qa-helper.bats::R1: shellcheck clean
+ok 2 tests/shell/qa-helper.bats::R2: rat-pf-helper snapshot side-effects
+ok 3 tests/shell/qa-helper.bats::R5: snapshot output format
+ok 4 tests/shell/qa-helper.bats::R6: fetch script verifies download
+ok 5 tests/shell/qa-helper.bats::R6: fetch script fails cleanly offline
+```
+
+## Follow-ups
+1. Port blocklist tests to test Swift backend `rat-enforcerd` when a macOS test suite is available.
