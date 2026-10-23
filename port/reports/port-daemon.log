@@ -68,3 +68,6 @@ Code inspection for Windows problems:
 --- Performance and Budget ---
 Added criterion benchmark testing serialization of 2,000 sockets.
 Added `test_serialization_budget` verifying that processing 2,000 sockets completes in < 150ms and occupies < 20MB in memory (actually runs around ~1.26ms and takes ~500kb). No O(N^2) loops detected in IPC serialization (standard Serde JSON serialization applied on vector).
+--- Final state check ---
+Re-running check and log after git merge origin/main for v1.2.0 compatibility.
+All cargo builds, rustfmt, clippy and tests passed.

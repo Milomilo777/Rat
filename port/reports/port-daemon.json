@@ -1,6 +1,6 @@
 {
  "lane": "port-daemon",
- "step": 7,
+ "step": 8,
  "requirements": [
   {"id": "R1_ipc_linux", "status": "MET", "tests": ["integration::test_ipc_snapshot", "integration::test_ipc_edge_cases"], "evidence": ["port/crates/rat-daemon/src/ipc.rs:25-26"], "mutation": {"where": "port/crates/rat-daemon/src/ipc.rs:25", "caught_by": "integration::test_ipc_snapshot"}},
   {"id": "R1_ipc_windows", "status": "MET", "tests": ["integration::test_ipc_snapshot"], "evidence": ["port/crates/rat-daemon/src/ipc.rs:94-96"], "mutation": {"where": "port/crates/rat-daemon/src/ipc.rs:94", "caught_by": "integration::test_ipc_snapshot"}},
@@ -31,7 +31,9 @@
   "port/packaging/linux/rat-daemon.service",
   "port/packaging/linux/install.md",
   "port/crates/rat-daemon/fuzz/Cargo.toml",
-  "port/crates/rat-daemon/fuzz/fuzz_targets/parse_message.rs"
+  "port/crates/rat-daemon/fuzz/fuzz_targets/parse_message.rs",
+  "port/reviews/port-names-by-port-daemon.json",
+  "port/reviews/port-names-by-port-daemon.md"
  ],
  "existing_tests_modified": [
   {"file": "port/crates/rat-daemon/tests/integration.rs", "reason": "Added edge case tests and integration tests"}
@@ -41,7 +43,8 @@
   {"cmd": "cargo clippy --manifest-path port/Cargo.toml -- -D warnings", "exit_code": 0},
   {"cmd": "cargo test --manifest-path port/Cargo.toml", "exit_code": 0},
   {"cmd": "cargo check --manifest-path port/Cargo.toml --target x86_64-pc-windows-gnu", "exit_code": 0},
-  {"cmd": "cd port/crates/rat-daemon && cargo bench", "exit_code": 0}
+  {"cmd": "cd port/crates/rat-daemon && cargo bench", "exit_code": 0},
+  {"cmd": "cd port/crates/rat-daemon && cargo +nightly fuzz run parse_message -- -max_total_time=10", "exit_code": 0}
  ],
  "unverified": [
   "R3 windows service could not be fully run and tested on this machine as we cannot start services",
