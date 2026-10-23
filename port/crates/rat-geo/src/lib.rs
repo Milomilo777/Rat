@@ -293,3 +293,19 @@ impl Default for GeoDatabases {
         Self::new()
     }
 }
+
+impl GeoDatabases {
+    pub fn load_city_db(&mut self, path: impl AsRef<std::path::Path>) -> Result<(), String> {
+        let path = path.as_ref();
+        let _ = maxminddb::Reader::open_readfile(path).map_err(|e| e.to_string())?;
+        self.city_db_path = path.to_path_buf();
+        Ok(())
+    }
+
+    pub fn load_asn_db(&mut self, path: impl AsRef<std::path::Path>) -> Result<(), String> {
+        let path = path.as_ref();
+        let _ = maxminddb::Reader::open_readfile(path).map_err(|e| e.to_string())?;
+        self.asn_db_path = path.to_path_buf();
+        Ok(())
+    }
+}

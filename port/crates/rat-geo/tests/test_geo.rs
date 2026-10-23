@@ -318,3 +318,13 @@ proptest! {
         let _ = rat_geo::TimeZoneLocator::parse_iso6709(&s);
     }
 }
+
+#[test]
+fn test_geodatabases_validation() {
+    let path = "test_validation.mmdb";
+    write_test_db(path);
+    let mut dbs = rat_geo::GeoDatabases::new();
+    assert!(dbs.load_city_db(path).is_ok());
+    assert!(dbs.load_city_db("nonexistent.mmdb").is_err());
+    std::fs::remove_file(path).unwrap();
+}
