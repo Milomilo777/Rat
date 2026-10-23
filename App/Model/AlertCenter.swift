@@ -13,6 +13,10 @@ struct ConnectionAlert: Identifiable, Equatable {
     let address: String
     let port: Int
     let proto: String
+    /// Who runs the server's network (`AS13335 Cloudflare, Inc.`), when the ASN database knows.
+    var network: String? = nil
+    /// "via VPN (…)" or "via System … Proxy (…)" when the connection takes that path.
+    var route: String? = nil
     var key: String { "\(appID)|\(registrableDomain(host))" }
 }
 
@@ -153,14 +157,21 @@ struct AlertView: View {
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(target).font(.headline).textSelection(.enabled)
-                Text("\(alert.proto) port \(alert.port) · \(alert.address)").font(.caption).foregroundStyle(.secondary)
+                Text("\(alert.proto) port \(alert.port)" + (usualService(proto: alert.proto, port: alert.port).map { " (usually \($0))" } ?? "") + (alert.address.isEmpty ? "" : " · \(alert.address)"))
+                    .font(.caption).foregroundStyle(.secondary)
+                if let route = alert.route {
+                    Label(route, systemImage: route.hasPrefix("via VPN") ? "lock.shield" : "arrow.triangle.branch").font(.caption).foregroundStyle(.secondary)
+                }
+                if let network = alert.network {
+                    Text("Network: \(network)").font(.caption).foregroundStyle(.secondary).help("The organization that runs the server's network (often a cloud or hosting provider), not necessarily who runs the service.")
+                }
             }
             Divider()
             Picker("Applies to", selection: $scope) { ForEach(RulesModel.Scope.allCases) { Text($0.rawValue).tag($0) } }
             Picker("Keep rule", selection: $lifetime) {
                 Text("Once").tag(Lifetime.once); Text("Until Quit").tag(Lifetime.untilQuit); Text("Forever").tag(Lifetime.forever)
             }.pickerStyle(.segmented)
-            Text("The connection has already started. Deny cuts it off and blocks the server address.")
+            Text("The connection has already started. Deny cuts this app’s connection off; other apps can still reach the server.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 Button { decide(.deny, scope, lifetime) } label: { Label("Deny", systemImage: "xmark").frame(maxWidth: .infinity) }
