@@ -1,12 +1,14 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+   Compiling rat-names v0.1.0 (/app/port/crates/rat-names)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.27s
      Running unittests src/lib.rs (port/target/debug/deps/rat_names-87f2990e1148aff6)
 
-running 3 tests
+running 4 tests
 test tests::tests::test_service_names ... ok
 test tests::tests::test_idn_names ... ok
+test tests::tests::test_edge_cases ... ok
 test tests::tests::test_cache_and_timeout ... ok
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
 
    Doc-tests rat_names
 

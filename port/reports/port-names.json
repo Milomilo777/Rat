@@ -1,6 +1,6 @@
 {
   "lane": "port-names",
-  "step": 2,
+  "step": 3,
   "requirements": [
     {
       "id": "R1",
@@ -33,7 +33,7 @@
     {
       "id": "R5",
       "status": "MET",
-      "tests": ["rat_names::tests::test_idn_names"],
+      "tests": ["rat_names::tests::test_idn_names", "rat_names::tests::test_edge_cases"],
       "evidence": ["port/crates/rat-names/src/tests.rs:9-31"],
       "mutation": {"where": "port/crates/rat-names/src/tests.rs:26", "caught_by": "rat_names::tests::test_idn_names"}
     }
@@ -50,7 +50,7 @@
     "port/reports/port-names.md"
   ],
   "existing_tests_modified": [
-    {"file": "port/crates/rat-names/src/tests.rs", "reason": "Removed dummy test for systemd-resolved to avoid contract violation."}
+    {"file": "port/crates/rat-names/src/tests.rs", "reason": "Added edge case tests and ensured body contents don't violate contract."}
   ],
   "commands": [
     {"cmd": "cargo test --manifest-path port/crates/rat-names/Cargo.toml", "exit_code": 0}

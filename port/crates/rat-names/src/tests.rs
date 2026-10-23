@@ -74,6 +74,57 @@ mod tests {
     }
 
     #[test]
+    fn test_edge_cases() {
+        // Very long name
+        let long_name = "a".repeat(200) + ".com";
+        let called = Arc::new(Mutex::new(0));
+        let backend = Arc::new(MockBackend {
+            ip: "10.0.0.1".parse().unwrap(),
+            response: Some(long_name.clone()),
+            delay: None,
+            called: called.clone(),
+        });
+
+        let config = ResolverConfig::default();
+        let resolver = Resolver::with_backend(config, backend);
+        let info = resolver.resolve("10.0.0.1".parse().unwrap()).unwrap();
+        assert_eq!(info.display_name, long_name);
+        assert_eq!(info.punycode, long_name);
+
+        // IPv6 Link-Local
+        let called = Arc::new(Mutex::new(0));
+        let backend = Arc::new(MockBackend {
+            ip: "fe80::1".parse().unwrap(),
+            response: Some("local-router".to_string()),
+            delay: None,
+            called: called.clone(),
+        });
+
+        let config = ResolverConfig::default();
+        let resolver = Resolver::with_backend(config, backend);
+        let info = resolver.resolve("fe80::1".parse().unwrap()).unwrap();
+        assert_eq!(info.display_name, "local-router");
+
+        // IPv4-mapped IPv6
+        let called = Arc::new(Mutex::new(0));
+        let backend = Arc::new(MockBackend {
+            ip: "::ffff:192.168.1.1".parse().unwrap(),
+            response: Some("mapped-router".to_string()),
+            delay: None,
+            called: called.clone(),
+        });
+
+        let config = ResolverConfig::default();
+        let resolver = Resolver::with_backend(config, backend);
+        let info = resolver
+            .resolve("::ffff:192.168.1.1".parse().unwrap())
+            .unwrap();
+        assert_eq!(info.display_name, "mapped-router");
+
+        // IPv6 Scoped (Note: `parse()` doesn't easily support scopes out of the box in std, but we test the IP types)
+    }
+
+    #[test]
     fn test_cache_and_timeout() {
         let called = Arc::new(Mutex::new(0));
         let backend = Arc::new(MockBackend {
@@ -97,5 +148,25 @@ mod tests {
         let info2 = resolver.resolve("8.8.8.8".parse().unwrap());
         assert!(info2.is_none());
         assert_eq!(*called.lock().unwrap(), called_before);
+
+        // Positive cache test
+        let called = Arc::new(Mutex::new(0));
+        let backend = Arc::new(MockBackend {
+            ip: "8.8.4.4".parse().unwrap(),
+            response: Some("dns.google".to_string()),
+            delay: None,
+            called: called.clone(),
+        });
+
+        let config = ResolverConfig::default();
+        let resolver = Resolver::with_backend(config, backend);
+
+        let info = resolver.resolve("8.8.4.4".parse().unwrap());
+        assert!(info.is_some());
+        assert_eq!(*called.lock().unwrap(), 1);
+
+        let info2 = resolver.resolve("8.8.4.4".parse().unwrap());
+        assert!(info2.is_some());
+        assert_eq!(*called.lock().unwrap(), 1); // Not called again, hit positive cache
     }
 }

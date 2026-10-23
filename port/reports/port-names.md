@@ -8,7 +8,7 @@
 | R2 (Linux systemd-resolved read recently resolved names, Windows forward-name source risk) | NOT MET / NOT TESTABLE HERE | | Investigated systemd-resolved DBus API (`org.freedesktop.resolve1`), but it only provides methods for forward/reverse lookups and cache statistics (`CacheStatistics`), not a way to dump the recently resolved names cache. Windows `DnsGetCacheDataTable` is undocumented and unsupported. Opted not to implement an unstable hack. |
 | R3 (well-known port -> service name table) | MET | `rat_names::tests::test_service_names` | `port/crates/rat-names/src/services.rs:4-72` |
 | R4 (IDN names in Unicode, punycode compare, Persian/Chinese test) | MET | `rat_names::tests::test_idn_names` | `port/crates/rat-names/src/resolver.rs:13-21`, `resolver.rs:108-118` |
-| R5 (tests use injectable resolver, no real network) | MET | `rat_names::tests::test_cache_and_timeout`, `rat_names::tests::test_idn_names` | `port/crates/rat-names/src/tests.rs:9-31` (MockBackend) |
+| R5 (tests use injectable resolver, no real network) | MET | `rat_names::tests::test_cache_and_timeout`, `rat_names::tests::test_idn_names`, `rat_names::tests::test_edge_cases` | `port/crates/rat-names/src/tests.rs:9-31` (MockBackend) |
 
 ## Changed by v1.2.0
 - R3: Now matches the full Swift implementation from `RatFilter/Sources/RatMonitor/PortNames.swift`, separating by Protocol (TCP/UDP) as well as the standard Common table. Updated `service_name` to take `Protocol` from `rat_types`.
@@ -22,4 +22,5 @@
 ## Notes
 - Windows: Code is OS-independent and builds on Windows (`cargo check --target x86_64-pc-windows-gnu`).
 - Linux: Compiles natively.
+- Edge Cases: Handled very long names and IPv6 mappings via `test_edge_cases` test, no failures were reported.
 - Decided to use `dns_lookup`, `lru`, `threadpool`, `crossbeam-channel` instead of async ecosystem to satisfy R1 "async-free".
