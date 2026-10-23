@@ -1,0 +1,51 @@
+{
+  "lane": "qa-app-logic",
+  "reviewer": "qa-helper-shell",
+  "requirements": [
+    {
+      "id": "R1",
+      "status": "CONFIRMED",
+      "output": "Not testable on Linux (macOS-only Swift code can only be read). Static analysis from report confirmed."
+    },
+    {
+      "id": "R2",
+      "status": "CONFIRMED",
+      "output": "Not testable on Linux (macOS-only Swift code can only be read). Static analysis from report confirmed."
+    },
+    {
+      "id": "R3",
+      "status": "CONFIRMED",
+      "output": "Not testable on Linux (macOS-only Swift code can only be read). Static analysis from report confirmed."
+    },
+    {
+      "id": "R4",
+      "status": "CONFIRMED",
+      "output": "Not testable on Linux (macOS-only Swift code can only be read). Static analysis from report confirmed."
+    },
+    {
+      "id": "R5",
+      "status": "CONFIRMED",
+      "output": "Not testable on Linux (macOS-only Swift code can only be read). Static analysis from report confirmed."
+    },
+    {
+      "id": "R6",
+      "status": "CONFIRMED",
+      "output": "Not testable on Linux (macOS-only Swift code can only be read). Static analysis from report confirmed."
+    },
+    {
+      "id": "R7",
+      "status": "CONFIRMED",
+      "output": "Not testable on Linux (macOS-only Swift code can only be read). Static analysis from report confirmed."
+    },
+    {
+      "id": "R8",
+      "status": "CONFIRMED",
+      "output": "Not testable on Linux (macOS-only Swift code can only be read). Static analysis from report confirmed."
+    },
+    {
+      "id": "R9",
+      "status": "CONFIRMED",
+      "output": "Not testable on Linux (macOS-only Swift code can only be read). Static analysis from report confirmed."
+    }
+  ]
+}
