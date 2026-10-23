@@ -1,10 +1,10 @@
 {
   "lane": "qa-helper-shell",
-  "step": 1,
+  "step": 2,
   "requirements": [
     {
       "id": "R1",
-      "status": "PARTIAL",
+      "status": "MET",
       "tests": ["tests/shell/qa-helper.bats::tests/shell/qa-helper.bats::R1: shellcheck clean"],
       "evidence": ["App/Resources/rat-pf-helper.sh:1", "scripts/fetch-geoip.sh:1", "scripts/verify-blocking.sh:1", "scripts/test-proxy.py:1"],
       "mutation": {
@@ -78,19 +78,18 @@
     "port/Cargo.lock",
     "port/Cargo.toml",
     "port/crates/rat-types/Cargo.toml",
-    "port/crates/rat-types/src/lib.rs"
+    "port/crates/rat-types/src/lib.rs",
+    "scripts/verify-blocking.sh"
   ],
   "existing_tests_modified": [],
   "commands": [
-    {"cmd": "bats tests/shell/qa-helper.bats", "exit_code": 1}
+    {"cmd": "bats tests/shell/qa-helper.bats", "exit_code": 0}
   ],
   "unverified": [
     "R3 and R4 requirements (app path parsing) changed to swift daemon logic in v1.2.0 and cannot be thoroughly tested via bash/BATS since they involve calling swift parsing components directly, so they are marked NOT TESTABLE HERE. The instructions state macOS-only Swift code can only be read here.",
-    "R1 is PARTIAL because scripts/verify-blocking.sh has shellcheck errors on main, which cannot be fixed in this step.",
     "R5 is PARTIAL because the hardcoded absolute paths to lsof and ps in rat-pf-helper.sh cannot be mocked via PATH or sed without modifying the production script, limiting formatting checks."
   ],
   "decisions": [
-    {"what": "Marked R3 and R4 as NOT TESTABLE HERE", "why": "In version 1.2.0, apply mode was removed from rat-pf-helper.sh and blocking was shifted to a swift enforcer daemon. Parsing of denied-apps.txt is now in swift, preventing robust testing from a shell BATS script designed for a bash helper."},
-    {"what": "Did not use sed to mock absolute paths", "why": "Code review explicitly highlighted that testing a modified copy of the code via sed fundamentally invalidates the QA process."}
+    {"what": "Fixed verify-blocking.sh shellcheck errors", "why": "Turned R1 to MET by making the smallest possible fixes to address SC2015, SC2317, etc., so it passes shellcheck cleanly as required."}
   ]
 }
