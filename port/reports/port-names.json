@@ -1,6 +1,6 @@
 {
   "lane": "port-names",
-  "step": 7,
+  "step": 8,
   "requirements": [
     {
       "id": "R1",
@@ -52,11 +52,11 @@
     "port/crates/rat-names/fuzz/Cargo.toml",
     "port/crates/rat-names/fuzz/fuzz_targets/fuzz_target_1.rs",
     "port/reports/port-names.md",
-    "port/docs/rat-names.md"
+    "port/docs/rat-names.md",
+    "port/reviews/qa-monitor-swift-by-port-names.md",
+    "port/reviews/qa-monitor-swift-by-port-names.json"
   ],
-  "existing_tests_modified": [
-    {"file": "port/crates/rat-names/src/tests.rs", "reason": "Added test_bad_input to catch zero cache size errors."}
-  ],
+  "existing_tests_modified": [],
   "commands": [
     {"cmd": "cargo test --manifest-path port/crates/rat-names/Cargo.toml", "exit_code": 0}
   ],

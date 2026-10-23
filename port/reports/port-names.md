@@ -37,3 +37,33 @@
 - Edge Cases: Handled very long names and IPv6 mappings via `test_edge_cases` test, no failures were reported.
 - Bad Input checks: `test_bad_input` ensures providing cache size 0 to the config results in an `Err` to prevent panic on `unwrap`.
 - Decided to use `dns_lookup`, `lru`, `threadpool`, `crossbeam-channel` instead of async ecosystem to satisfy R1 "async-free".
+
+## Final State
+```
+running 7 tests
+test tests::tests::test_bad_input ... ok
+test tests::tests::test_idn_names ... ok
+test tests::tests::test_edge_cases ... ok
+test tests::tests::test_service_names ... ok
+test tests::tests::test_service_name_no_panic ... ok
+test tests::tests::test_cache_and_timeout ... ok
+test tests::tests::test_resolver_no_panic ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/budget_test.rs (port/target/debug/deps/budget_test-20117ede022de98b)
+
+running 1 test
+test test_cache_hit_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+   Doc-tests rat_names
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+
+## Follow-ups
+None
