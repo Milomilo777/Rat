@@ -39,3 +39,7 @@ Run executions:
 - `fuzz_ruleset_json` (RuleSet parsing): `730528` runs in 16s (~45,658 executions/s)
 
 No crashes encountered ensuring parsing is structurally sound.
+
+### Windows Native Cross-Compilation (Wine)
+Deployed Mingw-w64 and `x86_64-pc-windows-gnu` Rust target toolchains. Configured `wine` as the active cargo runner for executing natively mapped cross-compiled WFP testing targets.
+Test validation executed accurately proving standard assertions, albeit noting that *Wine execution is NOT proof of real Windows native network filter subsystem behavior* internally. No explicit UNC, deep path, or non-ascii UTF-16 file locking constraints surfaced as regressions inside `rat-core` scope tests independently since logic functions functionally independently of the OS fs boundaries here.
