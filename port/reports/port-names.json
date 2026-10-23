@@ -1,6 +1,6 @@
 {
   "lane": "port-names",
-  "step": 5,
+  "step": 6,
   "requirements": [
     {
       "id": "R1",
@@ -51,7 +51,7 @@
     "port/docs/rat-names.md"
   ],
   "existing_tests_modified": [
-    {"file": "port/crates/rat-names/src/tests.rs", "reason": "Added property tests with proptest."}
+    {"file": "port/crates/rat-names/src/tests.rs", "reason": "Added test_bad_input to catch zero cache size errors."}
   ],
   "commands": [
     {"cmd": "cargo test --manifest-path port/crates/rat-names/Cargo.toml", "exit_code": 0}

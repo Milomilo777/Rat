@@ -25,8 +25,8 @@
 - Ran `cargo fuzz` for 10s on target `fuzz_target_1`, resulting in ~84 exec/s and 931 total runs without crashes.
 
 ## Notes
-- Windows: Code is OS-independent and builds on Windows (`cargo check --target x86_64-pc-windows-gnu`).
-- Linux: Compiles natively.
+- Windows Testing: Windows tests successfully ran via `wine64` (`x86_64-pc-windows-gnu` target). All tests passed, specifically `test_idn_names`, `test_service_names`, `test_edge_cases`, `test_cache_and_timeout`. **Note: Wine is NOT proof of real Windows behaviour.**
+- Linux: Compiles and tests run natively.
 - Edge Cases: Handled very long names and IPv6 mappings via `test_edge_cases` test, no failures were reported.
 - Bad Input checks: `test_bad_input` ensures providing cache size 0 to the config results in an `Err` to prevent panic on `unwrap`.
 - Decided to use `dns_lookup`, `lru`, `threadpool`, `crossbeam-channel` instead of async ecosystem to satisfy R1 "async-free".
