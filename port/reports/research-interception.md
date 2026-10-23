@@ -9,6 +9,7 @@
 | R4: Detail exact WFP and nftables/nfqueue setups | NOT TESTABLE HERE | N/A | port/docs/adr/0001-interception.md |
 | R5: Compare local port blocking (v1.2.0 compatibility) | NOT TESTABLE HERE | N/A | port/docs/adr/0001-interception.md |
 | R6: Linux prototype (nfqueue spike in network namespace) | PARTIAL | N/A | port/spikes/linux-prompt/src/main.rs |
+| R7: Windows prototype (WFP compile-only spike) | MET | N/A | port/spikes/windows-wfp/src/main.rs |
 
 ## Actions Taken
 * Read context and problem descriptions, including `README.md`, `CLAUDE.md`, and `docs/ARCHITECTURE.md`.
@@ -20,6 +21,9 @@
 * Attempted a spike for the Linux `nfqueue` intercept in a network namespace, but stopped execution due to missing kernel module support in the environment. Added results to the ADR.
 * Created the Rust workspace manifest (`port/Cargo.toml`) and the shared `rat-types` crate as per the general Rust port lane requirements.
 * Built the Rust prototype code in `port/spikes/linux-prompt` capable of accepting packets from an nfqueue. Verified it compiles natively.
+* Created a Windows WFP compile-only spike in `port/spikes/windows-wfp` that uses `windows-rs` to open a dynamic WFP session and block `curl.exe` at the ALE V4/V6 connect layers.
+* Verified the Windows WFP spike compiles successfully against `x86_64-pc-windows-gnu`.
+* Updated the ADR with execution instructions and learnings for the Windows WFP spike.
 
 ## Decisions and Reasons
 * **Decision:** Recommended Windows Filtering Platform (WFP) user-mode for Windows V1, and WFP callout driver for Windows V2. Recommended eBPF/netlink for Linux V1, and nfqueue for Linux V2.
@@ -32,20 +36,21 @@
   * **Reason:** The execution environment lacks the `nfnetlink_queue` and basic `nf_tables` modules. `iptables` and `nft` both fail with "Operation not supported" or "No such file or directory" when attempting to create a filter chain or queue rule in an `unshare -n -r` namespace.
 * **Decision:** Created the `port/Cargo.toml` and `port/crates/rat-types` structure.
   * **Reason:** This fulfills the overarching mandate for "all port lanes" to establish the common Rust workspace, overriding the previous decision to strictly follow the path-isolation constraint in this report-only lane.
-* **Decision:** Added empty `[workspace]` to `port/spikes/linux-prompt/Cargo.toml`.
-  * **Reason:** The main `port/Cargo.toml` must have exact contents per instructions. This excludes `spikes`. Giving the spike its own workspace allows `cargo check` to run correctly inside the spike folder without modifying the main `Cargo.toml`.
+* **Decision:** Added empty `[workspace]` to `port/spikes/linux-prompt/Cargo.toml` and `port/spikes/windows-wfp/Cargo.toml`.
+  * **Reason:** The main `port/Cargo.toml` must have exact contents per instructions. This excludes `spikes`. Giving the spikes their own workspace allows `cargo check` to run correctly inside the spike folder without modifying the main `Cargo.toml`.
 
 ## Changed by v1.2.0
 * Rat v1.2.0 fundamentally changed enforcement (v1.0.4+): it never blocks remote addresses to avoid breaking DNS or shared CDNs for allowed apps. Instead, the root daemon `rat-enforcerd` blocks the **local ports** of every socket belonging to a denied app via a stateless pf anchor. The ADR has been updated to evaluate WFP and nftables capability to block by local port or by process ID/App ID.
 
 ## Exact Commands Ran and Output
 ```bash
-# cd port/spikes/linux-prompt && cargo check
-    Checking linux-prompt v0.1.0 (/app/port/spikes/linux-prompt)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.17s
+# cd port/spikes/windows-wfp && cargo clippy --target x86_64-pc-windows-gnu -- -D warnings
+    Checking windows-wfp v0.1.0 (/app/port/spikes/windows-wfp)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.13s
 ```
 
 ## What could not be verified and why
 * Actual build processes or kernel driver implementations could not be verified, as this is purely a research task in an offline/simulated environment. Code compilation for WFP or eBPF was not in scope.
-* No tests were written as this is a report-only lane (and spike could not run). Therefore, mutation testing was NOT TESTABLE HERE.
+* No tests were written as this is a report-only lane (and spikes could not run). Therefore, mutation testing was NOT TESTABLE HERE.
 * Could not verify Linux nfqueue prototype runtime execution because the VM environment forbids netfilter kernel modules.
+* Could not run the Windows WFP prototype locally because the code is Windows-specific and we are in a Linux container. It was compile-checked only.

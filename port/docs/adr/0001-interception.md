@@ -135,3 +135,20 @@ Attempting to insert via `nft` resulted in:
 `add table inet filter`
 
 Consequently, the spike was stopped as the environment forbids the needed privileges and lacks the required kernel modules for nfqueue interception.
+
+## Windows WFP Prototype (Spike) Results
+A compile-only spike was created in `port/spikes/windows-wfp/`. It uses the `windows` crate to call the WFP API (`FwpmEngineOpen0`, `FwpmFilterAdd0`, etc.).
+
+**How to run on real Windows:**
+1. Compile the binary for Windows (`cargo build --release --target x86_64-pc-windows-gnu` or `msvc`).
+2. Open an **Administrator** command prompt (required to open the WFP engine via `FwpmEngineOpen0`).
+3. Run the compiled executable `windows-wfp.exe`.
+4. While the program is running and waiting at the "Press Enter" prompt, open a regular command prompt and try running `curl.exe https://example.com`.
+5. **Observation:** The `curl` command should fail (e.g., connection timed out or blocked) because the program actively blocks outbound TCP connections from `curl.exe` at the `FWPM_LAYER_ALE_AUTH_CONNECT_V4` and `V6` layers.
+6. Press Enter in the spike window to exit. The spike uses a dynamic session (`FWPM_SESSION_FLAG_DYNAMIC`), so Windows will automatically clean up and remove the provider, sublayer, and filters upon exit.
+7. Attempt the `curl.exe` command again, and it should succeed.
+
+**Learnings:**
+* WFP API in Rust (via the `windows` crate) is extremely verbose due to the complex C-struct setup (e.g., unions for `FWP_CONDITION_VALUE0`).
+* Utilizing a dynamic session (`FWPM_SESSION_FLAG_DYNAMIC`) is highly recommended for Rat's enforcement. It eliminates the need to manually clean up rules if Rat crashes, preventing the firewall from being left in a permanently broken state.
+* App-ID mapping via `FwpmGetAppIdFromFileName0` integrates perfectly into the V1 requirement of blocking by process path rather than remote IP.
