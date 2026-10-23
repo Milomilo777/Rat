@@ -1,0 +1,53 @@
+   Compiling rat-core v0.1.0 (/app/port/crates/rat-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.05s
+     Running unittests src/lib.rs (target/debug/deps/rat_core-fe638b9d262e62bc)
+
+running 24 tests
+test tests::test_default_asks ... ok
+test tests::test_automatic_profile_switching_lookup ... ok
+test edge_cases::test_non_ascii_paths ... ok
+test edge_cases::test_ipv6_handling ... ok
+test tests::test_domain_matches_subdomains ... ok
+test tests::test_deny_wins_tie ... ok
+test tests::test_disabled_group_silences_its_rules ... ok
+test tests::test_exact_host_does_not_match_subdomain ... ok
+test tests::test_import_drops_unknown_profile_scope ... ok
+test tests::test_import_accepts_legacy_bare_array ... ok
+test tests::test_disabled_ignored_but_unapproved_still_active ... ok
+test tests::test_import_marks_unapproved_and_skips_duplicates ... ok
+test tests::test_port_range_and_protocol ... ok
+test tests::test_profiles_scope_rules ... ok
+test tests::test_process_path_matches_inside_bundle ... ok
+test tests::test_new_installs_are_silent_allow_and_version1_files_migrate ... ok
+test tests::test_r2_json_byte_compatibility ... ok
+test tests::test_r3_path_normalization ... ok
+test tests::test_silent_mode_changes_default ... ok
+test tests::test_rule_summary ... ok
+test tests::test_specific_beats_general ... ok
+test tests::test_unknown_network_action_round_trips ... ok
+test tests::test_store_round_trip ... ok
+test tests::test_session_rules_are_purged_and_not_persisted ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/rat_types-f047e32717eacb5b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rat_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rat_types
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s
+    Checking rat-core v0.1.0 (/app/port/crates/rat-core)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.49s
