@@ -23,7 +23,7 @@ impl GeoIP {
         if ip.is_loopback()
             || ip.is_unspecified()
             || ip.is_multicast()
-            || (ip.is_ipv4() && matches!(ip, IpAddr::V4(v4) if v4.is_link_local()))
+            || (ip.is_ipv4() && matches!(ip, IpAddr::V4(v4) if v4.is_link_local() || v4.is_private()))
         {
             return None;
         }
@@ -241,7 +241,7 @@ impl ASNDatabase {
         if ip.is_loopback()
             || ip.is_unspecified()
             || ip.is_multicast()
-            || (ip.is_ipv4() && matches!(ip, IpAddr::V4(v4) if v4.is_link_local()))
+            || (ip.is_ipv4() && matches!(ip, IpAddr::V4(v4) if v4.is_link_local() || v4.is_private()))
         {
             return None;
         }

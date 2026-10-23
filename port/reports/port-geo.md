@@ -43,3 +43,55 @@ Run `cargo test --manifest-path port/crates/rat-geo/Cargo.toml > port/reports/po
 * Added a cheap explicit budget test `test_perf_budget` that ensures 10,000 lookups finish within a budget constraint.
 * The test budget is set at 50 ms for 10,000 lookups (i.e. 5 µs per lookup).
 * If performance drops and lookups exceed 3x the budget (150 ms), the test fails. (In CI, 10,000 lookups typically finish under 30-90 ms for GeoIP and ~25 ms for ASN).
+
+## Final state
+```
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running unittests src/lib.rs (port/target/debug/deps/rat_geo-b5826082081004d6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/test_fixture.rs (port/target/debug/deps/test_fixture-ca6112b5e65de92c)
+
+running 1 test
+test test_dummy ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/test_geo.rs (port/target/debug/deps/test_geo-0c0a21cc21947c37)
+
+running 13 tests
+test test_default_asn_db_path ... ok
+test test_default_db_path ... ok
+test test_asn_lookup ... ok
+test test_geodatabases_validation ... ok
+test test_parse_deg_edge_cases ... ok
+test test_parse_iso6709 ... ok
+test test_geoip_edge_cases ... ok
+test test_geoip_lookup ... ok
+test test_geoip_ipv4_mapped_edge ... ok
+test test_zone_tab_edge_cases ... ok
+test test_zone_tab ... ok
+test test_parse_iso6709_proptest ... ok
+test test_parse_iso6709_no_panic ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/test_perf.rs (port/target/debug/deps/test_perf-10543d0569b243a3)
+
+running 1 test
+test test_perf_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+   Doc-tests rat_geo
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+
+### Follow-ups
+1. Windows explicit path coordination: Windows currently falls back gracefully without the zone.tab file; could integrate Windows-specific TZ maps more cleanly in future via explicit data bundling if timezone coordinates become strictly requested on Windows natively.

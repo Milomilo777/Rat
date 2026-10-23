@@ -65,6 +65,7 @@ fn test_geoip_lookup() {
 }
 
 #[test]
+#[serial_test::serial]
 fn test_default_db_path() {
     unsafe {
         std::env::set_var("RAT_GEOIP_DB", "/tmp/rat/db.mmdb");
@@ -155,6 +156,7 @@ fn test_asn_lookup() {
 }
 
 #[test]
+#[serial_test::serial]
 fn test_default_asn_db_path() {
     unsafe {
         std::env::remove_var("RAT_GEOIP_DB");
