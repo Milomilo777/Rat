@@ -1,6 +1,6 @@
 use rat_daemon::msg::Message;
 use rat_types::{Connection, ConnectionSource, ProcessInfo, Protocol};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 struct MockSource {
     invocations: usize,
@@ -33,9 +33,8 @@ async fn test_ipc_snapshot() {
     use tokio::net::UnixStream;
     use tokio_util::codec::{FramedRead, LinesCodec};
 
-    // We will use a unique socket path for tests so we don't need root to write to /run
     let socket_path = format!("/tmp/rat_test_{}.sock", std::process::id());
-    let _ = std::fs::remove_file(&socket_path); // Cleanup
+    let _ = std::fs::remove_file(&socket_path);
 
     let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel(1);
     let (snapshot_tx, snapshot_rx) = tokio::sync::broadcast::channel(16);
@@ -55,7 +54,6 @@ async fn test_ipc_snapshot() {
         let _ = rat_daemon::ipc::start_ipc_server(&sp_clone, shutdown_rx_ipc, snapshot_rx).await;
     });
 
-    // Wait for socket to be created
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     let stream = UnixStream::connect(&socket_path)
@@ -63,8 +61,6 @@ async fn test_ipc_snapshot() {
         .expect("Failed to connect");
     let mut framed = FramedRead::new(stream, LinesCodec::new());
 
-    // We should receive snapshots every 1.5 seconds.
-    // Wait for the first one.
     if let Some(Ok(line)) = framed.next().await {
         let msg: Message = serde_json::from_str(&line).expect("Invalid message");
         if let Message::Snapshot { connections } = msg {
@@ -87,7 +83,6 @@ async fn test_ipc_snapshot() {
     use tokio::net::windows::named_pipe::ClientOptions;
     use tokio_util::codec::{FramedRead, LinesCodec};
 
-    // Use a unique pipe name for the test
     let pipe_name = format!(r"\\.\pipe\rat_test_{}", std::process::id());
 
     let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel(1);
@@ -108,7 +103,6 @@ async fn test_ipc_snapshot() {
         let _ = rat_daemon::ipc::start_ipc_server(&pn_clone, shutdown_rx_ipc, snapshot_rx).await;
     });
 
-    // Wait for server to be ready
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
     let client = ClientOptions::new()
@@ -129,4 +123,97 @@ async fn test_ipc_snapshot() {
     }
 
     let _ = shutdown_tx.send(());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_ipc_edge_cases() {
+    use futures::StreamExt;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::UnixStream;
+    use tokio_util::codec::{FramedRead, LinesCodec};
+
+    let socket_path = format!("/tmp/rat_test_edges_{}.sock", std::process::id());
+    let _ = std::fs::remove_file(&socket_path);
+
+    let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let (snapshot_tx, snapshot_rx) = tokio::sync::broadcast::channel(16);
+
+    let shutdown_rx_core = shutdown_tx.subscribe();
+    let shutdown_rx_ipc = shutdown_tx.subscribe();
+
+    let source = MockSource { invocations: 0 };
+    let snapshot_tx_clone = snapshot_tx.clone();
+
+    let _core_task = tokio::spawn(async move {
+        rat_daemon::core::run_core_loop(source, snapshot_tx_clone, shutdown_rx_core).await;
+    });
+
+    let sp_clone = socket_path.clone();
+    let _ipc_task = tokio::spawn(async move {
+        let _ = rat_daemon::ipc::start_ipc_server(&sp_clone, shutdown_rx_ipc, snapshot_rx).await;
+    });
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    let mut stream = UnixStream::connect(&socket_path)
+        .await
+        .expect("Failed to connect");
+
+    // 1. Empty input
+    let _ = stream.write_all(b"\n").await;
+
+    // 2. Malformed input
+    let _ = stream.write_all(b"not a valid json message\n").await;
+
+    // 3. Oversized input (e.g. 10MB +) will close the connection which causes broken pipe so we ignore error.
+    let huge_line = vec![b'a'; 11 * 1024 * 1024];
+    let _ = stream.write_all(&huge_line).await;
+    let _ = stream.write_all(b"\n").await;
+
+    let mut framed = FramedRead::new(stream, LinesCodec::new());
+
+    let mut _saw_error = false;
+    // We expect some Error messages back for malformed/oversized.
+    for _ in 0..3 {
+        if let Some(Ok(line)) = framed.next().await {
+            if let Ok(msg) = serde_json::from_str::<Message>(&line) {
+                if let Message::Error { .. } = msg {
+                    _saw_error = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    let _ = shutdown_tx.send(());
+}
+
+#[test]
+fn test_edge_cases_msg_roundtrip() {
+    use std::path::PathBuf;
+
+    let snapshot = Message::Snapshot {
+        connections: vec![Connection {
+            process: ProcessInfo {
+                pid: 1234,
+                exe: Some(PathBuf::from(r"C:\Program Files\Some فارسی Name\App.exe")),
+                name: "تست中文".to_string(),
+                user: Some("用戶".to_string()),
+            },
+            protocol: Protocol::Udp,
+            local: SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)), 8080),
+            remote: Some(SocketAddr::new(
+                IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
+                8080,
+            )), // link-local
+            listening: false,
+            bytes_in: None,
+            bytes_out: None,
+        }],
+    };
+
+    let serialized = serde_json::to_string(&snapshot).unwrap();
+    let deserialized: Message = serde_json::from_str(&serialized).unwrap();
+    assert_eq!(snapshot, deserialized);
 }

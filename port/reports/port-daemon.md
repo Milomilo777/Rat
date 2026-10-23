@@ -20,14 +20,20 @@ No changes to the original requirement list for `port-daemon`. The `rat-daemon` 
 
 | Req | Status | Tests | Evidence |
 |---|---|---|---|
-| R1 IPC Unix domain socket on Linux (`/run/rat/rat.sock`, group-restricted) | MET | `integration::test_ipc_snapshot` | `port/crates/rat-daemon/src/ipc.rs:25-26` |
+| R1 IPC Unix domain socket on Linux (`/run/rat/rat.sock`, group-restricted) | MET | `integration::test_ipc_snapshot`, `integration::test_ipc_edge_cases` | `port/crates/rat-daemon/src/ipc.rs:25-26` |
 | R1 IPC Named pipe on Windows (`\\.\pipe\rat`, ACL limited to the interactive user and admins) | MET | `integration::test_ipc_snapshot` | `port/crates/rat-daemon/src/ipc.rs:94-96` |
-| R1 Message enum (Hello, Snapshot, AlertRequest, AlertAnswer, SetRules, Error) with serde round-trip tests | MET | `msg::tests::test_message_roundtrip` | `port/crates/rat-daemon/src/msg.rs:5-12` |
-| R1 oversized or malformed messages are rejected without crashing | MET | `integration::test_ipc_snapshot` | `port/crates/rat-daemon/src/ipc.rs:163-178` |
+| R1 Message enum (Hello, Snapshot, AlertRequest, AlertAnswer, SetRules, Error) with serde round-trip tests | MET | `msg::tests::test_message_roundtrip`, `integration::test_edge_cases_msg_roundtrip` | `port/crates/rat-daemon/src/msg.rs:5-12` |
+| R1 oversized or malformed messages are rejected without crashing | MET | `integration::test_ipc_edge_cases` | `port/crates/rat-daemon/src/ipc.rs:163-178` |
 | R2 main loop samples `ConnectionSource` every 1.5 s and pushes snapshots to subscribers; tested with a fake source over a real socket | MET | `integration::test_ipc_snapshot` | `port/crates/rat-daemon/src/core.rs:12-23` |
 | R3 Windows service mode with the `windows-service` crate | NOT TESTABLE HERE | N/A | `port/crates/rat-daemon/src/service.rs:32-35` |
 | R3 systemd unit file + install notes in `port/packaging/linux/` | MET | N/A | `port/packaging/linux/rat-daemon.service:1` |
 | R4 graceful shutdown on SIGTERM / service stop; socket file is removed | MET | `integration::test_ipc_snapshot` | `port/crates/rat-daemon/src/ipc.rs:52-53` |
+
+## Edge cases
+- Sent malformed message to IPC (handled via test_ipc_edge_cases).
+- Send oversized message to IPC (handled via test_ipc_edge_cases).
+- Empty message to IPC (handled via test_ipc_edge_cases).
+- Non-ascii, Ipv6, Ipv6 link-local and mapped representations are working (handled in test_edge_cases_msg_roundtrip)
 
 ## Mutations
 - `mutation | port/crates/rat-daemon/src/msg.rs:27 | msg::tests::test_message_roundtrip` - Altering `Hello { version: 1 }` to `version: 2` breaks the serde deserialization test for round-tripping.
