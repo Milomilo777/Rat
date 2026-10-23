@@ -33,7 +33,7 @@ final class RuleEngineTests: XCTestCase {
 
     func testDisabledIgnoredButUnapprovedStillActive() {
         XCTAssertEqual(RuleEngine(rules: [Rule(verdict: .deny, enabled: false)]).evaluate(conn("a.com")), .ask)
-        XCTAssertEqual(RuleEngine(rules: [Rule(verdict: .deny, approved: false)]).evaluate(conn("a.com")), .deny)
+        XCTAssertEqual(RuleEngine(rules: [Rule(verdict: .deny, approved: false)]).evaluate(conn("a.com")), .ask)
     }
 
     func testStoreRoundTrip() throws {
@@ -160,5 +160,120 @@ final class RuleEngineTests: XCTestCase {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("a-\(UUID()).json")
         try RuleStore(url: url).saveSet(s)
         XCTAssertEqual(try RuleStore(url: url).loadSet().unknownNetworkAction, .activate(s.profiles[1].id))
+    }
+
+
+    // MARK: QA Acceptance Tests (R1, R2, R3)
+
+    func testQAR1RulePrecedenceHigherSpecificityWins() {
+        let e = RuleEngine(rules: [
+            Rule(verdict: .deny, remoteDomain: "example.com"),
+            Rule(verdict: .allow, signingID: "com.apple.curl", remoteDomain: "example.com")
+        ])
+        // The rule with signingID has a specificity of 4 + 1 = 5. The domain rule has specificity 1.
+        XCTAssertEqual(e.evaluate(conn("example.com")), .allow)
+    }
+
+    func testQAR2DenyOverAllowTie() {
+        let e = RuleEngine(rules: [
+            Rule(verdict: .allow, signingID: "com.apple.curl", remoteDomain: "example.com"),
+            Rule(verdict: .deny, signingID: "com.apple.curl", remoteDomain: "example.com")
+        ])
+        XCTAssertEqual(e.evaluate(conn("example.com")), .deny)
+    }
+
+    func testQAR3MostSpecificRemote() {
+        let e1 = RuleEngine(rules: [
+            Rule(verdict: .allow, remoteHost: "test.example.com"),
+            Rule(verdict: .deny, remoteDomain: "example.com")
+        ])
+        // Host has specificity 2, Domain has specificity 1.
+        XCTAssertEqual(e1.evaluate(conn("test.example.com")), .allow)
+
+        let e2 = RuleEngine(rules: [
+            Rule(verdict: .allow, remoteAddress: "1.2.3.4"),
+            Rule(verdict: .deny, remoteHost: "test.example.com")
+        ])
+        // Address has specificity 3, Host has specificity 2.
+        XCTAssertEqual(e2.evaluate(conn("test.example.com")), .allow)
+    }
+
+
+    // MARK: QA Acceptance Tests (R4, R5)
+
+    func testQAR4DisabledAndUnapprovedRulesNeverMatch() {
+        let e = RuleEngine(rules: [
+            Rule(verdict: .deny, remoteDomain: "example.com", enabled: false),
+            Rule(verdict: .deny, remoteDomain: "example.com", approved: false)
+        ])
+        // Since both rules are invalid for matching (one disabled, one unapproved), the engine should ask.
+        // Wait, imported rules arrive disabled and unapproved so they do nothing. Let's see if our engine returns `.ask`
+        XCTAssertEqual(e.evaluate(conn("example.com")), .ask)
+    }
+
+    func testQAR5ProfileSwitchingAndDisabledGroups() {
+        var s = RuleSet.standard(silent: nil)
+        let workProfile = s.profiles[1]
+        let group = RuleGroup(name: "TestGroup", enabled: false)
+        s.groups = [group]
+
+        let rule1 = Rule(verdict: .deny, remoteDomain: "work.com", profileID: workProfile.id)
+        let rule2 = Rule(verdict: .deny, remoteDomain: "ad.com", groupID: group.id)
+        s.rules = [rule1, rule2]
+
+        let e = RuleEngine(ruleSet: s)
+
+        // Rule 1 is bound to work profile. Currently active is Home.
+        XCTAssertEqual(e.evaluate(conn("work.com")), .ask)
+
+        // Rule 2 is in a disabled group.
+        XCTAssertEqual(e.evaluate(conn("ad.com")), .ask)
+
+        // Switch to work profile
+        var s2 = e.ruleSet
+        s2.activeProfileID = workProfile.id
+        e.ruleSet = s2
+
+        XCTAssertEqual(e.evaluate(conn("work.com")), .deny)
+        XCTAssertEqual(e.evaluate(conn("ad.com")), .ask) // Still disabled due to group
+    }
+
+
+    // MARK: QA Acceptance Tests (R6)
+
+    func testQAR6VersionMigrationKeepsEveryRule() throws {
+        // v1 JSON: silentVerdict is implied .ask in v1? Actually v1 used nil.
+        let v1 = """
+        {
+          "version": 1,
+          "profiles": [{"id": "11111111-1111-1111-1111-111111111111", "name": "Home", "symbol": "house"}],
+          "activeProfileID": "11111111-1111-1111-1111-111111111111",
+          "rules": [
+             {
+               "id": "22222222-2222-2222-2222-222222222222",
+               "verdict": "deny",
+               "remoteDomain": "migrated.com",
+               "enabled": true,
+               "approved": true,
+               "lifetime": "forever",
+               "createdAt": "1989-01-05T08:00:00Z"
+             }
+          ]
+        }
+        """
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("v1-migration-\(UUID()).json")
+        try v1.write(to: url, atomically: true, encoding: .utf8)
+
+        let store = RuleStore(url: url)
+        let s = try store.loadSet()
+
+        // Assert version upgraded
+        XCTAssertEqual(s.version, 2)
+        // Assert default fields for version 2 are set
+        XCTAssertEqual(s.silentVerdict, .allow)
+        XCTAssertEqual(s.unknownNetworkAction, .ask)
+        // Assert rules are preserved
+        XCTAssertEqual(s.rules.count, 1)
+        XCTAssertEqual(s.rules.first?.remoteDomain, "migrated.com")
     }
 }

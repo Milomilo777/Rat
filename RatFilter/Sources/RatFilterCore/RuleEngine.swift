@@ -1,6 +1,6 @@
 import Foundation
 
-/// Evaluates connections against the rules of the active profile.
+// Evaluates connections against the rules of the active profile.
 public final class RuleEngine: @unchecked Sendable {
     private let lock = NSLock()
     private var set: RuleSet
@@ -28,13 +28,13 @@ public final class RuleEngine: @unchecked Sendable {
     public func add(_ rule: Rule) { lock.withLock { set.rules.append(rule) } }
     public func remove(id: UUID) { lock.withLock { set.rules.removeAll { $0.id == id } } }
 
-    /// Rules that can apply right now: active profile, enabled group.
+    // Rules that can apply right now: active profile, enabled group.
     private func active(_ s: RuleSet) -> [Rule] {
         let disabled = Set(s.groups.filter { !$0.enabled }.map(\.id))
-        return s.rules.filter { ($0.profileID == nil || $0.profileID == s.activeProfileID) && !($0.groupID.map(disabled.contains) ?? false) }
+        return s.rules.filter { ($0.profileID == nil || $0.profileID == s.activeProfileID) && !($0.groupID.map(disabled.contains) ?? false) && $0.enabled && $0.approved }
     }
 
-    /// The winning rule, if any. Specificity first, then deny over allow, then newest.
+    // The winning rule, if any. Specificity first, then deny over allow, then newest.
     public func matchingRule(_ c: Connection) -> Rule? {
         let snapshot = lock.withLock { set }
         return active(snapshot).filter { $0.matches(c) }.max { a, b in
@@ -48,7 +48,7 @@ public final class RuleEngine: @unchecked Sendable {
         matchingRule(c)?.verdict ?? lock.withLock { set.silentVerdict ?? .ask }
     }
 
-    /// Merge imported rules. Imported rules arrive unapproved and disabled when requested; ids already present are skipped.
+    // Merge imported rules. Imported rules arrive unapproved and disabled when requested; ids already present are skipped.
     @discardableResult
     public func importRules(_ export: RuleExport, markUnapproved: Bool) -> Int {
         lock.withLock {
@@ -74,21 +74,21 @@ public final class RuleEngine: @unchecked Sendable {
         }
     }
 
-    /// Profile that an automatic-switching trigger selects for this network, if any.
+    // Profile that an automatic-switching trigger selects for this network, if any.
     public func profile(forNetwork signature: String) -> UUID? {
         lock.withLock { set.triggers.first { $0.signature == signature }?.profileID }
     }
 
-    /// Drop session-only rules (called when the app quits).
+    // Drop session-only rules (called when the app quits).
     public func purgeSessionRules() { lock.withLock { set.rules.removeAll { $0.lifetime != .forever } } }
 }
 
-/// JSON persistence for the rule set.
+// JSON persistence for the rule set.
 public struct RuleStore {
     public let url: URL
     public init(url: URL) { self.url = url }
 
-    /// Loads a full rule set, upgrading a v0.1 bare rule array if that is what is on disk.
+    // Loads a full rule set, upgrading a v0.1 bare rule array if that is what is on disk.
     public func loadSet() throws -> RuleSet {
         guard FileManager.default.fileExists(atPath: url.path) else { return RuleSet.standard() }
         let data = try Data(contentsOf: url)

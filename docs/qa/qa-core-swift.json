@@ -1,0 +1,16 @@
+{
+  "lane": "qa-core-swift",
+  "status": "completed",
+  "requirements": {
+    "R1": "PASS",
+    "R2": "PASS",
+    "R3": "PASS",
+    "R4": "PASS",
+    "R5": "PASS",
+    "R6": "PASS",
+    "R7": "PASS",
+    "R8": "PASS",
+    "R9": "PASS",
+    "R10": "PASS"
+  }
+}
