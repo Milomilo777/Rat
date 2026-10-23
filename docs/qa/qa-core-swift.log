@@ -60,3 +60,128 @@ INFO: A corpus is not provided, starting from an empty corpus
 #4194304	pulse  cov: 227 ft: 249 corp: 13/50b lim: 4096 exec/s: 60787 rss: 515Mb
 #8388608	pulse  cov: 227 ft: 249 corp: 13/50b lim: 4096 exec/s: 63072 rss: 515Mb
 ==3120369== libFuzzer: run interrupted; exiting
+Building for debugging...
+[0/17] Write sources
+[4/17] Write swift-version--66D6C9041996903A.txt
+[6/24] Emitting module RatGeo
+[7/24] Compiling RatGeo MMDB.swift
+[8/24] Compiling RatGeo GeoIP.swift
+[9/25] Compiling RatFilterCore RuleEngine.swift
+[10/25] Emitting module RatFilterCore
+[11/25] Compiling RatFilterCore Rule.swift
+[12/25] Wrapping AST for RatGeo for debugging
+[14/27] Compiling RatFilterCore RuleSet.swift
+[15/28] Wrapping AST for RatFilterCore for debugging
+[17/30] Emitting module RatFilterCoreTests
+[18/30] Compiling RatFilterCoreTests RuleEngineTests.swift
+[19/31] Wrapping AST for RatFilterCoreTests for debugging
+[21/31] Compiling RatGeoTests GeoTests.swift
+[22/31] Emitting module RatGeoTests
+[23/32] /app/scratch_pkg/.build/x86_64-unknown-linux-gnu/debug/ScratchPackageDiscoveredTests.derived/all-discovered-tests.swift
+[24/32] Write sources
+[25/32] Wrapping AST for RatGeoTests for debugging
+[27/36] Compiling ScratchPackageDiscoveredTests all-discovered-tests.swift
+[28/36] Emitting module ScratchPackageDiscoveredTests
+[29/36] Compiling ScratchPackageDiscoveredTests RatGeoTests.swift
+[30/36] Compiling ScratchPackageDiscoveredTests RatFilterCoreTests.swift
+[31/37] /app/scratch_pkg/.build/x86_64-unknown-linux-gnu/debug/ScratchPackageTests.derived/runner.swift
+[32/37] Write sources
+[33/37] Wrapping AST for ScratchPackageDiscoveredTests for debugging
+[35/39] Compiling ScratchPackageTests runner.swift
+[36/39] Emitting module ScratchPackageTests
+[37/40] Wrapping AST for ScratchPackageTests for debugging
+[38/40] Write Objects.LinkFileList
+[39/40] Linking ScratchPackageTests.xctest
+Build complete! (23.04s)
+Test Suite 'All tests' started at 2026-10-23 20:58:47.186
+Test Suite 'debug.xctest' started at 2026-10-23 20:58:47.228
+Test Suite 'RuleEngineTests' started at 2026-10-23 20:58:47.228
+Test Case 'RuleEngineTests.testAutomaticProfileSwitchingLookup' started at 2026-10-23 20:58:47.228
+Test Case 'RuleEngineTests.testAutomaticProfileSwitchingLookup' passed (0.002 seconds)
+Test Case 'RuleEngineTests.testDefaultAsks' started at 2026-10-23 20:58:47.230
+Test Case 'RuleEngineTests.testDefaultAsks' passed (0.001 seconds)
+Test Case 'RuleEngineTests.testDenyWinsTie' started at 2026-10-23 20:58:47.231
+Test Case 'RuleEngineTests.testDenyWinsTie' passed (0.101 seconds)
+Test Case 'RuleEngineTests.testDisabledGroupSilencesItsRules' started at 2026-10-23 20:58:47.332
+Test Case 'RuleEngineTests.testDisabledGroupSilencesItsRules' passed (0.0 seconds)
+Test Case 'RuleEngineTests.testDisabledIgnoredButUnapprovedStillActive' started at 2026-10-23 20:58:47.332
+Test Case 'RuleEngineTests.testDisabledIgnoredButUnapprovedStillActive' passed (0.0 seconds)
+Test Case 'RuleEngineTests.testDomainMatchesSubdomains' started at 2026-10-23 20:58:47.333
+Test Case 'RuleEngineTests.testDomainMatchesSubdomains' passed (0.0 seconds)
+Test Case 'RuleEngineTests.testExactHostDoesNotMatchSubdomain' started at 2026-10-23 20:58:47.333
+Test Case 'RuleEngineTests.testExactHostDoesNotMatchSubdomain' passed (0.0 seconds)
+Test Case 'RuleEngineTests.testImportAcceptsLegacyBareArray' started at 2026-10-23 20:58:47.333
+Test Case 'RuleEngineTests.testImportAcceptsLegacyBareArray' passed (0.001 seconds)
+Test Case 'RuleEngineTests.testImportDropsUnknownProfileScope' started at 2026-10-23 20:58:47.334
+Test Case 'RuleEngineTests.testImportDropsUnknownProfileScope' passed (0.001 seconds)
+Test Case 'RuleEngineTests.testImportMarksUnapprovedAndSkipsDuplicates' started at 2026-10-23 20:58:47.335
+Test Case 'RuleEngineTests.testImportMarksUnapprovedAndSkipsDuplicates' passed (0.002 seconds)
+Test Case 'RuleEngineTests.testNewInstallsAreSilentAllowAndVersion1FilesMigrate' started at 2026-10-23 20:58:47.337
+Test Case 'RuleEngineTests.testNewInstallsAreSilentAllowAndVersion1FilesMigrate' passed (0.005 seconds)
+Test Case 'RuleEngineTests.testPortRangeAndProtocol' started at 2026-10-23 20:58:47.342
+Test Case 'RuleEngineTests.testPortRangeAndProtocol' passed (0.0 seconds)
+Test Case 'RuleEngineTests.testProcessPathMatchesInsideBundle' started at 2026-10-23 20:58:47.342
+Test Case 'RuleEngineTests.testProcessPathMatchesInsideBundle' passed (0.0 seconds)
+Test Case 'RuleEngineTests.testProfilesScopeRules' started at 2026-10-23 20:58:47.343
+Test Case 'RuleEngineTests.testProfilesScopeRules' passed (0.0 seconds)
+Test Case 'RuleEngineTests.testQAR1RulePrecedenceHigherSpecificityWins' started at 2026-10-23 20:58:47.343
+Test Case 'RuleEngineTests.testQAR1RulePrecedenceHigherSpecificityWins' passed (0.0 seconds)
+Test Case 'RuleEngineTests.testQAR2DenyOverAllowTie' started at 2026-10-23 20:58:47.343
+Test Case 'RuleEngineTests.testQAR2DenyOverAllowTie' passed (0.0 seconds)
+Test Case 'RuleEngineTests.testQAR3MostSpecificRemote' started at 2026-10-23 20:58:47.344
+Test Case 'RuleEngineTests.testQAR3MostSpecificRemote' passed (0.0 seconds)
+Test Case 'RuleEngineTests.testQAR4DisabledAndUnapprovedRulesNeverMatch' started at 2026-10-23 20:58:47.344
+Test Case 'RuleEngineTests.testQAR4DisabledAndUnapprovedRulesNeverMatch' passed (0.0 seconds)
+Test Case 'RuleEngineTests.testQAR5ProfileSwitchingAndDisabledGroups' started at 2026-10-23 20:58:47.344
+Test Case 'RuleEngineTests.testQAR5ProfileSwitchingAndDisabledGroups' passed (0.0 seconds)
+Test Case 'RuleEngineTests.testQAR6VersionMigrationKeepsEveryRule' started at 2026-10-23 20:58:47.345
+Test Case 'RuleEngineTests.testQAR6VersionMigrationKeepsEveryRule' passed (0.002 seconds)
+Test Case 'RuleEngineTests.testRuleSummary' started at 2026-10-23 20:58:47.347
+Test Case 'RuleEngineTests.testRuleSummary' passed (0.001 seconds)
+Test Case 'RuleEngineTests.testSessionRulesArePurgedAndNotPersisted' started at 2026-10-23 20:58:47.348
+Test Case 'RuleEngineTests.testSessionRulesArePurgedAndNotPersisted' passed (0.004 seconds)
+Test Case 'RuleEngineTests.testSilentModeChangesDefault' started at 2026-10-23 20:58:47.351
+Test Case 'RuleEngineTests.testSilentModeChangesDefault' passed (0.0 seconds)
+Test Case 'RuleEngineTests.testSpecificBeatsGeneral' started at 2026-10-23 20:58:47.352
+Test Case 'RuleEngineTests.testSpecificBeatsGeneral' passed (0.101 seconds)
+Test Case 'RuleEngineTests.testStoreRoundTrip' started at 2026-10-23 20:58:47.452
+Test Case 'RuleEngineTests.testStoreRoundTrip' passed (0.003 seconds)
+Test Case 'RuleEngineTests.testUnknownNetworkActionRoundTrips' started at 2026-10-23 20:58:47.456
+Test Case 'RuleEngineTests.testUnknownNetworkActionRoundTrips' passed (0.002 seconds)
+Test Suite 'RuleEngineTests' passed at 2026-10-23 20:58:47.457
+	 Executed 26 tests, with 0 failures (0 unexpected) in 0.228 (0.228) seconds
+Test Suite 'GeoTests' started at 2026-10-23 20:58:47.458
+Test Case 'GeoTests.testKnownAddresses' started at 2026-10-23 20:58:47.458
+Test Case 'GeoTests.testKnownAddresses' passed (1.205 seconds)
+Test Case 'GeoTests.testPrivateAddressesNotLocated' started at 2026-10-23 20:58:48.663
+Test Case 'GeoTests.testPrivateAddressesNotLocated' passed (0.129 seconds)
+Test Case 'GeoTests.testQAR7MalformedFileRejection' started at 2026-10-23 20:58:48.793
+Test Case 'GeoTests.testQAR7MalformedFileRejection' passed (0.0 seconds)
+Test Case 'GeoTests.testQAR8AndR10MMDBSecurityPointerLoopsAndGiantMaps' started at 2026-10-23 20:58:48.793
+Test Case 'GeoTests.testQAR8AndR10MMDBSecurityPointerLoopsAndGiantMaps' passed (0.001 seconds)
+Test Case 'GeoTests.testQAR9IPv6Lookups' started at 2026-10-23 20:58:48.794
+Test Case 'GeoTests.testQAR9IPv6Lookups' passed (0.003 seconds)
+Test Case 'GeoTests.testRejectsGarbageFile' started at 2026-10-23 20:58:48.797
+Test Case 'GeoTests.testRejectsGarbageFile' passed (0.0 seconds)
+Test Case 'GeoTests.testSystemZoneTabResolvesCurrentZone' started at 2026-10-23 20:58:48.797
+Test Case 'GeoTests.testSystemZoneTabResolvesCurrentZone' passed (0.007 seconds)
+Test Case 'GeoTests.testTimeZoneParsing' started at 2026-10-23 20:58:48.804
+Test Case 'GeoTests.testTimeZoneParsing' passed (0.0 seconds)
+Test Suite 'GeoTests' passed at 2026-10-23 20:58:48.805
+	 Executed 8 tests, with 0 failures (0 unexpected) in 1.347 (1.347) seconds
+Test Suite 'MMDBRobustnessTests' started at 2026-10-23 20:58:48.805
+Test Case 'MMDBRobustnessTests.testBundledASNDatabase' started at 2026-10-23 20:58:48.805
+Test Case 'MMDBRobustnessTests.testBundledASNDatabase' passed (0.109 seconds)
+Test Case 'MMDBRobustnessTests.testMalformedFilesAreRejectedOrReturnNothing' started at 2026-10-23 20:58:48.914
+Test Case 'MMDBRobustnessTests.testMalformedFilesAreRejectedOrReturnNothing' passed (0.07 seconds)
+Test Case 'MMDBRobustnessTests.testTinyASNDatabase' started at 2026-10-23 20:58:48.984
+Test Case 'MMDBRobustnessTests.testTinyASNDatabase' passed (0.002 seconds)
+Test Suite 'MMDBRobustnessTests' passed at 2026-10-23 20:58:48.986
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.181 (0.181) seconds
+Test Suite 'debug.xctest' passed at 2026-10-23 20:58:48.986
+	 Executed 37 tests, with 0 failures (0 unexpected) in 1.756 (1.756) seconds
+Test Suite 'All tests' passed at 2026-10-23 20:58:48.986
+	 Executed 37 tests, with 0 failures (0 unexpected) in 1.756 (1.756) seconds
+◇ Test run started.
+↳ Testing Library Version: 6.0.2 (cd448bbe5cc989d)
+✔ Test run with 0 tests passed after 0.001 seconds.

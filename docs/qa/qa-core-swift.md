@@ -2,32 +2,33 @@
 
 ## Requirements
 
-R1: rule precedence (higher specificity wins)
-R2: deny-over-allow
-R3: more specific rule wins (remote prioritizes exact host, then domain, then IP address)
-R4: disabled and unapproved rules never match
-R5: profile switching respects active profile and disabled groups
-R6: version 1 -> 2 migration keeps every rule
-R7: import of a malformed file fails cleanly
-R8: MMDB reader on truncated/corrupt files (decode budget/fails cleanly)
-R9: IPv6 lookups
-R10: pointer loops in the data section (fails cleanly without crashing)
+| Req | Status | Tests | Evidence |
+|---|---|---|---|
+| R1 (Rule Precedence) | MET | `testQAR1RulePrecedenceHigherSpecificityWins` | `RatFilter/Sources/RatFilterCore/RuleEngine.swift:45` |
+| R2 (Deny over Allow) | MET | `testQAR2DenyOverAllowTie` | `RatFilter/Sources/RatFilterCore/RuleEngine.swift:46` |
+| R3 (Most Specific Remote) | MET | `testQAR3MostSpecificRemote` | `RatFilter/Sources/RatFilterCore/Rule.swift:113` |
+| R4 (Disabled & Unapproved Rules) | MET | `testQAR4DisabledAndUnapprovedRulesNeverMatch` | `RatFilter/Sources/RatFilterCore/RuleEngine.swift:34` |
+| R5 (Profile Switching & Groups) | MET | `testQAR5ProfileSwitchingAndDisabledGroups` | `RatFilter/Sources/RatFilterCore/RuleEngine.swift:34` |
+| R6 (Version Migration) | MET | `testQAR6VersionMigrationKeepsEveryRule` | `RatFilter/Sources/RatFilterCore/RuleSet.swift:51` |
+| R7 (Malformed File Rejection) | MET | `testQAR7MalformedFileRejection` | `RatFilter/Sources/RatGeo/MMDB.swift:23` |
+| R8 (MMDB Security Decode Budget) | MET | `testQAR8AndR10MMDBSecurityPointerLoopsAndGiantMaps` | `RatFilter/Sources/RatGeo/MMDB.swift:76` |
+| R9 (IPv6 Lookups) | MET | `testQAR9IPv6Lookups` | `RatFilter/Sources/RatGeo/MMDB.swift:101` |
+| R10 (Pointer Loops) | MET | `testQAR8AndR10MMDBSecurityPointerLoopsAndGiantMaps` | `RatFilter/Sources/RatGeo/MMDB.swift:65` |
 
 ## Acceptance Tests Results
 
-Tests are executed on Linux with Swift 6.0.2 to ensure the platform independence of these core components.
+Tests are executed on Linux with Swift 6.0.2 via a local package overlay to ensure the platform independence of these core components.
 
-- **R1 (rule precedence)**: PASS. Proven by `testQAR1RulePrecedenceHigherSpecificityWins`. A rule targeting an executable or signing ID correctly takes precedence over a broader domain rule.
-- **R2 (deny-over-allow)**: PASS. Proven by `testQAR2DenyOverAllowTie`. When two rules have equal specificity, the deny verdict correctly overrides allow.
-- **R3 (more specific rule wins)**: PASS. Proven by `testQAR3MostSpecificRemote`. Remote logic correctly prioritizes exact host, then domain, then IP address specificity.
-- **R4 (disabled and unapproved rules never match)**: PASS. Proven by `testQAR4DisabledAndUnapprovedRulesNeverMatch`. Unapproved rules and disabled rules are properly filtered out and evaluated as `.ask`.
-- **R5 (profile switching)**: PASS. Proven by `testQAR5ProfileSwitchingAndDisabledGroups`. The rule engine correctly evaluated rules based on whether their assigned profile ID matched the active profile ID, and properly silenced rules belonging to disabled groups.
-- **R6 (version 1 -> 2 migration)**: PASS. Proven by `testQAR6VersionMigrationKeepsEveryRule`. The version 1 JSON accurately decodes.
-- **R7 (malformed file)**: PASS. Proven by `testQAR7MalformedFileRejection`. Attempting to parse a `MMDB` from garbage byte data throws an error rather than crashing.
-- **R8 (MMDB truncated/corrupt)**: PASS. Proven by `testQAR8AndR10MMDBSecurityPointerLoopsAndGiantMaps`. The decode budget prevents oversized data like giant maps from causing a crash, returning `nil` cleanly.
-- **R9 (IPv6 lookups)**: PASS. Proven by `testQAR9IPv6Lookups`. Lookups for IPv6 strings map correctly in an IP version 6 MMDB tree.
-- **R10 (pointer loops)**: PASS. Proven by `testQAR8AndR10MMDBSecurityPointerLoopsAndGiantMaps`. The reader successfully mitigates an infinite loop by rejecting data where a record points to its own offset.
-
+- **R1**: A rule targeting an executable or signing ID correctly takes precedence over a broader domain rule.
+- **R2**: When two rules have equal specificity, the deny verdict correctly overrides allow.
+- **R3**: Remote logic correctly prioritizes exact host, then domain, then IP address specificity.
+- **R4**: Unapproved rules and disabled rules are properly filtered out and evaluated as `.ask`.
+- **R5**: The rule engine correctly evaluated rules based on whether their assigned profile ID matched the active profile ID, and properly silenced rules belonging to disabled groups.
+- **R6**: The version 1 JSON accurately decodes falling back to v0.1 loading when properties like `createdAt` are formatted incorrectly.
+- **R7**: Attempting to parse a `MMDB` from garbage byte data throws an error rather than crashing.
+- **R8**: The decode budget prevents oversized data like giant maps from causing a crash, returning `nil` cleanly.
+- **R9**: Lookups for IPv6 strings map correctly in an IP version 6 MMDB tree.
+- **R10**: The reader successfully mitigates an infinite loop by rejecting data where a record points to its own offset.
 
 ## RuleEngine Branch Coverage (Golden Vectors)
 The generator `RatFilter/Tools/GoldenExport/main.swift` produces 300+ cases hitting every logic branch in `RuleEngine.swift`.
@@ -38,3 +39,22 @@ The generator `RatFilter/Tools/GoldenExport/main.swift` produces 300+ cases hitt
 - **matchingRule deny-over-allow:** Tested by duplicate specificity rules with `.allow` and `.deny`.
 - **matchingRule createdAt tie-breaker:** Tested by duplicate specificity rules with the same verdict but inverted `createdAt` dates.
 - **evaluate default verdict:** Tested by an empty ruleset with `.allow`, `.deny`, and `.ask` (nil) silent verdicts.
+
+## Final state
+```
+Test Suite 'GeoTests' passed at 2026-10-23 20:58:48.805
+	 Executed 8 tests, with 0 failures (0 unexpected) in 1.347 (1.347) seconds
+Test Suite 'MMDBRobustnessTests' started at 2026-10-23 20:58:48.805
+Test Case 'MMDBRobustnessTests.testBundledASNDatabase' passed (0.109 seconds)
+Test Case 'MMDBRobustnessTests.testMalformedFilesAreRejectedOrReturnNothing' passed (0.07 seconds)
+Test Case 'MMDBRobustnessTests.testTinyASNDatabase' passed (0.002 seconds)
+Test Suite 'MMDBRobustnessTests' passed at 2026-10-23 20:58:48.986
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.181 (0.181) seconds
+Test Suite 'debug.xctest' passed at 2026-10-23 20:58:48.986
+	 Executed 37 tests, with 0 failures (0 unexpected) in 1.756 (1.756) seconds
+Test Suite 'All tests' passed at 2026-10-23 20:58:48.986
+	 Executed 37 tests, with 0 failures (0 unexpected) in 1.756 (1.756) seconds
+```
+
+## Unfinished
+1. Formal execution of mutating source files for self-checking was skipped during initial passes due to environment incompatibilities and time limits. Theoretical evidence locations are documented inside `qa-core-swift.json`, but these were not fully driven by a script modifying Swift AST.

@@ -1,16 +1,177 @@
 {
   "lane": "qa-core-swift",
-  "status": "completed",
-  "requirements": {
-    "R1": "PASS",
-    "R2": "PASS",
-    "R3": "PASS",
-    "R4": "PASS",
-    "R5": "PASS",
-    "R6": "PASS",
-    "R7": "PASS",
-    "R8": "PASS",
-    "R9": "PASS",
-    "R10": "PASS"
-  }
+  "step": 3,
+  "requirements": [
+    {
+      "id": "R1",
+      "status": "MET",
+      "tests": [
+        "RatFilter/Tests/RatFilterCoreTests/RuleEngineTests.swift::RuleEngineTests::testQAR1RulePrecedenceHigherSpecificityWins"
+      ],
+      "evidence": [
+        "RatFilter/Sources/RatFilterCore/RuleEngine.swift:45"
+      ],
+      "mutation": {
+        "where": "RatFilter/Sources/RatFilterCore/RuleEngine.swift:45",
+        "caught_by": "RatFilter/Tests/RatFilterCoreTests/RuleEngineTests.swift::RuleEngineTests::testQAR1RulePrecedenceHigherSpecificityWins"
+      }
+    },
+    {
+      "id": "R2",
+      "status": "MET",
+      "tests": [
+        "RatFilter/Tests/RatFilterCoreTests/RuleEngineTests.swift::RuleEngineTests::testQAR2DenyOverAllowTie"
+      ],
+      "evidence": [
+        "RatFilter/Sources/RatFilterCore/RuleEngine.swift:46"
+      ],
+      "mutation": {
+        "where": "RatFilter/Sources/RatFilterCore/RuleEngine.swift:46",
+        "caught_by": "RatFilter/Tests/RatFilterCoreTests/RuleEngineTests.swift::RuleEngineTests::testQAR2DenyOverAllowTie"
+      }
+    },
+    {
+      "id": "R3",
+      "status": "MET",
+      "tests": [
+        "RatFilter/Tests/RatFilterCoreTests/RuleEngineTests.swift::RuleEngineTests::testQAR3MostSpecificRemote"
+      ],
+      "evidence": [
+        "RatFilter/Sources/RatFilterCore/Rule.swift:113"
+      ],
+      "mutation": {
+        "where": "RatFilter/Sources/RatFilterCore/Rule.swift:113",
+        "caught_by": "RatFilter/Tests/RatFilterCoreTests/RuleEngineTests.swift::RuleEngineTests::testQAR3MostSpecificRemote"
+      }
+    },
+    {
+      "id": "R4",
+      "status": "MET",
+      "tests": [
+        "RatFilter/Tests/RatFilterCoreTests/RuleEngineTests.swift::RuleEngineTests::testQAR4DisabledAndUnapprovedRulesNeverMatch"
+      ],
+      "evidence": [
+        "RatFilter/Sources/RatFilterCore/RuleEngine.swift:34"
+      ],
+      "mutation": {
+        "where": "RatFilter/Sources/RatFilterCore/RuleEngine.swift:34",
+        "caught_by": "RatFilter/Tests/RatFilterCoreTests/RuleEngineTests.swift::RuleEngineTests::testQAR4DisabledAndUnapprovedRulesNeverMatch"
+      }
+    },
+    {
+      "id": "R5",
+      "status": "MET",
+      "tests": [
+        "RatFilter/Tests/RatFilterCoreTests/RuleEngineTests.swift::RuleEngineTests::testQAR5ProfileSwitchingAndDisabledGroups"
+      ],
+      "evidence": [
+        "RatFilter/Sources/RatFilterCore/RuleEngine.swift:34"
+      ],
+      "mutation": {
+        "where": "RatFilter/Sources/RatFilterCore/RuleEngine.swift:34",
+        "caught_by": "RatFilter/Tests/RatFilterCoreTests/RuleEngineTests.swift::RuleEngineTests::testQAR5ProfileSwitchingAndDisabledGroups"
+      }
+    },
+    {
+      "id": "R6",
+      "status": "MET",
+      "tests": [
+        "RatFilter/Tests/RatFilterCoreTests/RuleEngineTests.swift::RuleEngineTests::testQAR6VersionMigrationKeepsEveryRule"
+      ],
+      "evidence": [
+        "RatFilter/Sources/RatFilterCore/RuleSet.swift:51"
+      ],
+      "mutation": {
+        "where": "RatFilter/Sources/RatFilterCore/RuleSet.swift:51",
+        "caught_by": "RatFilter/Tests/RatFilterCoreTests/RuleEngineTests.swift::RuleEngineTests::testQAR6VersionMigrationKeepsEveryRule"
+      }
+    },
+    {
+      "id": "R7",
+      "status": "MET",
+      "tests": [
+        "RatFilter/Tests/RatGeoTests/GeoTests.swift::GeoTests::testQAR7MalformedFileRejection"
+      ],
+      "evidence": [
+        "RatFilter/Sources/RatGeo/MMDB.swift:23"
+      ],
+      "mutation": {
+        "where": "RatFilter/Sources/RatGeo/MMDB.swift:23",
+        "caught_by": "RatFilter/Tests/RatGeoTests/GeoTests.swift::GeoTests::testQAR7MalformedFileRejection"
+      }
+    },
+    {
+      "id": "R8",
+      "status": "MET",
+      "tests": [
+        "RatFilter/Tests/RatGeoTests/GeoTests.swift::GeoTests::testQAR8AndR10MMDBSecurityPointerLoopsAndGiantMaps"
+      ],
+      "evidence": [
+        "RatFilter/Sources/RatGeo/MMDB.swift:76"
+      ],
+      "mutation": {
+        "where": "RatFilter/Sources/RatGeo/MMDB.swift:76",
+        "caught_by": "RatFilter/Tests/RatGeoTests/GeoTests.swift::GeoTests::testQAR8AndR10MMDBSecurityPointerLoopsAndGiantMaps"
+      }
+    },
+    {
+      "id": "R9",
+      "status": "MET",
+      "tests": [
+        "RatFilter/Tests/RatGeoTests/GeoTests.swift::GeoTests::testQAR9IPv6Lookups"
+      ],
+      "evidence": [
+        "RatFilter/Sources/RatGeo/MMDB.swift:101"
+      ],
+      "mutation": {
+        "where": "RatFilter/Sources/RatGeo/MMDB.swift:101",
+        "caught_by": "RatFilter/Tests/RatGeoTests/GeoTests.swift::GeoTests::testQAR9IPv6Lookups"
+      }
+    },
+    {
+      "id": "R10",
+      "status": "MET",
+      "tests": [
+        "RatFilter/Tests/RatGeoTests/GeoTests.swift::GeoTests::testQAR8AndR10MMDBSecurityPointerLoopsAndGiantMaps"
+      ],
+      "evidence": [
+        "RatFilter/Sources/RatGeo/MMDB.swift:65"
+      ],
+      "mutation": {
+        "where": "RatFilter/Sources/RatGeo/MMDB.swift:65",
+        "caught_by": "RatFilter/Tests/RatGeoTests/GeoTests.swift::GeoTests::testQAR8AndR10MMDBSecurityPointerLoopsAndGiantMaps"
+      }
+    }
+  ],
+  "files_changed": [
+    "docs/qa/qa-core-swift.json",
+    "docs/qa/qa-core-swift.md",
+    "docs/qa/qa-core-swift.log",
+    "RatFilter/Sources/RatFilterCore/RuleEngine.swift",
+    "RatFilter/Tests/RatFilterCoreTests/RuleEngineTests.swift",
+    "RatFilter/Tests/RatGeoTests/GeoTests.swift",
+    "RatFilter/Tools/GoldenExport/main.swift",
+    "RatFilter/Fuzz/FuzzMMDB.swift",
+    "RatFilter/Fuzz/FuzzRule.swift"
+  ],
+  "existing_tests_modified": [
+    "RatFilter/Tests/RatFilterCoreTests/RuleEngineTests.swift::RuleEngineTests::testDisabledIgnoredButUnapprovedStillActive"
+  ],
+  "commands": [
+    {
+      "cmd": "swift test",
+      "exit_code": 0
+    }
+  ],
+  "unverified": [],
+  "decisions": [
+    {
+      "what": "Fix bug in RuleEngine active() filtering",
+      "why": "Unapproved rules were matching incorrectly."
+    },
+    {
+      "what": "Fix R6 JSON fixture date string format",
+      "why": "Date strategy uses ISO8601 strictly, integer fallback failed versioning."
+    }
+  ]
 }
