@@ -55,9 +55,9 @@ jobs:
         shell: bash
         run: |
           if [ -f "port/app/src-tauri/Cargo.toml" ]; then
-            echo "tauri_exists=true" >> $GITHUB_OUTPUT
+            echo "tauri_exists=true" >> "$GITHUB_OUTPUT"
           else
-            echo "tauri_exists=false" >> $GITHUB_OUTPUT
+            echo "tauri_exists=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Install Rust
