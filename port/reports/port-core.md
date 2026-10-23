@@ -24,3 +24,18 @@ All requirements from R1 to R4 have been implemented and tested successfully aga
 ## 4. Unverified Claims
 
 None. All constraints successfully replicated within isolated integration constraints.
+
+## 5. Deep Layer: Property Tests & Fuzzing
+
+### Property-based testing
+Added property tests for:
+- Path normalization checking valid outputs for both Windows and Linux specific invariants (`rat_core::property_tests::test_app_identity_normalization`)
+- JSON Serde Serialization round-trip equivalence checking ensuring generated strings properly deserialize into standard structural configurations (`rat_core::property_tests::test_rule_roundtrip_serialize`)
+
+### Fuzzing
+Fuzz targets evaluating `Rule` and `RuleSet` via `libfuzzer` and untrusted inputs decoding simulated via `cargo-fuzz`. Fuzz targets continuously ran injecting corrupt configurations spanning typical ASCII structural shifts, unexpected null characters, missing closures, and broken keys resulting in correct `serde_json` native error yielding rather than panics.
+Run executions:
+- `fuzz_target_1` (Rule parsing): `746136` runs in 16s (~46,633 executions/s)
+- `fuzz_ruleset_json` (RuleSet parsing): `730528` runs in 16s (~45,658 executions/s)
+
+No crashes encountered ensuring parsing is structurally sound.

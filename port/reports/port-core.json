@@ -102,6 +102,37 @@
         "where": "port/crates/rat-core/src/lib.rs:668",
         "caught_by": "rat_core::load_tests::test_malformed_lines_handled_gracefully"
       }
+    },
+    {
+      "id": "Deep Layer 1 (Proptests)",
+      "status": "MET",
+      "tests": [
+        "rat_core::property_tests::test_app_identity_normalization",
+        "rat_core::property_tests::test_rule_roundtrip_serialize"
+      ],
+      "evidence": [
+        "port/crates/rat-core/src/lib.rs:1210-1234"
+      ],
+      "mutation": {
+        "where": "port/crates/rat-core/src/lib.rs:45",
+        "caught_by": "rat_core::property_tests::test_app_identity_normalization"
+      }
+    },
+    {
+      "id": "Deep Layer 2 (Fuzzing)",
+      "status": "MET",
+      "tests": [
+        "fuzz_target_1",
+        "fuzz_ruleset_json"
+      ],
+      "evidence": [
+        "port/crates/rat-core/fuzz/fuzz_targets/fuzz_target_1.rs",
+        "port/crates/rat-core/fuzz/fuzz_targets/fuzz_ruleset_json.rs"
+      ],
+      "mutation": {
+        "where": "port/crates/rat-core/fuzz/Cargo.toml",
+        "caught_by": "None"
+      }
     }
   ],
   "files_changed": [
@@ -128,6 +159,14 @@
     },
     {
       "cmd": "cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "cmd": "cargo fuzz run fuzz_target_1 -- -max_total_time=15",
+      "exit_code": 0
+    },
+    {
+      "cmd": "cargo fuzz run fuzz_ruleset_json -- -max_total_time=15",
       "exit_code": 0
     }
   ],

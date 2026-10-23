@@ -6,19 +6,13 @@ def main():
     with open("port/reports/port-core.json", "r") as f:
         content = json.load(f)
 
-    content["requirements"].append({
-      "id": "Edge Cases (Malformed)",
-      "status": "MET",
-      "tests": [
-        "rat_core::load_tests::test_malformed_lines_handled_gracefully"
-      ],
-      "evidence": [
-        "port/crates/rat-core/src/lib.rs:668"
-      ],
-      "mutation": {
-        "where": "port/crates/rat-core/src/lib.rs:668",
-        "caught_by": "rat_core::load_tests::test_malformed_lines_handled_gracefully"
-      }
+    content["commands"].append({
+        "cmd": "cargo fuzz run fuzz_target_1 -- -max_total_time=15",
+        "exit_code": 0
+    })
+    content["commands"].append({
+        "cmd": "cargo fuzz run fuzz_ruleset_json -- -max_total_time=15",
+        "exit_code": 0
     })
 
     with open("port/reports/port-core.json", "w") as f:

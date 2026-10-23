@@ -1199,3 +1199,41 @@ mod load_tests {
         assert_eq!(s.version, 2); // standard default
     }
 }
+
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn test_app_identity_normalization(path in ".*") {
+            let identity = AppIdentity::new(None, None, path.clone());
+            let norm = identity.normalized_path();
+
+            #[cfg(windows)]
+            {
+                assert_eq!(norm, path.to_lowercase().replace("\\", "/"));
+            }
+            #[cfg(not(windows))]
+            {
+                assert_eq!(norm, path);
+            }
+        }
+
+        #[test]
+        fn test_rule_roundtrip_serialize(id in any::<[u8; 16]>(),
+                                         path in ".*",
+                                         host in ".*") {
+            let mut r = tests::new_rule();
+            r.id = Uuid::from_bytes(id);
+            r.process_path = Some(path);
+            r.remote_host = Some(host);
+
+            let serialized = serde_json::to_string(&r).unwrap();
+            let deserialized: Rule = serde_json::from_str(&serialized).unwrap();
+
+            assert_eq!(r, deserialized);
+        }
+    }
+}
