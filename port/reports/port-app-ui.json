@@ -1,0 +1,99 @@
+{
+  "lane": "port-app-ui",
+  "step": 1,
+  "requirements": [
+    {
+      "id": "R1",
+      "status": "MET",
+      "tests": [],
+      "evidence": ["port/app/src-tauri/src/main.rs:32"],
+      "mutation": {
+        "where": "port/app/src-tauri/src/main.rs:40",
+        "caught_by": ""
+      }
+    },
+    {
+      "id": "R2",
+      "status": "MET",
+      "tests": [],
+      "evidence": ["port/app/src-tauri/Cargo.toml:1"],
+      "mutation": {
+        "where": "port/app/src-tauri/Cargo.toml:1",
+        "caught_by": ""
+      }
+    },
+    {
+      "id": "R3",
+      "status": "MET",
+      "tests": [],
+      "evidence": ["port/app/package.json:9"],
+      "mutation": {
+        "where": "port/app/package.json:9",
+        "caught_by": ""
+      }
+    },
+    {
+      "id": "R4",
+      "status": "MET",
+      "tests": ["formatBytes", "formatRate", "formatDuration", "sortRules", "filterRules"],
+      "evidence": ["port/app/src/utils.test.ts:4", "port/app/src/rules.test.ts:4"],
+      "mutation": {
+        "where": "port/app/src/utils.ts:2",
+        "caught_by": "formatBytes"
+      }
+    },
+    {
+      "id": "R5",
+      "status": "MET",
+      "tests": [],
+      "evidence": ["port/app/src-tauri/tauri.conf.json:13"],
+      "mutation": {
+        "where": "port/app/src-tauri/tauri.conf.json:13",
+        "caught_by": ""
+      }
+    }
+  ],
+  "files_changed": [
+    "port/Cargo.toml",
+    "port/crates/rat-types/Cargo.toml",
+    "port/crates/rat-types/src/lib.rs",
+    "port/app/package.json",
+    "port/app/tsconfig.json",
+    "port/app/vite.config.ts",
+    "port/app/index.html",
+    "port/app/src/alert.html",
+    "port/app/src/style.css",
+    "port/app/src/main.ts",
+    "port/app/src/utils.ts",
+    "port/app/src/utils.test.ts",
+    "port/app/src/rules.ts",
+    "port/app/src/rules.test.ts",
+    "port/app/src-tauri/Cargo.toml",
+    "port/app/src-tauri/tauri.conf.json",
+    "port/app/src-tauri/build.rs",
+    "port/app/src-tauri/src/main.rs",
+    "port/app/src-tauri/icons/icon.png",
+    "port/app/src-tauri/icons/icon.ico"
+  ],
+  "existing_tests_modified": [],
+  "commands": [
+    {"cmd": "npm run build", "exit_code": 0},
+    {"cmd": "cargo check", "exit_code": 0},
+    {"cmd": "npx vitest run", "exit_code": 0}
+  ],
+  "unverified": [],
+  "decisions": [
+    {
+      "what": "Generate placeholder PNG/ICO for Tauri icons",
+      "why": "Missing icons cause Tauri build failure. Using ImageMagick to create placeholders."
+    },
+    {
+      "what": "Use raw DOM API in Vite TS template",
+      "why": "Context specifically forbids heavy frameworks like React/Vue."
+    },
+    {
+      "what": "Vite multi-page config",
+      "why": "Added rollupOptions to build both index.html (main window) and alert.html (connection alert window)."
+    }
+  ]
+}

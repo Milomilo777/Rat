@@ -1,0 +1,156 @@
+:root {
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color-scheme: light dark;
+  color: rgba(255, 255, 255, 0.87);
+  background-color: #1e1e1e;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+    margin: 0;
+    padding: 0;
+}
+
+.app-container {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+.header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 20px;
+    background: #252526;
+    border-bottom: 1px solid #333;
+}
+
+.header h1 {
+    margin: 0;
+    font-size: 1.25rem;
+    font-weight: 600;
+}
+
+.tabs button {
+    background: transparent;
+    border: none;
+    color: #999;
+    padding: 8px 16px;
+    margin-left: 8px;
+    cursor: pointer;
+    font-size: 0.95rem;
+    border-radius: 4px;
+    transition: all 0.2s;
+}
+
+.tabs button:hover {
+    color: #fff;
+    background: #333;
+}
+
+.tabs button.active {
+    color: #fff;
+    background: #37373d;
+}
+
+.content-area {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+}
+
+.sidebar {
+    width: 250px;
+    background: #252526;
+    border-right: 1px solid #333;
+    padding: 20px;
+    overflow-y: auto;
+}
+
+.sidebar h3 {
+    margin-top: 0;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    color: #888;
+    letter-spacing: 0.5px;
+}
+
+.sidebar ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.sidebar li {
+    padding: 8px 12px;
+    margin: 4px 0;
+    background: #2d2d2d;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    cursor: pointer;
+}
+
+.sidebar li:hover {
+    background: #3d3d3d;
+}
+
+.main-content {
+    flex: 1;
+    padding: 20px;
+    overflow-y: auto;
+    background: #1e1e1e;
+}
+
+.conn-card {
+    background: #252526;
+    padding: 16px;
+    margin-bottom: 16px;
+    border-radius: 6px;
+    border: 1px solid #333;
+}
+
+.conn-card p {
+    margin: 6px 0;
+    font-size: 0.9rem;
+}
+
+.rules-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #252526;
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.rules-table th, .rules-table td {
+    border-bottom: 1px solid #333;
+    padding: 12px 16px;
+    text-align: left;
+}
+
+.rules-table th {
+    background: #1e1e1e;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    color: #888;
+}
+
+.text-green { color: #4ade80; font-weight: 500; }
+.text-red { color: #f87171; font-weight: 500; }
+
+.settings-section {
+    background: #252526;
+    padding: 20px;
+    border-radius: 6px;
+    margin-bottom: 20px;
+    border: 1px solid #333;
+}
+.settings-section h4 {
+    margin-top: 0;
+    border-bottom: 1px solid #333;
+    padding-bottom: 10px;
+}

@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Connection Alert</title>
+    <style>
+      body {
+        font-family: Inter, system-ui, sans-serif;
+        background: #1e1e1e;
+        color: #fff;
+        margin: 0;
+        padding: 20px;
+      }
+      .alert-container {
+        display: flex;
+        flex-direction: column;
+        gap: 15px;
+      }
+      .header h2 { margin: 0; font-size: 1.2rem; color: #f87171; }
+      .details { background: #252526; padding: 15px; border-radius: 6px; }
+      .actions { display: flex; gap: 10px; margin-top: 10px; }
+      button { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
+      .btn-allow { background: #4ade80; color: #000; }
+      .btn-deny { background: #f87171; color: #000; }
+      .options { display: flex; gap: 10px; margin-top: 10px; }
+      select { background: #333; color: #fff; border: 1px solid #444; padding: 5px; border-radius: 4px; }
+    </style>
+  </head>
+  <body>
+    <div class="alert-container">
+      <div class="header">
+        <h2>Connection Attempt Blocked</h2>
+        <p><strong>Firefox</strong> wants to connect to <strong>1.1.1.1</strong> on port 443.</p>
+      </div>
+
+      <div class="options">
+        <label>
+          Scope:
+          <select id="scope">
+            <option value="any">Any connection</option>
+            <option value="domain">This domain</option>
+            <option value="ip">This IP address</option>
+            <option value="port">This IP and port</option>
+          </select>
+        </label>
+        <label>
+          Timeout:
+          <select id="timeout">
+            <option value="forever">Forever</option>
+            <option value="until-quit">Until Quit</option>
+            <option value="5m">5 Minutes</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="actions">
+        <button class="btn-allow" onclick="window.close()">Allow</button>
+        <button class="btn-deny" onclick="window.close()">Deny</button>
+      </div>
+    </div>
+  </body>
+</html>
