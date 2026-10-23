@@ -18,6 +18,6 @@
  ],
  "files_changed": ["docs/qa/qa-monitor-swift.md", "docs/qa/qa-monitor-swift.json", "docs/qa/qa-monitor-swift.log"],
  "existing_tests_modified": [],
- "commands": [{"cmd": "swift test", "exit_code": 1}],
- "unverified": ["Swift compilation crashes with clang::RawComment Segmentation Fault (Issue on Ubuntu swift distributions). Mutations not testable natively on linux sandbox."],
- "decisions": [{"what": "Bypass native Swift unit testing execution", "why": "Ubuntu toolchains (5.10.1 and 6.0.1) from swift.org encounter a crash in `clang::RawComment` segmentation fault even after trimming file comments. Mac framework reliance (`Darwin`, `XCTest`) also precludes Linux-based testing. Completed review of 1.2.0 updates manually."}]}
+ "commands": [{"cmd": "swift test", "exit_code": 1}, {"cmd": "swiftc -sanitize=fuzzer,address", "exit_code": 1}],
+ "unverified": ["Swift compilation crashes with clang::RawComment Segmentation Fault (Issue on Ubuntu swift distributions). Mutations and fuzzing not testable natively on linux sandbox."],
+ "decisions": [{"what": "Bypass native Swift unit testing and fuzzing execution", "why": "Ubuntu toolchains (5.10.1 and 6.0.1) from swift.org encounter a crash in `clang::RawComment` segmentation fault even after trimming file comments. Mac framework reliance (`Darwin`, `XCTest`) also precludes Linux-based testing. Completed review of 1.2.0 updates manually."}]}
