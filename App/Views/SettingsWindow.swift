@@ -14,7 +14,6 @@ struct SettingsView: View {
             MonitorSettings().tabItem { Label("Monitor", systemImage: "waveform.path.ecg.rectangle") }.tag("Monitor")
             ProfileSwitchingSettings().tabItem { Label("APS", systemImage: "arrow.triangle.2.circlepath.doc.on.clipboard") }.tag("APS")
             SecuritySettings().tabItem { Label("Security", systemImage: "lock") }.tag("Security")
-            GeoIPSettings().tabItem { Label("GeoIP", systemImage: "globe") }.tag("GeoIP")
             NotificationSettings().tabItem { Label("Notifications", systemImage: "bell.badge") }.tag("Notifications")
             UpdateSettings().tabItem { Label("Update", systemImage: "arrow.down.circle") }.tag("Update")
             AdvancedSettings().tabItem { Label("Advanced", systemImage: "gearshape.2") }.tag("Advanced")
@@ -139,9 +138,6 @@ struct MonitorSettings: View {
             SettingToggle(title: "Include connections of other users",
                           detail: ledger.enforcer.helperInstalled ? "Processes of other accounts, seen through the background helper." : "Needs the background helper (Security tab); without it Rat only sees your own processes.",
                           isOn: $s.includeOtherUsers)
-            SettingToggle(title: "Look up where proxied connections go",
-                          detail: "Connections through a local proxy (an SSH tunnel, a SOCKS or HTTP proxy) show their real destination. To place a destination name on the map, Rat looks it up with this Mac’s DNS, which tells your DNS resolver the name the proxy may have been hiding.",
-                          isOn: $s.resolveProxiedHosts)
         }
     }
 }
@@ -204,61 +200,6 @@ struct ProfileSwitchingSettings: View {
     }
 }
 
-// MARK: - GeoIP databases (#3)
-
-struct GeoIPSettings: View {
-    @EnvironmentObject var ledger: Ledger
-    var body: some View {
-        GeoIPSettingsContent(dbs: ledger.geoDatabases)
-    }
-}
-
-private struct GeoIPSettingsContent: View {
-    @ObservedObject var dbs: GeoDatabases
-
-    var body: some View {
-        SettingsPane {
-            row(.city, title: "City database", detail: "Places servers on the map.")
-            row(.asn, title: "Network database (ASN)", detail: "Names who runs each server's network.")
-            if let err = dbs.lastError { Text(err).font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
-            Text("Lookups never leave this Mac. MaxMind GeoLite2 or GeoIP2 City and ASN files work too; download them with your own MaxMind account (their licence does not allow Rat to ship them). “Download Latest” fetches DB-IP's free monthly file (CC BY 4.0) from db-ip.com.")
-                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    @ViewBuilder private func row(_ kind: GeoService.Kind, title: String, detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.system(size: 15, weight: .semibold))
-            Text(detail).font(.callout).foregroundStyle(.secondary)
-            if let i = dbs.info[kind] {
-                Label("\(i.custom ? "Your file" : "Bundled with Rat"): \(i.type.isEmpty ? i.fileName : i.type)\(i.built.map { ", built \($0.formatted(date: .abbreviated, time: .omitted))" } ?? "")",
-                      systemImage: i.custom ? "doc.badge.gearshape" : "shippingbox")
-                if dbs.isStale(i) {
-                    Label("This data is more than three months old; DB-IP publishes a new file every month.", systemImage: "clock.badge.exclamationmark")
-                        .foregroundStyle(.orange)
-                }
-            } else {
-                Label("No database loaded", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
-            }
-            HStack {
-                Button("Choose File…") { pick(kind) }
-                Button(dbs.busy == kind ? "Downloading…" : "Download Latest DB-IP Lite") { Task { await dbs.downloadLatest(kind) } }
-                    .disabled(dbs.busy != nil)
-                if dbs.info[kind]?.custom == true { Button("Use Bundled") { dbs.useBundled(kind) } }
-            }
-        }
-    }
-
-    private func pick(_ kind: GeoService.Kind) {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.init(filenameExtension: "mmdb") ?? .data]
-        panel.allowsMultipleSelection = false
-        panel.message = kind == .city ? "Choose a City .mmdb file (DB-IP City Lite, GeoLite2-City, GeoIP2-City)" : "Choose an ASN .mmdb file (DB-IP ASN Lite, GeoLite2-ASN)"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do { try dbs.choose(kind, file: url) } catch { dbs.lastError = error.localizedDescription }
-    }
-}
-
 // MARK: - Security (firewall helper)
 
 struct SecuritySettings: View {
@@ -268,45 +209,23 @@ struct SecuritySettings: View {
         SettingsPane {
             Text("Firewall Helper").font(.system(size: 15, weight: .semibold))
             if enf.helperInstalled {
-                if enf.helperOutdated {
-                    Label("Installed, but an older version", systemImage: "exclamationmark.shield.fill").foregroundStyle(.orange)
-                    Text("This helper is from an older version: it cannot see where connections through a local proxy go, and a denied app could still use one (helpers before 1.0.4 also blocked server addresses for every app). Update it.")
-                        .font(.callout).foregroundStyle(.secondary)
-                    Button(enf.busy ? "Updating…" : "Update Helper…") { enf.installHelper() }.disabled(enf.busy)
-                } else {
-                    Label("Installed: blocking is applied automatically", systemImage: "checkmark.shield.fill").foregroundStyle(.green)
-                }
-                if let st = enf.status {
-                    Label(st.pfEnabled ? "Packet filter enabled" : "Packet filter is disabled", systemImage: st.pfEnabled ? "checkmark.circle" : "xmark.octagon")
-                        .foregroundStyle(st.pfEnabled ? Color.secondary : Color.red)
-                    if !st.anchorHooked {
-                        Label("/etc/pf.conf does not load the com.apple anchors, so the rules are not evaluated", systemImage: "xmark.octagon").foregroundStyle(.red)
-                    }
-                    Label("Denied apps running: \(st.deniedApps.count), blocked connections: \(st.blockedPorts)\(st.blockedLoopbackPorts.map { $0 > 0 ? ", through local proxies: \($0)" : "" } ?? "")", systemImage: "shield.checkered")
-                        .foregroundStyle(.secondary)
-                    if let capture = st.proxyCapture {
-                        Label(capture ? "Seeing destinations of connections through local proxies" : "Could not open a packet capture device on lo0, so proxied destinations come only from command lines",
-                              systemImage: capture ? "arrow.triangle.branch" : "exclamationmark.triangle")
-                            .foregroundStyle(capture ? Color.secondary : Color.orange)
-                    }
-                } else {
-                    Label("The enforcer daemon is not running, so nothing is blocked", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                    Button(enf.busy ? "Reinstalling…" : "Reinstall Helper…") { enf.installHelper() }.disabled(enf.busy)
-                }
+                Label("Installed: blocking is applied automatically", systemImage: "checkmark.shield.fill").foregroundStyle(.green)
+                SettingToggle(title: "Auto-apply firewall rules", detail: "Deny takes effect immediately. Turn off to apply blocking by hand.",
+                              isOn: Binding(get: { enf.autoApply }, set: { enf.autoApply = $0; ledger.refreshBlocklist() }))
                 Label(ledger.systemWide ? "Seeing all processes system-wide" : "Waiting for the first system snapshot…", systemImage: "eye")
                     .foregroundStyle(.secondary)
                 Button("Remove Helper…", role: .destructive) { enf.removeHelper() }.disabled(enf.busy)
             } else {
                 Label("Not installed", systemImage: "shield.slash").foregroundStyle(.secondary)
-                Text("Deny is enforced by the helper, which blocks the ports of a denied app’s connections with the macOS packet filter. Without it nothing is blocked and Rat sees only your own processes.")
+                Text("Deny blocks server addresses with the macOS packet filter. Without the helper you click “Apply blocking” each time, and Rat sees only your own processes.")
                     .font(.callout).foregroundStyle(.secondary)
                 Button(enf.busy ? "Installing…" : "Install Helper…") { enf.installHelper() }.disabled(enf.busy)
-                Text("Installs two root LaunchDaemons after an administrator-password prompt: one blocks denied apps continuously, the other lists every process’s connections. “Remove Helper” uninstalls both and clears the firewall rules.")
+                Text("Installs two root LaunchDaemons after an administrator-password prompt: one applies the blocklist the moment it changes, the other lists every process’s connections. “Remove Helper” uninstalls both and clears the firewall table.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if let err = enf.lastError { Text(err).font(.caption).foregroundStyle(.red) }
             Divider()
-            Text("Denying an app blocks the ports of all its processes as soon as the helper sees a socket (a few milliseconds). Server addresses are never blocked, so other apps are not affected. A first connection to a very close server can still get a few packets through; blocking before a connection opens needs Apple’s Network Extension entitlement.")
+            Text("A blocked address is blocked for every app on this Mac. Rat cannot block per process without Apple’s Network Extension entitlement.")
                 .font(.callout).foregroundStyle(.secondary)
         }
     }

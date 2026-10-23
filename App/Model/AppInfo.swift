@@ -1,7 +1,6 @@
 import AppKit
 import Security
 import Darwin
-import RatMonitor
 
 /// Resolves a process path to the user-facing application it belongs to.
 struct AppIdentity: Hashable {
@@ -15,16 +14,9 @@ struct AppIdentity: Hashable {
     var ruleKey: String { bundlePath ?? id }
 
     static func resolve(processPath path: String, pid: Int32? = nil) -> AppIdentity {
-        // System services that work for an app (Safari's WebKit networking process) belong to that app.
-        if let pid, ProcessGrouping.actsForOthers(path), let owner = ProcessGrouping.responsiblePath(of: pid),
-           ProcessGrouping.bundleRoot(of: owner) != nil {
-            return resolve(processPath: owner)
-        }
-        if let bundle = ProcessGrouping.bundleRoot(of: path) {
-            // "Steam.AppBundle" holds Steam's client and helpers; other bundles show the name Finder shows.
-            let name = bundle.hasSuffix(".AppBundle")
-                ? ((bundle as NSString).lastPathComponent as NSString).deletingPathExtension
-                : FileManager.default.displayName(atPath: bundle).replacingOccurrences(of: ".app", with: "")
+        if let r = path.range(of: ".app/") ?? (path.hasSuffix(".app") ? path.range(of: ".app", options: .backwards) : nil) {
+            let bundle = String(path[..<r.upperBound]).trimmingSuffix("/")
+            let name = FileManager.default.displayName(atPath: bundle).replacingOccurrences(of: ".app", with: "")
             // App extensions (.appex) are listed separately from their host app, like Little Snitch's "EXT" rows.
             if path.contains(".appex/") { return AppIdentity(id: bundle + "#ext", name: name, bundlePath: bundle, isSystem: false, isExtension: true) }
             return AppIdentity(id: bundle, name: name, bundlePath: bundle, isSystem: false)
@@ -45,26 +37,12 @@ struct AppIdentity: Hashable {
         return AppIdentity(id: path, name: base, bundlePath: nil, isSystem: false)
     }
 
-    @MainActor static var mainProcessCache: [String: String?] = [:]
-
-    /// The executable the app runs as ("Google Chrome"). A connection held by another process (a helper) is shown
-    /// "via <process>". Nil for the "macOS" row, where every service is shown by name.
-    @MainActor var mainProcessName: String? {
-        if isSystem { return nil }
-        if let c = Self.mainProcessCache[id] { return c }
-        let name = bundlePath.map { Bundle(path: $0)?.executableURL?.lastPathComponent } ?? (id as NSString).lastPathComponent
-        Self.mainProcessCache[id] = .some(name)
-        return name
-    }
-
     @MainActor static var iconCache: [String: NSImage] = [:]
 
     @MainActor var icon: NSImage {
         if let c = Self.iconCache[id] { return c }
         let img: NSImage
-        if let bundlePath, bundlePath.hasSuffix(".AppBundle"), FileManager.default.fileExists(atPath: "/Applications/\(name).app") {
-            img = NSWorkspace.shared.icon(forFile: "/Applications/\(name).app")
-        } else if let bundlePath { img = NSWorkspace.shared.icon(forFile: bundlePath) }
+        if let bundlePath { img = NSWorkspace.shared.icon(forFile: bundlePath) }
         else if isSystem, let sys = NSImage(systemSymbolName: "apple.logo", accessibilityDescription: nil) { img = sys }
         else { img = NSWorkspace.shared.icon(forFile: id.replacingOccurrences(of: "#ext", with: "")) }
         Self.iconCache[id] = img
@@ -84,21 +62,4 @@ struct AppIdentity: Hashable {
 
 private extension String {
     func trimmingSuffix(_ s: String) -> String { hasSuffix(s) ? String(dropLast(s.count)) : self }
-}
-
-/// System services that work for many apps at once. Their sockets belong to the service and the service is its own
-/// responsible process, so nothing on the socket says which app asked. Rat shows them as such instead of guessing.
-enum SharedServices {
-    private static let notes: [String: String] = [
-        "mDNSResponder": "DNS and Bonjour for every app. Which app asked for a name cannot be seen: that needs a DNS proxy (a Network Extension), which Rat cannot install.",
-        "nsurlsessiond": "Background downloads and uploads on behalf of apps.",
-        "apsd": "Push notifications for every app.",
-        "trustd": "Certificate checks for every app.",
-        "cloudd": "iCloud sync on behalf of apps.",
-        "networkserviceproxy": "iCloud Private Relay for apps that use it.",
-        "com.apple.WebKit.Networking": "Web content for an app that macOS did not name.",
-    ]
-
-    /// What the service does for others, or nil for a service that works for itself.
-    static func note(for process: String) -> String? { notes[process] }
 }

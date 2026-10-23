@@ -11,3 +11,5 @@ Rat.xcodeproj/
 App/Vendor/*.mmdb
 App/Vendor/*.gz
 port/target/
+port/target/
+port/target/

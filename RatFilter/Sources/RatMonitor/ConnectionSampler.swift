@@ -15,14 +15,6 @@ public struct ObservedConnection: Hashable, Sendable {
     public var remotePort: Int
     public var localPort: Int
     public var tcpState: String?
-    /// The socket's own address: on a VPN tunnel interface (utun, ipsec) when its traffic goes through the VPN.
-    public var localAddress: String
-
-    public init(pid: Int32, processPath: String, proto: Proto, remoteAddress: String, remotePort: Int, localPort: Int, tcpState: String?,
-                localAddress: String = "") {
-        self.pid = pid; self.processPath = processPath; self.proto = proto; self.remoteAddress = remoteAddress
-        self.remotePort = remotePort; self.localPort = localPort; self.tcpState = tcpState; self.localAddress = localAddress
-    }
 
     public var processName: String { (processPath as NSString).lastPathComponent }
     public var isOutbound: Bool { !remoteAddress.isEmpty && remotePort != 0 }
@@ -38,7 +30,7 @@ public enum ConnectionSampler {
         return result
     }
 
-    public static func allPIDs() -> [pid_t] {
+    static func allPIDs() -> [pid_t] {
         let bytes = proc_listallpids(nil, 0)
         guard bytes > 0 else { return [] }
         var pids = [pid_t](repeating: 0, count: Int(bytes) + 64)
@@ -51,55 +43,54 @@ public enum ConnectionSampler {
         return proc_pidpath(pid, &buf, UInt32(buf.count)) > 0 ? String(cString: buf) : "pid \(pid)"
     }
 
-    /// Socket descriptors of a process (empty if it cannot be inspected).
-    public static func socketFDs(of pid: pid_t) -> [Int32] {
+    static func connections(of pid: pid_t) -> [ObservedConnection] {
         let listBytes = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
         guard listBytes > 0 else { return [] }
         var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(listBytes) / MemoryLayout<proc_fdinfo>.stride + 8)
         let got = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, &fds, Int32(fds.count * MemoryLayout<proc_fdinfo>.stride))
         guard got > 0 else { return [] }
-        return fds.prefix(Int(got) / MemoryLayout<proc_fdinfo>.stride).filter { $0.proc_fdtype == UInt32(PROX_FDTYPE_SOCKET) }.map(\.proc_fd)
-    }
+        let count = Int(got) / MemoryLayout<proc_fdinfo>.stride
 
-    public static func connections(of pid: pid_t) -> [ObservedConnection] {
-        let path = path(of: pid)
-        return socketFDs(of: pid).compactMap { connection(pid: pid, fd: $0, processPath: path) }
-    }
-
-    /// One TCP or UDP socket, or nil for other kinds.
-    public static func connection(pid: pid_t, fd: Int32, processPath: String) -> ObservedConnection? {
-        var info = socket_fdinfo()
-        let r = proc_pidfdinfo(pid, fd, PROC_PIDFDSOCKETINFO, &info, Int32(MemoryLayout<socket_fdinfo>.size))
-        guard r == Int32(MemoryLayout<socket_fdinfo>.size) else { return nil }
-        let proto: ObservedConnection.Proto
-        let ini: in_sockinfo
-        var state: String?
-        switch Int(info.psi.soi_kind) {
-        case SOCKINFO_TCP:
-            proto = .tcp
-            ini = info.psi.soi_proto.pri_tcp.tcpsi_ini
-            state = tcpStateName(info.psi.soi_proto.pri_tcp.tcpsi_state)
-        case SOCKINFO_IN where info.psi.soi_protocol == IPPROTO_UDP:
-            proto = .udp
-            ini = info.psi.soi_proto.pri_in
-        default:
-            return nil
+        var out: [ObservedConnection] = []
+        var processPath: String?
+        for fd in fds.prefix(count) where fd.proc_fdtype == UInt32(PROX_FDTYPE_SOCKET) {
+            var info = socket_fdinfo()
+            let r = proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDSOCKETINFO, &info, Int32(MemoryLayout<socket_fdinfo>.size))
+            guard r == Int32(MemoryLayout<socket_fdinfo>.size) else { continue }
+            let kind = Int(info.psi.soi_kind)
+            let proto: ObservedConnection.Proto
+            let ini: in_sockinfo
+            var state: String?
+            switch kind {
+            case SOCKINFO_TCP:
+                proto = .tcp
+                ini = info.psi.soi_proto.pri_tcp.tcpsi_ini
+                state = tcpStateName(info.psi.soi_proto.pri_tcp.tcpsi_state)
+            case SOCKINFO_IN where info.psi.soi_protocol == IPPROTO_UDP:
+                proto = .udp
+                ini = info.psi.soi_proto.pri_in
+            default:
+                continue
+            }
+            let fport = Int(UInt16(truncatingIfNeeded: ini.insi_fport).bigEndian)
+            let lport = Int(UInt16(truncatingIfNeeded: ini.insi_lport).bigEndian)
+            if processPath == nil { processPath = path(of: pid) }
+            out.append(ObservedConnection(pid: pid, processPath: processPath!, proto: proto,
+                                          remoteAddress: foreignAddress(ini), remotePort: fport,
+                                          localPort: lport, tcpState: state))
         }
-        return ObservedConnection(pid: pid, processPath: processPath, proto: proto,
-                                  remoteAddress: address(ini, local: false), remotePort: Int(UInt16(truncatingIfNeeded: ini.insi_fport).bigEndian),
-                                  localPort: Int(UInt16(truncatingIfNeeded: ini.insi_lport).bigEndian), tcpState: state,
-                                  localAddress: address(ini, local: true))
+        return out
     }
 
-    private static func address(_ ini: in_sockinfo, local: Bool) -> String {
+    private static func foreignAddress(_ ini: in_sockinfo) -> String {
         var buf = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
         if Int32(ini.insi_vflag) & INI_IPV4 != 0 {
-            var a = local ? ini.insi_laddr.ina_46.i46a_addr4 : ini.insi_faddr.ina_46.i46a_addr4
+            var a = ini.insi_faddr.ina_46.i46a_addr4
             guard a.s_addr != 0 else { return "" }
             return inet_ntop(AF_INET, &a, &buf, socklen_t(buf.count)).map { String(cString: $0) } ?? ""
         }
         if Int32(ini.insi_vflag) & INI_IPV6 != 0 {
-            var a = local ? ini.insi_laddr.ina_6 : ini.insi_faddr.ina_6
+            var a = ini.insi_faddr.ina_6
             let isAny = withUnsafeBytes(of: &a) { $0.allSatisfy { $0 == 0 } }
             guard !isAny else { return "" }
             return inet_ntop(AF_INET6, &a, &buf, socklen_t(buf.count)).map { String(cString: $0) } ?? ""
