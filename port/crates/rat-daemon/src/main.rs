@@ -1,5 +1,3 @@
-mod service;
-
 use rat_types::{Connection, ConnectionSource};
 
 struct FakeSource;
@@ -42,36 +40,44 @@ pub async fn run_daemon(shutdown_rx: tokio::sync::broadcast::Receiver<()>) {
 }
 
 #[cfg(unix)]
-#[tokio::main]
-async fn main() {
-    use tokio::signal::unix::{signal, SignalKind};
+fn main() -> std::io::Result<()> {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        use tokio::signal::unix::{signal, SignalKind};
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
 
-    tokio::spawn(async move {
-        let mut sigterm = signal(SignalKind::terminate()).unwrap();
-        let mut sigint = signal(SignalKind::interrupt()).unwrap();
-        tokio::select! {
-            _ = sigterm.recv() => {}
-            _ = sigint.recv() => {}
-        }
-        let _ = shutdown_tx.send(());
+        tokio::spawn(async move {
+            if let (Ok(mut sigterm), Ok(mut sigint)) = (
+                signal(SignalKind::terminate()),
+                signal(SignalKind::interrupt()),
+            ) {
+                tokio::select! {
+                    _ = sigterm.recv() => {}
+                    _ = sigint.recv() => {}
+                }
+            } else {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+            let _ = shutdown_tx.send(());
+        });
+
+        run_daemon(shutdown_rx).await;
     });
-
-    run_daemon(shutdown_rx).await;
+    Ok(())
 }
 
 #[cfg(windows)]
-fn main() {
+fn main() -> std::io::Result<()> {
     // If run as a service, windows_service::service_dispatcher::start is used.
     // We'll just assume service mode for now or fallback to console.
     let is_service = true; // In a real app we might detect this.
     if is_service {
-        if let Err(e) = service::windows::run_service() {
+        if let Err(e) = rat_daemon::service::windows::run_service() {
             eprintln!("Service error: {}", e);
         }
     } else {
-        let rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
             let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
             tokio::spawn(async move {
@@ -81,4 +87,5 @@ fn main() {
             run_daemon(shutdown_rx).await;
         });
     }
+    Ok(())
 }

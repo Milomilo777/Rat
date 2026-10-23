@@ -62,7 +62,7 @@ async fn test_ipc_snapshot() {
     let mut framed = FramedRead::new(stream, LinesCodec::new());
 
     if let Some(Ok(line)) = framed.next().await {
-        let msg: Message = serde_json::from_str(&line).expect("Invalid message");
+        let msg: Message = Message::from_json_str(&line).expect("Invalid message");
         if let Message::Snapshot { connections } = msg {
             assert_eq!(connections.len(), 1);
             assert_eq!(connections[0].process.pid, 1234);
@@ -111,7 +111,7 @@ async fn test_ipc_snapshot() {
     let mut framed = FramedRead::new(client, LinesCodec::new());
 
     if let Some(Ok(line)) = framed.next().await {
-        let msg: Message = serde_json::from_str(&line).expect("Invalid message");
+        let msg: Message = Message::from_json_str(&line).expect("Invalid message");
         if let Message::Snapshot { connections } = msg {
             assert_eq!(connections.len(), 1);
             assert_eq!(connections[0].process.pid, 1234);
@@ -213,7 +213,7 @@ fn test_edge_cases_msg_roundtrip() {
         }],
     };
 
-    let serialized = serde_json::to_string(&snapshot).unwrap();
-    let deserialized: Message = serde_json::from_str(&serialized).unwrap();
+    let serialized = snapshot.to_string().unwrap();
+    let deserialized: Message = Message::from_json_str(&serialized).unwrap();
     assert_eq!(snapshot, deserialized);
 }

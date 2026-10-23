@@ -11,6 +11,22 @@ pub enum Message {
     Error { message: String },
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum MsgError {
+    #[error("Failed to serialize message: {0}")]
+    SerializeError(#[from] serde_json::Error),
+}
+
+impl Message {
+    pub fn to_string(&self) -> Result<String, MsgError> {
+        serde_json::to_string(self).map_err(MsgError::SerializeError)
+    }
+
+    pub fn from_json_str(s: &str) -> Result<Self, MsgError> {
+        serde_json::from_str(s).map_err(MsgError::SerializeError)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -20,8 +36,8 @@ mod tests {
     #[test]
     fn test_message_roundtrip() {
         let msg = Message::Hello { version: 1 };
-        let serialized = serde_json::to_string(&msg).unwrap();
-        let deserialized: Message = serde_json::from_str(&serialized).unwrap();
+        let serialized = msg.to_string().expect("Serialize Hello failed");
+        let deserialized = Message::from_json_str(&serialized).expect("Deserialize Hello failed");
         assert_eq!(msg, deserialized);
 
         let snapshot = Message::Snapshot {
@@ -40,8 +56,18 @@ mod tests {
                 bytes_out: Some(200),
             }],
         };
-        let serialized = serde_json::to_string(&snapshot).unwrap();
-        let deserialized: Message = serde_json::from_str(&serialized).unwrap();
+        let serialized = snapshot.to_string().expect("Serialize Snapshot failed");
+        let deserialized =
+            Message::from_json_str(&serialized).expect("Deserialize Snapshot failed");
         assert_eq!(snapshot, deserialized);
+    }
+
+    #[test]
+    fn test_bad_input() {
+        let err = Message::from_json_str("not json");
+        assert!(err.is_err());
+
+        let err2 = Message::from_json_str(r#"{"BadVariant": 123}"#);
+        assert!(err2.is_err());
     }
 }

@@ -170,7 +170,7 @@ where
             msg = snapshot_rx.recv() => {
                 match msg {
                     Ok(msg) => {
-                        if let Ok(serialized) = serde_json::to_string(&msg) {
+                        if let Ok(serialized) = msg.to_string() {
                             if framed.send(serialized).await.is_err() {
                                 break;
                             }
@@ -185,13 +185,13 @@ where
             result = framed.next() => {
                 match result {
                     Some(Ok(line)) => {
-                        match serde_json::from_str::<Message>(&line) {
+                        match Message::from_json_str(&line) {
                             Ok(_msg) => {
                                 // Ignore incoming messages for now, just handle them
                             }
                             Err(_) => {
                                 let err_msg = Message::Error { message: "Invalid JSON".to_string() };
-                                if let Ok(err_ser) = serde_json::to_string(&err_msg) {
+                                if let Ok(err_ser) = err_msg.to_string() {
                                     let _ = framed.send(err_ser).await;
                                 }
                             }
@@ -199,7 +199,7 @@ where
                     }
                     Some(Err(e)) => {
                         let err_msg = Message::Error { message: format!("LinesCodec error: {}", e) };
-                        if let Ok(err_ser) = serde_json::to_string(&err_msg) {
+                        if let Ok(err_ser) = err_msg.to_string() {
                             let _ = framed.send(err_ser).await;
                         }
                         break;
