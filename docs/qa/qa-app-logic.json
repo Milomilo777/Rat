@@ -1,6 +1,6 @@
 {
     "lane": "qa-app-logic",
-    "step": 3,
+    "step": 6,
     "requirements": [
         {
             "id": "R1",
@@ -92,8 +92,7 @@
         }
     ],
     "files_changed": [
-        "docs/qa/qa-app-logic.md",
-        "docs/qa/qa-app-logic.json"
+        "port/docs/parity-checklist.md"
     ],
     "existing_tests_modified": [],
     "commands": [],
@@ -128,6 +127,22 @@
         {
             "what": "Re-verified R6 for v1.2.0 changes",
             "why": "Checked if the malformed state file issue was fixed upstream in v1.2.0. It is still not fixed; RulesModel.init still triggers an overwrite on a malformed rules.json load."
+        },
+        {
+            "what": "Created parity checklist for the port",
+            "why": "The supervisor requested a parity checklist mapping macOS user-visible behaviors to the Rust crates of the port, with testing ideas and platform specifics."
+        },
+        {
+            "what": "Reviewed parity checklist after v1.2.0 update",
+            "why": "The parity checklist has already been generated based on v1.2.0 files."
+        },
+        {
+            "what": "Updated parity checklist",
+            "why": "Included explicit mapping to specific crates as requested: rat-core, rat-geo, rat-monitor-linux, rat-monitor-windows, rat-enforcer, rat-ledger, rat-daemon, rat-names, port/app."
+        },
+        {
+            "what": "Updated parity checklist formatting",
+            "why": "Followed instructions to write the file accurately mapping macOS UI behavior to Rust crates of the port."
         }
     ]
 }
