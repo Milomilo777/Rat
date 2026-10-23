@@ -59,7 +59,11 @@ struct SdGuard(isize);
 impl Drop for SdGuard {
     fn drop(&mut self) {
         if self.0 != 0 {
-            unsafe { windows_sys::Win32::Foundation::LocalFree(self.0 as windows_sys::Win32::Foundation::HLOCAL); }
+            unsafe {
+                windows_sys::Win32::Foundation::LocalFree(
+                    self.0 as windows_sys::Win32::Foundation::HLOCAL,
+                );
+            }
         }
     }
 }
@@ -70,7 +74,7 @@ pub async fn start_ipc_server(
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
     snapshot_rx: tokio::sync::broadcast::Receiver<Message>,
 ) -> std::io::Result<()> {
-    use tokio::net::windows::named_pipe::{ServerOptions, NamedPipeServer};
+    use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
     use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorA;
 
     const SDDL_REVISION_1: u32 = 1;
@@ -110,11 +114,17 @@ pub async fn start_ipc_server(
 
         let server: std::io::Result<NamedPipeServer> = {
             let mut security_attributes = windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
-                nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>() as u32,
+                nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>()
+                    as u32,
                 lpSecurityDescriptor: sd_val as *mut _,
                 bInheritHandle: 0,
             };
-            unsafe { server_options.create_with_security_attributes_raw(pipe_name, &mut security_attributes as *mut _ as *mut _) }
+            unsafe {
+                server_options.create_with_security_attributes_raw(
+                    pipe_name,
+                    &mut security_attributes as *mut _ as *mut _,
+                )
+            }
         };
 
         let server = match server {

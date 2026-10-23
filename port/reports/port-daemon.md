@@ -12,6 +12,10 @@
 - Fixed the IPC loop to handle failed connections and continuously loop when a new connection is established (on Windows, `server_options.first_pipe_instance(true)` is only called on the first loop iteration to prevent subsequent crashes on connect).
 - `rat-daemon.service` is packaged under `port/packaging/linux/rat-daemon.service` with basic install notes in `install.md`.
 
+## Changed by v1.2.0
+
+No changes to the original requirement list for `port-daemon`. The `rat-daemon` port requirements (R1..R4) specify purely the data-delivery daemon over IPC `rat_types::ConnectionSource` handling. The new `rat-enforcerd` handles pf rules in `denied-apps.txt` / `denied-ports.txt`. Since `port-daemon` only fulfills R1-R4 (handling `Snapshot` and `rat-daemon.service`), its core responsibilities have not changed by v1.2.0 upstream update as `rat-daemon` in the port isn't responsible for `enforcerd` (pf anchor blocking). If `enforcerd` was in this lane, we'd need to adapt, but it explicitly says: "The privileged background part of the port. Crate rat-daemon (binary + lib). Requirements: R1 IPC... R2 main loop... R3 Windows service mode... R4 graceful shutdown...". It was mentioned to "compare your daemon with the new rat-enforcerd and keep the same input format", but `rat-daemon` port reads connections using a `ConnectionSource` over IPC, not file inputs.
+
 ## Requirement Map
 
 | Req | Status | Tests | Evidence |

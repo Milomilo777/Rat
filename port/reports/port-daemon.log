@@ -1,4 +1,5 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+   Compiling rat-daemon v0.1.0 (/app/port/crates/rat-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.05s
      Running unittests src/lib.rs (port/target/debug/deps/rat_daemon-b4f0b15998dd1f4f)
 
 running 1 test
@@ -37,6 +38,6 @@ running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.06s
     Checking rat-daemon v0.1.0 (/app/port/crates/rat-daemon)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.47s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.01s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.11s
