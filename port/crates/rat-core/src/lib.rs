@@ -138,7 +138,7 @@ fn default_lifetime() -> Lifetime {
     Lifetime::Forever
 }
 fn default_created_at() -> DateTime<Utc> {
-    DateTime::from_timestamp(0, 0).unwrap()
+    DateTime::from_timestamp(0, 0).unwrap_or_default()
 }
 
 impl Rule {
@@ -656,6 +656,7 @@ impl RuleStore {
             return Ok(RuleSet::standard(None));
         }
         let data = fs::read_to_string(&self.url)?;
+        // If data is empty or completely unparseable, return an error rather than silently defaulting if it's completely malformed, but Swift gracefully defaulted.
         if let Ok(mut s) = serde_json::from_str::<RuleSet>(&data) {
             if s.version < 2 {
                 s.version = 2;
@@ -1174,5 +1175,27 @@ mod edge_cases {
         c.process.path = "/usr/bin/你好".to_string();
 
         assert_eq!(e.evaluate(&c), Verdict::Deny);
+    }
+}
+
+#[cfg(test)]
+mod load_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_malformed_lines_handled_gracefully() {
+        let dir = tempdir().unwrap();
+        let url = dir.path().join("malformed.json");
+        fs::write(&url, "this is not json").unwrap();
+
+        let store = RuleStore::new(url);
+        // Swift handles it by falling back to RuleSet::standard() or empty array.
+        // We implemented it similarly: if it fails to decode RuleSet, it tries Vec<Rule>.
+        // If that fails (unwrap_or_default), it just returns an empty standard RuleSet.
+        let s = store.load_set().unwrap();
+        assert_eq!(s.rules.len(), 0);
+        assert_eq!(s.version, 2); // standard default
     }
 }

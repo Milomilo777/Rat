@@ -88,6 +88,20 @@
         "where": "port/crates/rat-core/src/lib.rs:272",
         "caught_by": "rat_core::edge_cases::test_ipv6_handling"
       }
+    },
+    {
+      "id": "Edge Cases (Malformed)",
+      "status": "MET",
+      "tests": [
+        "rat_core::load_tests::test_malformed_lines_handled_gracefully"
+      ],
+      "evidence": [
+        "port/crates/rat-core/src/lib.rs:668"
+      ],
+      "mutation": {
+        "where": "port/crates/rat-core/src/lib.rs:668",
+        "caught_by": "rat_core::load_tests::test_malformed_lines_handled_gracefully"
+      }
     }
   ],
   "files_changed": [
