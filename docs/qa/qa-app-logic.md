@@ -93,3 +93,17 @@
 **PASS**
 *   **Evidence:** `App/Model/Ledger.swift:178` (`Task.detached(priority: .utility)` for background sampling) and `App/Model/Ledger.swift:210` (`ingest(_:_:)`)
 *   **Reason:** The `Ledger` is a `@MainActor` class. Background operations are correctly detached using `Task.detached`, resulting in Sendable value types (`ObservedConnection`, `TrafficCounter`) being returned to the actor context. State mutations in `ingest` occur safely on the main thread, avoiding data races with SwiftUI views. Other shared caches like `GeoService` use `NSLock`.
+
+## Cross-Module FAIL Mapping
+
+### R6: a malformed state file does not wipe user rules
+*   **App Logic (`App/Model`)**: FAIL. As detailed above, `RulesModel.init` falls back to `RuleSet.standard()` when loading a malformed `rules.json`, which then triggers a save that overwrites and permanently destroys the user's rules.
+*   **Pure Swift Package (`RatFilter/Sources`)**: The same hazardous pattern exists in `RatFilter/Sources/RatFilterCore/RuleEngine.swift`. In the `RuleStore.save(_ rules: [Rule])` method (the v0.1 API), the code does:
+    `var s = (try? loadSet()) ?? RuleSet.standard(); s.rules = rules; try saveSet(s)`
+    If `loadSet()` throws due to a malformed file, this method silently falls back to `RuleSet.standard()`, injects the new rules, and overwrites the file, wiping any existing groups, profiles, and unrecoverable user rules.
+
+## FAIL Rankings by User Impact
+
+1.  **R6: a malformed state file does not wipe user rules**
+    *   **Impact:** Data loss (Highest)
+    *   **Reason:** A crash, power failure, or manual edit that corrupts `rules.json` will cause the application (or any API consumer using `RuleStore.save`) to irreversibly wipe all user-configured rules, profiles, and groups on the very next save operation, instead of preserving the file or halting execution.
