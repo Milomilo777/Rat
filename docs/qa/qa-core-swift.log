@@ -1,0 +1,62 @@
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 1421328634
+INFO: Loaded 1 modules   (2429 inline 8-bit counters): 2429 [0x55780bab20f0, 0x55780bab2a6d),
+INFO: Loaded 1 PC tables (2429 PCs): 2429 [0x55780bab2a70,0x55780babc240),
+INFO: -max_len is not provided; libFuzzer will not generate inputs larger than 4096 bytes
+INFO: A corpus is not provided, starting from an empty corpus
+#2	INITED cov: 45 ft: 46 corp: 1/1b exec/s: 0 rss: 46Mb
+#3	NEW    cov: 49 ft: 50 corp: 2/2b lim: 4 exec/s: 0 rss: 46Mb L: 1/1 MS: 1 ChangeBit-
+#1355	NEW    cov: 51 ft: 53 corp: 3/19b lim: 17 exec/s: 0 rss: 48Mb L: 17/17 MS: 2 InsertByte-InsertRepeatedBytes-
+#1391	REDUCE cov: 51 ft: 53 corp: 3/18b lim: 17 exec/s: 0 rss: 48Mb L: 16/16 MS: 1 EraseBytes-
+#1633	REDUCE cov: 51 ft: 53 corp: 3/17b lim: 17 exec/s: 0 rss: 48Mb L: 15/15 MS: 2 InsertByte-EraseBytes-
+#262144	pulse  cov: 51 ft: 53 corp: 3/17b lim: 2600 exec/s: 87381 rss: 340Mb
+#524288	pulse  cov: 51 ft: 53 corp: 3/17b lim: 4096 exec/s: 87381 rss: 481Mb
+#1048576	pulse  cov: 51 ft: 53 corp: 3/17b lim: 4096 exec/s: 80659 rss: 482Mb
+#2097152	pulse  cov: 51 ft: 53 corp: 3/17b lim: 4096 exec/s: 77672 rss: 482Mb
+#4194304	pulse  cov: 51 ft: 53 corp: 3/17b lim: 4096 exec/s: 80659 rss: 483Mb
+#8388608	pulse  cov: 51 ft: 53 corp: 3/17b lim: 4096 exec/s: 79891 rss: 483Mb
+==3233723== libFuzzer: run interrupted; exiting
+
+=========================================
+
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 976506203
+INFO: Loaded 1 modules   (23959 inline 8-bit counters): 23959 [0x556c9e2dac10, 0x556c9e2e09a7),
+INFO: Loaded 1 PC tables (23959 PCs): 23959 [0x556c9e2e09a8,0x556c9e33e318),
+INFO: -max_len is not provided; libFuzzer will not generate inputs larger than 4096 bytes
+INFO: A corpus is not provided, starting from an empty corpus
+#2	INITED cov: 27 ft: 28 corp: 1/1b exec/s: 0 rss: 46Mb
+#3	NEW    cov: 30 ft: 31 corp: 2/2b lim: 4 exec/s: 0 rss: 46Mb L: 1/1 MS: 1 ChangeByte-
+	NEW_FUNC[1/11]: 0x556c9e0ea540  (/app/RatFilter/fuzz_rule+0x24b540)
+	NEW_FUNC[2/11]: 0x556c9e0ef010  (/app/RatFilter/fuzz_rule+0x250010)
+#22	NEW    cov: 57 ft: 60 corp: 3/3b lim: 4 exec/s: 0 rss: 48Mb L: 1/1 MS: 2 CrossOver-ChangeBinInt-
+#26	NEW    cov: 58 ft: 63 corp: 4/5b lim: 4 exec/s: 0 rss: 48Mb L: 2/2 MS: 4 InsertByte-ChangeASCIIInt-ChangeASCIIInt-CrossOver-
+#32	REDUCE cov: 58 ft: 63 corp: 4/4b lim: 4 exec/s: 0 rss: 48Mb L: 1/1 MS: 1 EraseBytes-
+#1362	NEW    cov: 59 ft: 64 corp: 5/19b lim: 17 exec/s: 0 rss: 51Mb L: 15/15 MS: 5 ChangeBit-CrossOver-InsertRepeatedBytes-ChangeByte-InsertByte-
+	NEW_FUNC[1/2]: 0x556c9e2501b0  (/app/RatFilter/fuzz_rule+0x3b11b0)
+	NEW_FUNC[2/2]: 0x556c9e250930  (/app/RatFilter/fuzz_rule+0x3b1930)
+#26339	REDUCE cov: 68 ft: 73 corp: 6/21b lim: 261 exec/s: 0 rss: 92Mb L: 2/15 MS: 2 ChangeByte-InsertByte-
+	NEW_FUNC[1/9]: 0x556c9e0ea480  (/app/RatFilter/fuzz_rule+0x24b480)
+	NEW_FUNC[2/9]: 0x556c9e109d70  (/app/RatFilter/fuzz_rule+0x26ad70)
+#27556	NEW    cov: 96 ft: 107 corp: 7/25b lim: 269 exec/s: 0 rss: 94Mb L: 4/15 MS: 1 CopyPart-
+#27567	NEW    cov: 97 ft: 110 corp: 8/29b lim: 269 exec/s: 0 rss: 95Mb L: 4/15 MS: 1 CopyPart-
+#34844	REDUCE cov: 97 ft: 110 corp: 8/28b lim: 341 exec/s: 34844 rss: 107Mb L: 3/15 MS: 2 EraseBytes-CrossOver-
+#65536	pulse  cov: 97 ft: 110 corp: 8/28b lim: 643 exec/s: 32768 rss: 157Mb
+	NEW_FUNC[1/7]: 0x556c9e136a50  (/app/RatFilter/fuzz_rule+0x297a50)
+	NEW_FUNC[2/7]: 0x556c9e136a70  (/app/RatFilter/fuzz_rule+0x297a70)
+#119129	NEW    cov: 117 ft: 133 corp: 9/30b lim: 1170 exec/s: 29782 rss: 247Mb L: 2/15 MS: 4 EraseBytes-ChangeBit-EraseBytes-ChangeBit-
+	NEW_FUNC[1/8]: 0x556c9e108980  (/app/RatFilter/fuzz_rule+0x269980)
+	NEW_FUNC[2/8]: 0x556c9e108bd0  (/app/RatFilter/fuzz_rule+0x269bd0)
+#119181	NEW    cov: 225 ft: 245 corp: 10/34b lim: 1170 exec/s: 29795 rss: 247Mb L: 4/15 MS: 1 CrossOver-
+#119192	NEW    cov: 227 ft: 247 corp: 11/38b lim: 1170 exec/s: 29798 rss: 247Mb L: 4/15 MS: 1 ShuffleBytes-
+#131072	pulse  cov: 227 ft: 247 corp: 11/38b lim: 1280 exec/s: 32768 rss: 267Mb
+#262144	pulse  cov: 227 ft: 247 corp: 11/38b lim: 2589 exec/s: 32768 rss: 491Mb
+#464162	NEW    cov: 227 ft: 248 corp: 12/43b lim: 4096 exec/s: 38680 rss: 511Mb L: 5/15 MS: 5 CMP-CrossOver-ShuffleBytes-ShuffleBytes-ShuffleBytes- DE: "\000\000"-
+#465763	REDUCE cov: 227 ft: 248 corp: 12/42b lim: 4096 exec/s: 38813 rss: 511Mb L: 4/15 MS: 1 EraseBytes-
+#524288	pulse  cov: 227 ft: 248 corp: 12/42b lim: 4096 exec/s: 40329 rss: 512Mb
+#814291	NEW    cov: 227 ft: 249 corp: 13/50b lim: 4096 exec/s: 47899 rss: 515Mb L: 8/15 MS: 3 PersAutoDict-PersAutoDict-ShuffleBytes- DE: "\000\000"-"\000\000"-
+#1048576	pulse  cov: 227 ft: 249 corp: 13/50b lim: 4096 exec/s: 52428 rss: 515Mb
+#2097152	pulse  cov: 227 ft: 249 corp: 13/50b lim: 4096 exec/s: 58254 rss: 515Mb
+#4194304	pulse  cov: 227 ft: 249 corp: 13/50b lim: 4096 exec/s: 60787 rss: 515Mb
+#8388608	pulse  cov: 227 ft: 249 corp: 13/50b lim: 4096 exec/s: 63072 rss: 515Mb
+==3120369== libFuzzer: run interrupted; exiting
