@@ -1,0 +1,72 @@
+import json
+
+data = {
+    "lane": "port-geo",
+    "step": 4,
+    "requirements": [
+        {
+            "id": "R1",
+            "status": "MET",
+            "tests": ["test_geo::test_geoip_lookup", "test_geo::test_geoip_edge_cases", "test_geo::test_geoip_ipv4_mapped_edge"],
+            "evidence": ["port/crates/rat-geo/src/lib.rs:23"],
+            "mutation": {"where": "port/crates/rat-geo/src/lib.rs:23", "caught_by": "test_geo::test_geoip_lookup"}
+        },
+        {
+            "id": "R2",
+            "status": "MET",
+            "tests": ["test_geo::test_geoip_lookup", "test_geo::test_asn_lookup"],
+            "evidence": ["port/crates/rat-geo/tests/test_geo.rs:7", "port/crates/rat-geo/tests/test_geo.rs:114"],
+            "mutation": {"where": "port/crates/rat-geo/tests/test_geo.rs:25", "caught_by": "test_geo::test_geoip_lookup"}
+        },
+        {
+            "id": "R3",
+            "status": "MET",
+            "tests": ["test_geo::test_parse_iso6709", "test_geo::test_zone_tab", "test_geo::test_zone_tab_edge_cases", "test_geo::test_parse_deg_edge_cases"],
+            "evidence": ["port/crates/rat-geo/src/lib.rs:132", "port/crates/rat-geo/src/lib.rs:159", "port/crates/rat-geo/src/windows_tz.rs:4"],
+            "mutation": {"where": "port/crates/rat-geo/src/lib.rs:180", "caught_by": "test_geo::test_zone_tab"}
+        },
+        {
+            "id": "R4",
+            "status": "MET",
+            "tests": ["test_geo::test_default_db_path"],
+            "evidence": ["port/crates/rat-geo/src/lib.rs:81"],
+            "mutation": {"where": "port/crates/rat-geo/src/lib.rs:82", "caught_by": "test_geo::test_default_db_path"}
+        },
+        {
+            "id": "R5",
+            "status": "MET",
+            "tests": ["test_geo::test_asn_lookup", "test_geo::test_default_asn_db_path"],
+            "evidence": ["port/crates/rat-geo/src/lib.rs:218", "port/crates/rat-geo/src/lib.rs:232"],
+            "mutation": {"where": "port/crates/rat-geo/src/lib.rs:236", "caught_by": "test_geo::test_asn_lookup"}
+        }
+    ],
+    "files_changed": [
+        "port/Cargo.toml",
+        "port/Cargo.lock",
+        "port/crates/rat-types/Cargo.toml",
+        "port/crates/rat-types/src/lib.rs",
+        "port/crates/rat-geo/Cargo.toml",
+        "port/crates/rat-geo/src/lib.rs",
+        "port/crates/rat-geo/src/windows_tz.rs",
+        "port/crates/rat-geo/tests/test_geo.rs",
+        "port/crates/rat-geo/tests/test_fixture.rs",
+        "port/reports/port-geo.md",
+        "port/reports/port-geo.json",
+        "port/reports/port-geo.log",
+        "port/docs/rat-geo.md"
+    ],
+    "existing_tests_modified": [],
+    "commands": [
+        {"cmd": "cargo test --manifest-path port/crates/rat-geo/Cargo.toml", "exit_code": 0}
+    ],
+    "unverified": [
+        "Windows specific parsing with tzutil cannot be executed on Linux"
+    ],
+    "decisions": [
+        {"what": "Used maxminddb crate rather than porting the custom MMDB.swift", "why": "The maxminddb crate is mature, well-tested, and significantly reduces the maintenance burden compared to porting a custom implementation."},
+        {"what": "Added edge case tests and docs", "why": "As per instructions."}
+    ]
+}
+
+with open("port/reports/port-geo.json", "w") as f:
+    json.dump(data, f, indent=4)
