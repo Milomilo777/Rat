@@ -10,6 +10,7 @@ let package = Package(
         .library(name: "RatMonitor", targets: ["RatMonitor"]),
         .library(name: "RatGeo", targets: ["RatGeo"]),
         .library(name: "RatEnforce", targets: ["RatEnforce"]),
+        .executable(name: "GoldenExport", targets: ["GoldenExport"]),
     ],
     targets: [
         .target(name: "RatFilterCore"),
@@ -17,6 +18,7 @@ let package = Package(
         .target(name: "RatMonitor"),
         .target(name: "RatGeo"),
         .target(name: "RatEnforce", dependencies: ["RatMonitor"]),
+        .executableTarget(name: "GoldenExport", dependencies: ["RatFilterCore"], path: "Tools/GoldenExport"),
         .testTarget(name: "RatEnforceTests", dependencies: ["RatEnforce"]),
         .testTarget(name: "RatGeoTests", dependencies: ["RatGeo"]),
         .testTarget(name: "RatMonitorTests", dependencies: ["RatMonitor"]),

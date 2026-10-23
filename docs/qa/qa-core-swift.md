@@ -27,3 +27,14 @@ Tests are executed on Linux with Swift 6.0.2 to ensure the platform independence
 - **R8 (MMDB truncated/corrupt)**: PASS. Proven by `testQAR8AndR10MMDBSecurityPointerLoopsAndGiantMaps`. The decode budget prevents oversized data like giant maps from causing a crash, returning `nil` cleanly.
 - **R9 (IPv6 lookups)**: PASS. Proven by `testQAR9IPv6Lookups`. Lookups for IPv6 strings map correctly in an IP version 6 MMDB tree.
 - **R10 (pointer loops)**: PASS. Proven by `testQAR8AndR10MMDBSecurityPointerLoopsAndGiantMaps`. The reader successfully mitigates an infinite loop by rejecting data where a record points to its own offset.
+
+
+## RuleEngine Branch Coverage (Golden Vectors)
+The generator `RatFilter/Tools/GoldenExport/main.swift` produces 300+ cases hitting every logic branch in `RuleEngine.swift`.
+- **active(_:) profile filter:** Tested via `testRules[0]` with `profileID` mapped to `homeProfile.id` vs `workProfile.id`.
+- **active(_:) group filter:** Tested via `testRules[0]` mapped to `disabledGroup`.
+- **active(_:) enabled & approved filter:** Tested via permutations of `enabled` (true/false) and `approved` (true/false) on `testRules[0]`.
+- **matchingRule specificity contest:** Tested by pairs of rules (e.g., Domain vs Exact Host, Domain vs Exact App).
+- **matchingRule deny-over-allow:** Tested by duplicate specificity rules with `.allow` and `.deny`.
+- **matchingRule createdAt tie-breaker:** Tested by duplicate specificity rules with the same verdict but inverted `createdAt` dates.
+- **evaluate default verdict:** Tested by an empty ruleset with `.allow`, `.deny`, and `.ask` (nil) silent verdicts.
