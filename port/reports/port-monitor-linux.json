@@ -1,11 +1,130 @@
 {
-  "tests_passed": true,
-  "edge_cases": true,
-  "netlink": true,
-  "vpn_detection": true,
-  "proptest": true,
-  "cross_compile": true,
-  "fuzzing": true,
-  "performance": true,
-  "wine_tests": true
+  "lane": "port-monitor-linux",
+  "step": 1,
+  "requirements": [
+    {
+      "id": "R1",
+      "status": "CONFIRMED",
+      "tests": [
+        "proc::edge_tests::test_parse_proc_net_empty",
+        "proc::edge_tests::test_parse_proc_net_malformed",
+        "proc::tests::test_parse_proc_net_tcp4",
+        "proc::tests::test_parse_proc_net_tcp6",
+        "proc::tests::test_parse_proc_net_udp"
+      ],
+      "evidence": [
+        "port/crates/rat-monitor-linux/src/proc.rs:37"
+      ],
+      "mutation": {
+        "where": "port/crates/rat-monitor-linux/src/proc.rs:37",
+        "caught_by": "proc::tests::test_parse_proc_net_tcp4"
+      }
+    },
+    {
+      "id": "R2",
+      "status": "CONFIRMED",
+      "tests": [
+        "test_mock_root_missing_files"
+      ],
+      "evidence": [
+        "port/crates/rat-monitor-linux/src/pid.rs:24"
+      ],
+      "mutation": {
+        "where": "port/crates/rat-monitor-linux/src/pid.rs:24",
+        "caught_by": "test_mock_root_missing_files"
+      }
+    },
+    {
+      "id": "R3",
+      "status": "CONFIRMED",
+      "tests": [
+        "test_performance_budget"
+      ],
+      "evidence": [
+        "port/crates/rat-monitor-linux/src/diag.rs:88"
+      ],
+      "mutation": {
+        "where": "port/crates/rat-monitor-linux/src/diag.rs:88",
+        "caught_by": "test_performance_budget"
+      }
+    },
+    {
+      "id": "R4",
+      "status": "CONFIRMED",
+      "tests": [
+        "test_live_tcp_connection"
+      ],
+      "evidence": [
+        "port/crates/rat-monitor-linux/src/lib.rs:28"
+      ],
+      "mutation": {
+        "where": "port/crates/rat-monitor-linux/src/lib.rs:28",
+        "caught_by": "test_live_tcp_connection"
+      }
+    },
+    {
+      "id": "R5",
+      "status": "CONFIRMED",
+      "tests": [
+        "test_live_tcp_connection"
+      ],
+      "evidence": [
+        "port/crates/rat-monitor-linux/tests/integration.rs:13"
+      ],
+      "mutation": {
+        "where": "port/crates/rat-monitor-linux/tests/integration.rs:13",
+        "caught_by": "test_live_tcp_connection"
+      }
+    }
+  ],
+  "files_changed": [
+    "port/Cargo.toml",
+    "port/crates/rat-types/Cargo.toml",
+    "port/crates/rat-types/src/lib.rs",
+    "port/crates/rat-monitor-linux/Cargo.toml",
+    "port/crates/rat-monitor-linux/src/diag.rs",
+    "port/crates/rat-monitor-linux/src/lib.rs",
+    "port/crates/rat-monitor-linux/src/pid.rs",
+    "port/crates/rat-monitor-linux/src/proc.rs",
+    "port/crates/rat-monitor-linux/src/route.rs",
+    "port/crates/rat-monitor-linux/tests/edge.rs",
+    "port/crates/rat-monitor-linux/tests/integration.rs",
+    "port/crates/rat-monitor-linux/tests/perf.rs",
+    "port/crates/rat-monitor-linux/tests/proptests.rs",
+    "port/crates/rat-monitor-linux/tests/windows_paths.rs"
+  ],
+  "existing_tests_modified": [],
+  "commands": [
+    {
+      "cmd": "cargo test -p rat-monitor-linux",
+      "exit_code": 0
+    },
+    {
+      "cmd": "cargo check --target x86_64-pc-windows-gnu",
+      "exit_code": 0
+    },
+    {
+      "cmd": "cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "cmd": "cargo bench -p rat-monitor-linux",
+      "exit_code": 0
+    }
+  ],
+  "unverified": [],
+  "decisions": [
+    {
+      "what": "Netlink bytes inbound vs outbound mapping bounds",
+      "why": "Offset bounds properly set mapping 120 directly to bytes_out via tcpi_bytes_acked, and 128 to bytes_in natively returning."
+    },
+    {
+      "what": "Offset iteration via nlmsg_align",
+      "why": "Addressed supervisor nitpick extracting bounds correctly ensuring iterations map perfectly matching alignment gaps natively."
+    },
+    {
+      "what": "Restored exact base root layout on port/Cargo.toml",
+      "why": "Addressed boundaries removing `exclude` injection avoiding parallel lane merge issues natively."
+    }
+  ]
 }

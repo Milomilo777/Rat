@@ -6,6 +6,14 @@ pub struct SocketCounters {
     pub bytes_out: Option<u64>,
 }
 
+// Netlink alignment macro
+#[cfg(target_os = "linux")]
+macro_rules! nlmsg_align {
+    ($len:expr) => {
+        (($len) + 3) & !3
+    };
+}
+
 #[cfg(target_os = "linux")]
 pub fn get_socket_counters() -> HashMap<u64, SocketCounters> {
     use netlink_packet_core::{
@@ -58,7 +66,7 @@ pub fn get_socket_counters() -> HashMap<u64, SocketCounters> {
             while offset < size {
                 let bytes = &receive_buffer[offset..];
                 if let Ok(rx_msg) = <NetlinkMessage<SockDiagMessage>>::deserialize(bytes) {
-                    offset += rx_msg.header.length as usize;
+                    offset += nlmsg_align!(rx_msg.header.length as usize);
 
                     match rx_msg.payload {
                         NetlinkPayload::Done(_) | NetlinkPayload::Error(_) => {
@@ -75,12 +83,15 @@ pub fn get_socket_counters() -> HashMap<u64, SocketCounters> {
                                 if nla_buf.len() >= 4 {
                                     let nla_type =
                                         u16::from_ne_bytes(nla_buf[2..4].try_into().unwrap());
+                                    // INET_DIAG_INFO = 2
                                     if nla_type == 2 && nla_buf.len() >= 4 + 136 {
                                         let payload = &nla_buf[4..];
-                                        counters.bytes_in = Some(u64::from_ne_bytes(
+                                        // 120 is bytes_acked (outbound)
+                                        counters.bytes_out = Some(u64::from_ne_bytes(
                                             payload[120..128].try_into().unwrap(),
                                         ));
-                                        counters.bytes_out = Some(u64::from_ne_bytes(
+                                        // 128 is bytes_received (inbound)
+                                        counters.bytes_in = Some(u64::from_ne_bytes(
                                             payload[128..136].try_into().unwrap(),
                                         ));
                                     }
