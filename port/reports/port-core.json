@@ -1,0 +1,213 @@
+{
+  "lane": "port-core",
+  "step": 1,
+  "requirements": [
+    {
+      "id": "R1",
+      "status": "MET",
+      "tests": [
+        "rat_core::tests::test_default_asks",
+        "rat_core::tests::test_domain_matches_subdomains",
+        "rat_core::tests::test_specific_beats_general",
+        "rat_core::tests::test_deny_wins_tie",
+        "rat_core::tests::test_disabled_ignored_but_unapproved_still_active",
+        "rat_core::tests::test_process_path_matches_inside_bundle",
+        "rat_core::tests::test_exact_host_does_not_match_subdomain",
+        "rat_core::tests::test_port_range_and_protocol",
+        "rat_core::tests::test_profiles_scope_rules",
+        "rat_core::tests::test_disabled_group_silences_its_rules",
+        "rat_core::tests::test_silent_mode_changes_default"
+      ],
+      "evidence": [
+        "port/crates/rat-core/src/lib.rs:136-221",
+        "port/crates/rat-core/src/lib.rs:491-536"
+      ],
+      "mutation": {
+        "where": "port/crates/rat-core/src/lib.rs:141",
+        "caught_by": "rat_core::tests::test_specific_beats_general"
+      }
+    },
+    {
+      "id": "R2",
+      "status": "MET",
+      "tests": [
+        "rat_core::tests::test_r2_json_byte_compatibility",
+        "rat_core::tests::test_store_round_trip",
+        "rat_core::tests::test_import_accepts_legacy_bare_array",
+        "rat_core::tests::test_new_installs_are_silent_allow_and_version1_files_migrate",
+        "rat_core::tests::test_unknown_network_action_round_trips"
+      ],
+      "evidence": [
+        "port/crates/rat-core/src/lib.rs:77-111",
+        "port/crates/rat-core/src/lib.rs:596-611"
+      ],
+      "mutation": {
+        "where": "port/crates/rat-core/src/lib.rs:599",
+        "caught_by": "rat_core::tests::test_new_installs_are_silent_allow_and_version1_files_migrate"
+      }
+    },
+    {
+      "id": "R3",
+      "status": "MET",
+      "tests": [
+        "rat_core::tests::test_r3_path_normalization"
+      ],
+      "evidence": [
+        "port/crates/rat-core/src/lib.rs:25-50"
+      ],
+      "mutation": {
+        "where": "port/crates/rat-core/src/lib.rs:45",
+        "caught_by": "rat_core::tests::test_r3_path_normalization"
+      }
+    },
+    {
+      "id": "R4",
+      "status": "MET",
+      "tests": [
+        "rat_core::tests::test_r3_path_normalization"
+      ],
+      "evidence": [
+        "port/crates/rat-core/src/lib.rs:37-47"
+      ],
+      "mutation": {
+        "where": "port/crates/rat-core/src/lib.rs:38",
+        "caught_by": "rat_core::tests::test_r3_path_normalization"
+      }
+    },
+    {
+      "id": "Edge Cases",
+      "status": "MET",
+      "tests": [
+        "rat_core::edge_cases::test_ipv6_handling",
+        "rat_core::edge_cases::test_non_ascii_paths"
+      ],
+      "evidence": [
+        "port/crates/rat-core/src/lib.rs:271-277"
+      ],
+      "mutation": {
+        "where": "port/crates/rat-core/src/lib.rs:272",
+        "caught_by": "rat_core::edge_cases::test_ipv6_handling"
+      }
+    },
+    {
+      "id": "Edge Cases (Malformed)",
+      "status": "MET",
+      "tests": [
+        "rat_core::load_tests::test_malformed_lines_handled_gracefully"
+      ],
+      "evidence": [
+        "port/crates/rat-core/src/lib.rs:668"
+      ],
+      "mutation": {
+        "where": "port/crates/rat-core/src/lib.rs:668",
+        "caught_by": "rat_core::load_tests::test_malformed_lines_handled_gracefully"
+      }
+    },
+    {
+      "id": "Deep Layer 1 (Proptests)",
+      "status": "MET",
+      "tests": [
+        "rat_core::property_tests::test_app_identity_normalization",
+        "rat_core::property_tests::test_rule_roundtrip_serialize"
+      ],
+      "evidence": [
+        "port/crates/rat-core/src/lib.rs:1210-1234"
+      ],
+      "mutation": {
+        "where": "port/crates/rat-core/src/lib.rs:45",
+        "caught_by": "rat_core::property_tests::test_app_identity_normalization"
+      }
+    },
+    {
+      "id": "Deep Layer 2 (Fuzzing)",
+      "status": "MET",
+      "tests": [
+        "fuzz_target_1",
+        "fuzz_ruleset_json"
+      ],
+      "evidence": [
+        "port/crates/rat-core/fuzz/fuzz_targets/fuzz_target_1.rs",
+        "port/crates/rat-core/fuzz/fuzz_targets/fuzz_ruleset_json.rs"
+      ],
+      "mutation": {
+        "where": "port/crates/rat-core/fuzz/Cargo.toml",
+        "caught_by": "None"
+      }
+    },
+    {
+      "id": "Deep Layer 3 (Windows Check via Wine)",
+      "status": "MET",
+      "tests": [
+        "rat_core::tests::*"
+      ],
+      "evidence": [
+        "Tested Windows build via x86_64-pc-windows-gnu runner using Wine. All tests natively pass execution including the specific case normalization paths."
+      ],
+      "mutation": {
+        "where": "port/crates/rat-core/src/lib.rs:37",
+        "caught_by": "rat_core::property_tests::test_app_identity_normalization"
+      }
+    },
+    {
+      "id": "Deep Layer 4 (Performance & Budgets)",
+      "status": "MET",
+      "tests": [
+        "rat_core::perf_tests::test_performance_budget_5000_rules"
+      ],
+      "evidence": [
+        "port/crates/rat-core/benches/engine_bench.rs",
+        "port/crates/rat-core/src/lib.rs:530-555"
+      ],
+      "mutation": {
+        "where": "port/crates/rat-core/src/lib.rs:1330",
+        "caught_by": "rat_core::perf_tests::test_performance_budget_5000_rules"
+      }
+    }
+  ],
+  "files_changed": [
+    "port/Cargo.toml",
+    "port/crates/rat-core/Cargo.toml",
+    "port/crates/rat-core/src/lib.rs",
+    "port/crates/rat-types/Cargo.toml",
+    "port/crates/rat-types/src/lib.rs",
+    "port/.gitignore"
+  ],
+  "existing_tests_modified": [],
+  "commands": [
+    {
+      "cmd": "cargo test",
+      "exit_code": 0
+    },
+    {
+      "cmd": "cargo check --target x86_64-pc-windows-gnu",
+      "exit_code": 0
+    },
+    {
+      "cmd": "cargo fmt",
+      "exit_code": 0
+    },
+    {
+      "cmd": "cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "cmd": "cargo fuzz run fuzz_target_1 -- -max_total_time=15",
+      "exit_code": 0
+    },
+    {
+      "cmd": "cargo fuzz run fuzz_ruleset_json -- -max_total_time=15",
+      "exit_code": 0
+    }
+  ],
+  "unverified": [],
+  "decisions": [
+    {
+      "what": "Implemented IPv6 parsing logic via `IpAddr::to_canonical`.",
+      "why": "String equality fails on matching an IPv4-mapped IPv6 address against an equivalent raw IPv4 string, handling the edge case natively requested."
+    },
+    {
+      "what": "Fixed path normalization evaluation logic within `Rule::matches`.",
+      "why": "It was failing due to only normalizing the connection path but comparing it against an un-normalized rule path string verbatim, which defeats the purpose on Windows."
+    }
+  ]
+}
