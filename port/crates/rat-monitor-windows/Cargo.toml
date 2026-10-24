@@ -22,3 +22,11 @@ features = [
 
 [dev-dependencies]
 proptest = "1.4"
+criterion = "0.5"
+
+[[bench]]
+name = "benchmark"
+harness = false
+
+[[test]]
+name = "budget_tests"

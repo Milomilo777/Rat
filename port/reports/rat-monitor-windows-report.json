@@ -20,7 +20,10 @@
         "wine_tests::test_drive_letter_case",
         "wine_tests::test_file_locking",
         "wine_tests::test_long_paths",
-        "wine_tests::test_utf16_non_ascii_names"
+        "wine_tests::test_utf16_non_ascii_names",
+        "test_budget_check_is_vpn",
+        "test_budget_extract_process_name",
+        "test_budget_parse_port"
       ],
       "evidence": [
         "port/crates/rat-monitor-windows/src/lib.rs:21"
@@ -37,6 +40,8 @@
     "port/crates/rat-monitor-windows/src/lib.rs",
     "port/crates/rat-monitor-windows/tests/proptests.rs",
     "port/crates/rat-monitor-windows/tests/wine_tests.rs",
+    "port/crates/rat-monitor-windows/tests/budget_tests.rs",
+    "port/crates/rat-monitor-windows/benches/benchmark.rs",
     "port/crates/rat-monitor-windows/fuzz/Cargo.toml",
     "port/crates/rat-monitor-windows/fuzz/fuzz_targets/fuzz_extract_process_name_from_path.rs",
     "port/crates/rat-monitor-windows/fuzz/fuzz_targets/fuzz_check_is_vpn_interface_type.rs",
@@ -50,6 +55,10 @@
     },
     {
       "cmd": "WINEPREFIX=~/.wine64 CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine cargo test --target x86_64-pc-windows-gnu --manifest-path port/Cargo.toml",
+      "exit_code": 0
+    },
+    {
+      "cmd": "WINEPREFIX=~/.wine64 CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine cargo bench --target x86_64-pc-windows-gnu --manifest-path port/Cargo.toml",
       "exit_code": 0
     },
     {
@@ -80,6 +89,10 @@
     {
       "what": "Tested running Windows specific tests using `wine` runner",
       "why": "To verify logic specifically targeting Windows edge cases, resolving paths lengths, and ensuring strings parsed are correctly addressed. Had to manually add `WINEPREFIX=~/.wine64`"
+    },
+    {
+      "what": "Added benchmarks and limits for performance execution budgets under criterion.",
+      "why": "To explicitly verify no unbounded caching logic is evaluated within bounds. Tested under `wine`."
     }
   ]
 }
