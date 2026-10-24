@@ -66,16 +66,22 @@ const accents: Record<string, string> = {
 };
 
 function generatePseudo(str: string, rtl: boolean): string {
-    // Fix SonarCloud RegExp DoS vulnerability by avoiding vulnerable regex matching
-    const parts = str.split(/(\{.*?\})/g);
+    // Replaced problematic regex with string iteration to prevent ReDoS SonarCloud issue
     let result = '';
-    for (let i = 0; i < parts.length; i++) {
-        if (parts[i].startsWith('{') && parts[i].endsWith('}')) {
-            result += parts[i];
-        } else {
-            const mapped = parts[i].split('').map(c => rtl ? (rtlMap[c] || c) : (accents[c] || c)).join('');
-            result += mapped;
+    let i = 0;
+    while (i < str.length) {
+        if (str[i] === '{') {
+            const endIdx = str.indexOf('}', i);
+            if (endIdx !== -1) {
+                result += str.substring(i, endIdx + 1);
+                i = endIdx + 1;
+                continue;
+            }
         }
+
+        const c = str[i];
+        result += rtl ? (rtlMap[c] || c) : (accents[c] || c);
+        i++;
     }
 
     // add 40% length padding

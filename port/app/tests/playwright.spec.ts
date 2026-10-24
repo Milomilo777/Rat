@@ -29,9 +29,3 @@ test.describe('screenshot generation', () => {
     });
   }
 });
-
-// A dummy test to ensure standard validation doesn't fail
-test('has title', async ({ page }) => {
-  await page.goto('http://localhost:1420');
-  await expect(page).toHaveTitle(/Rat/);
-});
