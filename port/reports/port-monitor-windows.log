@@ -1,0 +1,31 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (port/target/debug/deps/rat_monitor_windows-6ae455bff96eea9e)
+
+running 7 tests
+test edge_case_tests::test_extract_process_name_from_path ... ok
+test tests::test_convert_ipv4_addr ... ok
+test tests::test_convert_ipv6_addr ... ok
+test edge_case_tests::test_ipv6_variations ... ok
+test tests::test_is_listening_state ... ok
+test tests::test_parse_port ... ok
+test vpn_tests::test_check_is_vpn_interface_type ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (port/target/debug/deps/rat_types-f047e32717eacb5b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rat_monitor_windows
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rat_types
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

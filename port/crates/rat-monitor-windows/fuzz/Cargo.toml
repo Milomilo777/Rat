@@ -1,0 +1,34 @@
+[package]
+name = "rat-monitor-windows-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.rat-monitor-windows]
+path = ".."
+
+[[bin]]
+name = "fuzz_extract_process_name_from_path"
+path = "fuzz_targets/fuzz_extract_process_name_from_path.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_check_is_vpn_interface_type"
+path = "fuzz_targets/fuzz_check_is_vpn_interface_type.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_convert_addrs"
+path = "fuzz_targets/fuzz_convert_addrs.rs"
+test = false
+doc = false
+
+[workspace]
