@@ -1,15 +1,15 @@
 {
   "lane": "port-app-ui",
-  "step": 3,
+  "step": 4,
   "requirements": [
     {
       "id": "R1",
       "status": "MET",
-      "tests": [],
+      "tests": ["test_fake_data_source_valid_data", "test_fake_data_source_handles_bad_data"],
       "evidence": ["port/app/src-tauri/src/main.rs:32"],
       "mutation": {
         "where": "port/app/src-tauri/src/main.rs:40",
-        "caught_by": ""
+        "caught_by": "test_fake_data_source_valid_data"
       }
     },
     {
@@ -77,7 +77,8 @@
     "port/app/src-tauri/build.rs",
     "port/app/src-tauri/src/main.rs",
     "port/app/src-tauri/icons/icon.png",
-    "port/app/src-tauri/icons/icon.ico"
+    "port/app/src-tauri/icons/icon.ico",
+    "port/docs/app.md"
   ],
   "existing_tests_modified": [],
   "commands": [
@@ -89,32 +90,12 @@
   "unverified": [],
   "decisions": [
     {
-      "what": "Generate placeholder PNG/ICO for Tauri icons",
-      "why": "Missing icons cause Tauri build failure. Using ImageMagick to create placeholders."
+      "what": "Refactor unwrap() calls into proper Results",
+      "why": "Added error handling to prevent the daemon interface from panicking the Tauri shell. Tested via a bad data test case."
     },
     {
-      "what": "Use raw DOM API in Vite TS template",
-      "why": "Context specifically forbids heavy frameworks like React/Vue."
-    },
-    {
-      "what": "Vite multi-page config",
-      "why": "Added rollupOptions to build both index.html (main window) and alert.html (connection alert window)."
-    },
-    {
-      "what": "Mock data rendered in standard browser context",
-      "why": "By checking for window.__TAURI__, the app renders the static demo data when visited in a standard browser (like Playwright chromium) to allow for screenshots without the tauri-driver overhead."
-    },
-    {
-      "what": "Add Vitest exclude block",
-      "why": "Vitest was inadvertently picking up playwright tests; created vitest.config.ts to ignore the tests folder for unit testing."
-    },
-    {
-      "what": "Inline CSS and script in alert.html",
-      "why": "Keeps the alert window self-contained and avoids polluting the main app's CSS, while still supporting dark mode and keyboard navigation."
-    },
-    {
-      "what": "Fix SonarCloud Issues",
-      "why": "Added missing package.json fields (description, repository, engines), encapsulated root Promise in main.ts into an IIFE, and removed a magic number float division operation in utils.ts by utilizing exponentiation."
+      "what": "Add docs/app.md",
+      "why": "Included documentation mapping the DataSource usage, platform notes (admin requirements on Linux vs Windows), and known limitations as requested."
     }
   ]
 }

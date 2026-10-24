@@ -2,13 +2,13 @@
 
  RUN  v1.6.1 /app/port/app
 
- ✓ src/utils.test.ts  (8 tests) 6ms
  ✓ src/rules.test.ts  (4 tests) 5ms
+ ✓ src/utils.test.ts  (8 tests) 6ms
 
  Test Files  2 passed (2)
       Tests  12 passed (12)
-   Start at  00:04:42
-   Duration  759ms (transform 155ms, setup 1ms, collect 145ms, tests 11ms, environment 1ms, prepare 261ms)
+   Start at  00:23:30
+   Duration  566ms (transform 91ms, setup 1ms, collect 97ms, tests 11ms, environment 0ms, prepare 215ms)
 
 --- tsc ---
 --- npm run build ---
@@ -25,15 +25,25 @@ dist/index.html                0.39 kB │ gzip: 0.27 kB
 dist/src/alert.html            2.16 kB │ gzip: 0.83 kB
 dist/assets/main-B_RHOM46.css  1.93 kB │ gzip: 0.74 kB
 dist/assets/main-BD3QS-lN.js   8.40 kB │ gzip: 2.77 kB
-✓ built in 318ms
+✓ built in 198ms
 --- cargo check ---
    Compiling app v0.1.0 (/app/port/app/src-tauri)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.13s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.78s
 --- cargo test ---
    Compiling app v0.1.0 (/app/port/app/src-tauri)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.61s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.33s
      Running unittests src/main.rs (target/debug/deps/app-7dc8873316ee70ce)
 
-running 0 tests
+running 2 tests
+test tests::test_fake_data_source_handles_bad_data ... ok
+test tests::test_fake_data_source_valid_data ... ok
 
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+--- playwright test ---
+
+Running 2 tests using 2 workers
+
+[1/2] [chromium] › tests/playwright.spec.ts:3:1 › has title
+[2/2] [chromium] › tests/playwright.spec.ts:8:1 › screenshots
+  2 passed (3.3s)

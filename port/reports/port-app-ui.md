@@ -40,3 +40,8 @@ Logs are captured in `port-app-ui.log` alongside this report.
 
 ## Final Verification Decision
 Decided to submit the changes without further user input, as this is an unattended run and the code review confirms all requirements have been met and no further actions are necessary for this lane.
+
+## Step 4 Changes
+- Documented the `DataSource` trait, usage examples, platform security requirements (WFP vs nftables), and known limits in `port/docs/app.md`.
+- Replaced dangerous `.unwrap()` calls in `FakeDataSource` with `Result<T, String>` returns to gracefully handle bad inputs from the daemon without crashing the desktop shell.
+- Added a `tests::test_bad_ip_does_not_panic` integration test in Rust to verify that the app does not panic on bad inputs.
