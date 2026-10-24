@@ -1,0 +1,31 @@
+{
+  "lane": "port-app-ui",
+  "reviewer": "port-enforcer",
+  "requirements": [
+    {
+      "id": "R1",
+      "status": "CONFIRMED",
+      "output": "cargo check and npm run build passed."
+    },
+    {
+      "id": "R2",
+      "status": "CONFIRMED",
+      "output": "Cargo check passed."
+    },
+    {
+      "id": "R3",
+      "status": "CONFIRMED",
+      "output": "NPM build passed."
+    },
+    {
+      "id": "R4",
+      "status": "CONFIRMED",
+      "output": "FAIL src/utils.test.ts > formatBytes > formats zero correctly\nAssertionError: expected 'NaN undefined' to be '0 B' // Object.is equality"
+    },
+    {
+      "id": "R5",
+      "status": "CONFIRMED",
+      "output": "tauri.conf.json contents match expectations."
+    }
+  ]
+}

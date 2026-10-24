@@ -1,0 +1,4 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+exclude = ["app", "crates/rat-core/fuzz", "crates/rat-daemon/fuzz", "crates/rat-enforcer/fuzz", "crates/rat-geo/fuzz", "crates/rat-names/fuzz", "crates/rat-monitor-linux/fuzz", "crates/rat-monitor-windows/fuzz"]

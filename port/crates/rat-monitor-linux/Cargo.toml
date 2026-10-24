@@ -1,0 +1,24 @@
+[package]
+name = "rat-monitor-linux"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rat-types = { version = "0.1.0", path = "../rat-types" }
+serde = { version = "1.0", features = ["derive"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+byteorder = "1.5"
+netlink-sys = "0.8"
+netlink-packet-sock-diag = "0.5.0"
+netlink-packet-core = "0.9.0"
+
+[dev-dependencies]
+criterion = "0.8.2"
+proptest = "1.2"
+tempfile = "3"
+
+[[bench]]
+name = "monitor_benchmark"
+harness = false
