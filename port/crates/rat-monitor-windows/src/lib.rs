@@ -714,13 +714,10 @@ mod edge_case_tests {
 
         // Scoped/link-local
         let link_local = [0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
-        assert_eq!(convert_ipv6_addr(&link_local).is_unicast_link_local(), true);
+        assert!(convert_ipv6_addr(&link_local).is_unicast_link_local());
 
         // IPv4-mapped
         let ipv4_mapped = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 192, 168, 1, 1];
-        assert_eq!(
-            convert_ipv6_addr(&ipv4_mapped).to_ipv4_mapped().is_some(),
-            true
-        );
+        assert!(convert_ipv6_addr(&ipv4_mapped).to_ipv4_mapped().is_some());
     }
 }
