@@ -1,7 +1,7 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use rat_core::{AppConnection, AppIdentity, Lifetime, Rule, RuleEngine, Verdict};
 use rat_types::Protocol;
-use std::time::Instant;
+use std::hint::black_box;
 use uuid::Uuid;
 
 fn generate_rules(count: usize) -> Vec<Rule> {
@@ -9,7 +9,11 @@ fn generate_rules(count: usize) -> Vec<Rule> {
     for i in 0..count {
         let r = Rule {
             id: Uuid::new_v4(),
-            verdict: if i % 2 == 0 { Verdict::Allow } else { Verdict::Deny },
+            verdict: if i % 2 == 0 {
+                Verdict::Allow
+            } else {
+                Verdict::Deny
+            },
             process_path: Some(format!("/usr/bin/app{}", i)),
             signing_id: None,
             team_id: None,
@@ -52,9 +56,9 @@ fn bench_evaluation(c: &mut Criterion) {
         Protocol::Tcp,
     );
 
-    c.bench_function("evaluate 5000 rules", |b| b.iter(|| {
-        engine.evaluate(black_box(&conn))
-    }));
+    c.bench_function("evaluate 5000 rules", |b| {
+        b.iter(|| engine.evaluate(black_box(&conn)))
+    });
 }
 
 criterion_group!(benches, bench_evaluation);
