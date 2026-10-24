@@ -1,0 +1,28 @@
+[package]
+name = "rat-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1.0.154"
+
+[dependencies.rat-core]
+path = ".."
+
+[[bin]]
+name = "fuzz_target_1"
+path = "fuzz_targets/fuzz_target_1.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_ruleset_json"
+path = "fuzz_targets/fuzz_ruleset_json.rs"
+test = false
+doc = false
