@@ -1,2 +1,6 @@
-    Checking windows-wfp v0.1.0 (/app/port/spikes/windows-wfp)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.13s
+HEAD is now at 2d31f9b Fix edge cases and add docs for RatFilterCore port
+Preparing worktree (detached HEAD 2d31f9b)
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+ 64 files changed, 6326 insertions(+), 349 deletions(-)

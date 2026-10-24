@@ -1,0 +1,36 @@
+{
+  "lane_reviewed": "port-core",
+  "reviewer": "research-interception",
+  "requirements": [
+    {
+      "id": "R1",
+      "status": "CONFIRMED",
+      "notes": "Mutation verified (return false in matches)."
+    },
+    {
+      "id": "R2",
+      "status": "CONFIRMED",
+      "notes": "Mutation verified (profile_id import matching)."
+    },
+    {
+      "id": "R3",
+      "status": "CONFIRMED",
+      "notes": "Mutation verified (normalized_path case logic)."
+    },
+    {
+      "id": "R4",
+      "status": "CONFIRMED",
+      "notes": "Mutation verified (normalized_path slash replacement)."
+    },
+    {
+      "id": "Edge Cases",
+      "status": "CONFIRMED",
+      "notes": "Mutation verified (ipv6 string parsing)."
+    },
+    {
+      "id": "Edge Cases (Malformed)",
+      "status": "CONFIRMED",
+      "notes": "Mutation verified (serde error masking)."
+    }
+  ]
+}

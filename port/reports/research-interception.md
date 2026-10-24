@@ -10,6 +10,7 @@
 | R5: Compare local port blocking (v1.2.0 compatibility) | NOT TESTABLE HERE | N/A | port/docs/adr/0001-interception.md |
 | R6: Linux prototype (nfqueue spike in network namespace) | PARTIAL | N/A | port/spikes/linux-prompt/src/main.rs |
 | R7: Windows prototype (WFP compile-only spike) | MET | N/A | port/spikes/windows-wfp/src/main.rs |
+| QA: Peer QA of lane port-core | MET | N/A | port/reviews/port-core-by-research-interception.md |
 
 ## Actions Taken
 * Read context and problem descriptions, including `README.md`, `CLAUDE.md`, and `docs/ARCHITECTURE.md`.
@@ -24,6 +25,7 @@
 * Created a Windows WFP compile-only spike in `port/spikes/windows-wfp` that uses `windows-rs` to open a dynamic WFP session and block `curl.exe` at the ALE V4/V6 connect layers.
 * Verified the Windows WFP spike compiles successfully against `x86_64-pc-windows-gnu`.
 * Updated the ADR with execution instructions and learnings for the Windows WFP spike.
+* Conducted a full Peer QA of the `port-core` lane, verifying its tests, mutations, and claims, documenting the findings in `port/reviews/port-core-by-research-interception.md`.
 
 ## Decisions and Reasons
 * **Decision:** Recommended Windows Filtering Platform (WFP) user-mode for Windows V1, and WFP callout driver for Windows V2. Recommended eBPF/netlink for Linux V1, and nfqueue for Linux V2.
@@ -38,15 +40,23 @@
   * **Reason:** This fulfills the overarching mandate for "all port lanes" to establish the common Rust workspace, overriding the previous decision to strictly follow the path-isolation constraint in this report-only lane.
 * **Decision:** Added empty `[workspace]` to `port/spikes/linux-prompt/Cargo.toml` and `port/spikes/windows-wfp/Cargo.toml`.
   * **Reason:** The main `port/Cargo.toml` must have exact contents per instructions. This excludes `spikes`. Giving the spikes their own workspace allows `cargo check` to run correctly inside the spike folder without modifying the main `Cargo.toml`.
+* **Decision:** Performed the peer QA in a separate worktree (`/tmp/port-core-check`).
+  * **Reason:** Allows mutating the peer's code to verify tests without risking untracked changes bleeding into this lane's branch.
 
 ## Changed by v1.2.0
 * Rat v1.2.0 fundamentally changed enforcement (v1.0.4+): it never blocks remote addresses to avoid breaking DNS or shared CDNs for allowed apps. Instead, the root daemon `rat-enforcerd` blocks the **local ports** of every socket belonging to a denied app via a stateless pf anchor. The ADR has been updated to evaluate WFP and nftables capability to block by local port or by process ID/App ID.
 
 ## Exact Commands Ran and Output
 ```bash
-# cd port/spikes/windows-wfp && cargo clippy --target x86_64-pc-windows-gnu -- -D warnings
-    Checking windows-wfp v0.1.0 (/app/port/spikes/windows-wfp)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.13s
+# git worktree add /tmp/port-core-check origin/jules-4649944338155401763-8f07cc72
+HEAD is now at 2d31f9b Fix edge cases and add docs for RatFilterCore port
+Preparing worktree (detached HEAD 2d31f9b)
+
+# cd /tmp/port-core-check/port && cargo test
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+# cd /tmp/port-core-check/port && git diff --stat main...HEAD
+(64 files changed, 6326 insertions(+), 349 deletions(-))
 ```
 
 ## What could not be verified and why
