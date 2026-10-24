@@ -1,0 +1,20 @@
+[package]
+name = "rat-names"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lru = "0.12.0"
+idna = "1.0.0"
+dns-lookup = "2.0.4"
+threadpool = "1.8.1"
+crossbeam-channel = "0.5.12"
+rat-types = { path = "../rat-types" }
+
+[dev-dependencies]
+proptest = "1.4.0"
+criterion = "0.5.1"
+
+[[bench]]
+name = "resolver_bench"
+harness = false
