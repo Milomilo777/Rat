@@ -67,3 +67,9 @@ Decided to submit the changes without further user input, as this is an unattend
 - Refactored `src/i18n.ts` string catalogs into variable iterations instead of raw duplicates.
 - Refactored `tests/playwright.spec.ts` variable iterators.
 - Adjusted accessibility tests in `tests/axe.spec.ts` to ensure `WCAG 2.2 AA` bounds are rigorously enforced over the alert button styles.
+
+## Step 8 Changes
+- Peer reviewed the `port-ci` lane (`port-ci-16545357940856379833`) on a separate worktree `/tmp/port-ci`.
+- Executed `actionlint` and local scripts against the checked out code and verified the results matched the `git diff`.
+- Discovered and logged failures wherein the recorded mutation verification actions documented in `port-ci`'s JSON failed to be properly "caught" in local reproduction testing (e.g. empty shell scripts returning `0`).
+- Authored the resulting findings into `port/reviews/port-ci-by-port-app-ui.md` and `.json`.

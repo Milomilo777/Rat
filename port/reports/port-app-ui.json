@@ -1,6 +1,6 @@
 {
   "lane": "port-app-ui",
-  "step": 7,
+  "step": 8,
   "requirements": [
     {
       "id": "R1",
@@ -71,6 +71,16 @@
         "where": "port/app/src/style.css:48",
         "caught_by": "accessibility checks - light mode"
       }
+    },
+    {
+      "id": "R8",
+      "status": "MET",
+      "tests": [],
+      "evidence": ["port/reviews/port-ci-by-port-app-ui.md"],
+      "mutation": {
+        "where": "",
+        "caught_by": ""
+      }
     }
   ],
   "files_changed": [
@@ -101,14 +111,17 @@
     "port/app/src-tauri/src/main.rs",
     "port/app/src-tauri/icons/icon.png",
     "port/app/src-tauri/icons/icon.ico",
-    "port/docs/app.md"
+    "port/docs/app.md",
+    "port/reviews/port-ci-by-port-app-ui.md",
+    "port/reviews/port-ci-by-port-app-ui.json"
   ],
   "existing_tests_modified": [],
   "commands": [
     {"cmd": "npm run build", "exit_code": 0},
     {"cmd": "cargo check", "exit_code": 0},
     {"cmd": "npx vitest run", "exit_code": 0},
-    {"cmd": "npx playwright test", "exit_code": 0}
+    {"cmd": "npx playwright test", "exit_code": 0},
+    {"cmd": "actionlint .github/workflows/port.yml", "exit_code": 0}
   ],
   "unverified": [],
   "decisions": [
@@ -135,6 +148,10 @@
     {
       "what": "Fix SonarCloud duplications",
       "why": "Re-used `getMockRules` instead of duplicating rulesData initialization blocks. Fixed axe issue by making alert labels more descriptive and WCAG contrast compliant over `#16a34a` (green)."
+    },
+    {
+      "what": "QA port-ci",
+      "why": "Followed instructions to checkout port-ci branch and verify the self-reported mutation validations, reporting two failures in port-ci's JSON to the reviews folder."
     }
   ]
 }
