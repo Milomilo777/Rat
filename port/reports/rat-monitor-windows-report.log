@@ -1,0 +1,126 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.27
+   Compiling quote v1.0.47
+   Compiling rand_core v0.10.1
+   Compiling serde_core v1.0.229
+   Compiling serde v1.0.229
+   Compiling cfg-if v1.0.5
+   Compiling windows_x86_64_gnu v0.52.6
+   Compiling getrandom v0.4.3
+   Compiling windows-link v0.2.1
+   Compiling autocfg v1.5.1
+   Compiling windows-sys v0.61.2
+   Compiling syn v3.0.9
+   Compiling num-traits v0.2.19
+   Compiling windows-targets v0.52.6
+   Compiling fastrand v2.5.0
+   Compiling once_cell v1.21.4
+   Compiling tempfile v3.27.0
+   Compiling windows-core v0.52.0
+   Compiling fnv v1.0.7
+   Compiling cpufeatures v0.3.1
+   Compiling wait-timeout v0.2.1
+   Compiling bit-vec v0.10.1
+   Compiling quick-error v1.2.3
+   Compiling rusty-fork v0.3.1
+   Compiling bit-set v0.11.1
+   Compiling windows v0.52.0
+   Compiling chacha20 v0.10.2
+   Compiling rand v0.10.3
+   Compiling rand_xorshift v0.5.0
+   Compiling unarray v0.1.4
+   Compiling regex-syntax v0.8.11
+   Compiling bitflags v2.13.2
+   Compiling core_detect v1.0.0
+   Compiling serde_derive v1.0.229
+   Compiling proptest v1.12.0
+   Compiling rat-types v0.1.0 (/app/port/crates/rat-types)
+   Compiling rat-monitor-windows v0.1.0 (/app/port/crates/rat-monitor-windows)
+warning: unused import: `std::fs::File`
+ --> crates/rat-monitor-windows/tests/wine_tests.rs:3:9
+  |
+3 |     use std::fs::File;
+  |         ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::io::Write`
+ --> crates/rat-monitor-windows/tests/wine_tests.rs:4:9
+  |
+4 |     use std::io::Write;
+  |         ^^^^^^^^^^^^^^
+
+warning: `rat-monitor-windows` (test "wine_tests") generated 2 warnings (run `cargo fix --test "wine_tests" -p rat-monitor-windows` to apply 2 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.71s
+     Running unittests src/lib.rs (port/target/x86_64-pc-windows-gnu/debug/deps/rat_monitor_windows-17c6d8e39f20aa71.exe)
+it looks like wine32 is missing, you should install it.
+multiarch needs to be enabled first.  as root, please
+execute "dpkg --add-architecture i386 && apt-get update &&
+apt-get install wine32:i386"
+0048:err:winediag:nodrv_CreateWindow Application tried to create a window, but no driver could be loaded.
+0048:err:winediag:nodrv_CreateWindow L"The explorer process failed to start."
+0048:err:systray:initialize_systray Could not create tray window
+
+running 7 tests
+test edge_case_tests::test_ipv6_variations ... ok
+test edge_case_tests::test_extract_process_name_from_path ... ok
+test tests::test_convert_ipv4_addr ... ok
+test tests::test_convert_ipv6_addr ... ok
+test tests::test_is_listening_state ... ok
+test vpn_tests::test_check_is_vpn_interface_type ... ok
+test tests::test_parse_port ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/proptests.rs (port/target/x86_64-pc-windows-gnu/debug/deps/proptests-05da2fb8c3fe72fc.exe)
+it looks like wine32 is missing, you should install it.
+multiarch needs to be enabled first.  as root, please
+execute "dpkg --add-architecture i386 && apt-get update &&
+apt-get install wine32:i386"
+
+running 5 tests
+test test_convert_ipv4_addr_prop ... ok
+test test_convert_ipv6_addr_prop ... ok
+test test_parse_port_prop ... ok
+test test_extract_process_name_from_path_prop ... ok
+test test_check_is_vpn_interface_type_prop ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/wine_tests.rs (port/target/x86_64-pc-windows-gnu/debug/deps/wine_tests-77c7b90f052c7fdc.exe)
+it looks like wine32 is missing, you should install it.
+multiarch needs to be enabled first.  as root, please
+execute "dpkg --add-architecture i386 && apt-get update &&
+apt-get install wine32:i386"
+
+running 6 tests
+test wine_tests::test_crlf_line_endings ... ok
+test wine_tests::test_backslash_and_unc_paths ... ok
+test wine_tests::test_drive_letter_case ... ok
+test wine_tests::test_file_locking ... ok
+test wine_tests::test_long_paths ... ok
+test wine_tests::test_utf16_non_ascii_names ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (port/target/x86_64-pc-windows-gnu/debug/deps/rat_types-54fe5e8d6ba33212.exe)
+it looks like wine32 is missing, you should install it.
+multiarch needs to be enabled first.  as root, please
+execute "dpkg --add-architecture i386 && apt-get update &&
+apt-get install wine32:i386"
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rat_monitor_windows
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rat_types
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

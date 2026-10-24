@@ -1,0 +1,104 @@
+{
+  "lane": "rat-monitor-windows",
+  "step": 1,
+  "requirements": [
+    {
+      "id": "R1",
+      "status": "MET",
+      "tests": [
+        "edge_case_tests::test_extract_process_name_from_path",
+        "vpn_tests::test_check_is_vpn_interface_type",
+        "tests::test_convert_ipv4_addr",
+        "tests::test_convert_ipv6_addr",
+        "test_convert_ipv4_addr_prop",
+        "test_convert_ipv6_addr_prop",
+        "test_parse_port_prop",
+        "test_extract_process_name_from_path_prop",
+        "test_check_is_vpn_interface_type_prop",
+        "wine_tests::test_backslash_and_unc_paths",
+        "wine_tests::test_crlf_line_endings",
+        "wine_tests::test_drive_letter_case",
+        "wine_tests::test_file_locking",
+        "wine_tests::test_long_paths",
+        "wine_tests::test_utf16_non_ascii_names",
+        "test_budget_check_is_vpn",
+        "test_budget_extract_process_name",
+        "test_budget_parse_port"
+      ],
+      "evidence": [
+        "port/crates/rat-monitor-windows/src/lib.rs:21"
+      ],
+      "mutation": {
+        "where": "port/crates/rat-monitor-windows/src/lib.rs:21",
+        "caught_by": "test_convert_ipv4_addr_prop"
+      }
+    }
+  ],
+  "files_changed": [
+    "port/Cargo.toml",
+    "port/crates/rat-monitor-windows/Cargo.toml",
+    "port/crates/rat-monitor-windows/src/lib.rs",
+    "port/crates/rat-monitor-windows/tests/proptests.rs",
+    "port/crates/rat-monitor-windows/tests/wine_tests.rs",
+    "port/crates/rat-monitor-windows/tests/budget_tests.rs",
+    "port/crates/rat-monitor-windows/benches/benchmark.rs",
+    "port/crates/rat-monitor-windows/fuzz/Cargo.toml",
+    "port/crates/rat-monitor-windows/fuzz/fuzz_targets/fuzz_extract_process_name_from_path.rs",
+    "port/crates/rat-monitor-windows/fuzz/fuzz_targets/fuzz_check_is_vpn_interface_type.rs",
+    "port/crates/rat-monitor-windows/fuzz/fuzz_targets/fuzz_convert_addrs.rs",
+    "port/reviews/port-enforcer-by-port-monitor-windows.json",
+    "port/reviews/port-enforcer-by-port-monitor-windows.md"
+  ],
+  "existing_tests_modified": [],
+  "commands": [
+    {
+      "cmd": "cargo test --manifest-path port/Cargo.toml",
+      "exit_code": 0
+    },
+    {
+      "cmd": "WINEPREFIX=~/.wine64 CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine cargo test --target x86_64-pc-windows-gnu --manifest-path port/Cargo.toml",
+      "exit_code": 0
+    },
+    {
+      "cmd": "WINEPREFIX=~/.wine64 CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine cargo bench --target x86_64-pc-windows-gnu --manifest-path port/Cargo.toml",
+      "exit_code": 0
+    },
+    {
+      "cmd": "cargo fuzz run fuzz_extract_process_name_from_path -- -max_total_time=600",
+      "exit_code": 0
+    },
+    {
+      "cmd": "cargo fuzz run fuzz_check_is_vpn_interface_type -- -max_total_time=600",
+      "exit_code": 0
+    },
+    {
+      "cmd": "cargo fuzz run fuzz_convert_addrs -- -max_total_time=600",
+      "exit_code": 0
+    }
+  ],
+  "unverified": [
+    "Wine is NOT proof of real Windows behaviour, therefore tests executed with wine_runner may not accurately depict runtime bugs on Windows native OS."
+  ],
+  "decisions": [
+    {
+      "what": "Merged latest main branch into jules-18062705680186636212-692905fa-7361138177349793606",
+      "why": "To sync up the latest changes in main to our lane branch."
+    },
+    {
+      "what": "Added property based tests and fuzz targets",
+      "why": "To satisfy deep layer QA pass using proptest and cargo fuzz targets on parsers handling network information and Windows interface querying functions."
+    },
+    {
+      "what": "Tested running Windows specific tests using `wine` runner",
+      "why": "To verify logic specifically targeting Windows edge cases, resolving paths lengths, and ensuring strings parsed are correctly addressed. Had to manually add `WINEPREFIX=~/.wine64`"
+    },
+    {
+      "what": "Added benchmarks and limits for performance execution budgets under criterion.",
+      "why": "To explicitly verify no unbounded caching logic is evaluated within bounds. Tested under `wine`."
+    },
+    {
+      "what": "Completed peer review validation of `port-enforcer`.",
+      "why": "Verified all expected assertions within peer review requirement."
+    }
+  ]
+}
