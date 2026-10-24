@@ -1,14 +1,14 @@
 --- npm run test ---
 
-[1m[30m[46m RUN [49m[39m[22m [36mv5.0.5 [39m[90m/app/port/app[39m
+ RUN  v1.6.1 /app/port/app
 
- [32m✓[39m src/rules.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 6[2mms[22m[39m
- [32m✓[39m src/utils.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ ✓ src/rules.test.ts  (4 tests) 20ms
+ ✓ src/utils.test.ts  (8 tests) 9ms
 
-[2m Test Files [22m [1m[32m2 passed[39m[22m[90m (2)[39m
-[2m      Tests [22m [1m[32m12 passed[39m[22m[90m (12)[39m
-[2m   Start at [22m 16:39:49
-[2m   Duration [22m 243ms[2m (transform 63%, import 20%, tests 9%, worker 8%)[22m
+ Test Files  2 passed (2)
+      Tests  12 passed (12)
+   Start at  23:57:23
+   Duration  899ms (transform 193ms, setup 1ms, collect 166ms, tests 29ms, environment 1ms, prepare 444ms)
 
 --- tsc ---
 --- npm run build ---
@@ -16,23 +16,22 @@
 > app@1.0.0 build
 > vite build
 
-vite v8.3.5 building client environment for production...
+vite v5.4.21 building for production...
 transforming...
-✓ 10 modules transformed.
+✓ 9 modules transformed.
 rendering chunks...
 computing gzip size...
-dist/index.html                0.38 kB │ gzip: 0.26 kB
-dist/src/alert.html            1.91 kB │ gzip: 0.78 kB
-dist/assets/main-DHlb0oLy.css  2.06 kB │ gzip: 0.78 kB
-dist/assets/main-D_I21UiQ.js   6.82 kB │ gzip: 2.23 kB
-
-✓ built in 89ms
+dist/index.html                0.39 kB │ gzip: 0.27 kB
+dist/src/alert.html            2.16 kB │ gzip: 0.83 kB
+dist/assets/main-B_RHOM46.css  1.93 kB │ gzip: 0.74 kB
+dist/assets/main-B3HM_hGn.js   8.37 kB │ gzip: 2.76 kB
+✓ built in 240ms
 --- cargo check ---
    Compiling app v0.1.0 (/app/port/app/src-tauri)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.76s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.78s
 --- cargo test ---
    Compiling app v0.1.0 (/app/port/app/src-tauri)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.18s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.64s
      Running unittests src/main.rs (target/debug/deps/app-7dc8873316ee70ce)
 
 running 0 tests

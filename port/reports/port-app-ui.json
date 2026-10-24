@@ -1,6 +1,6 @@
 {
   "lane": "port-app-ui",
-  "step": 1,
+  "step": 3,
   "requirements": [
     {
       "id": "R1",
@@ -45,8 +45,8 @@
     {
       "id": "R5",
       "status": "MET",
-      "tests": [],
-      "evidence": ["port/app/src-tauri/tauri.conf.json:13"],
+      "tests": ["screenshots"],
+      "evidence": ["port/app/tests/playwright.spec.ts:8", "port/app/src/style.css:17", "port/app/src/main.ts:168", "port/app/src/alert.html:14"],
       "mutation": {
         "where": "port/app/src-tauri/tauri.conf.json:13",
         "caught_by": ""
@@ -60,6 +60,9 @@
     "port/app/package.json",
     "port/app/tsconfig.json",
     "port/app/vite.config.ts",
+    "port/app/vitest.config.ts",
+    "port/app/playwright.config.ts",
+    "port/app/.eslintrc.cjs",
     "port/app/index.html",
     "port/app/src/alert.html",
     "port/app/src/style.css",
@@ -68,6 +71,7 @@
     "port/app/src/utils.test.ts",
     "port/app/src/rules.ts",
     "port/app/src/rules.test.ts",
+    "port/app/tests/playwright.spec.ts",
     "port/app/src-tauri/Cargo.toml",
     "port/app/src-tauri/tauri.conf.json",
     "port/app/src-tauri/build.rs",
@@ -79,7 +83,8 @@
   "commands": [
     {"cmd": "npm run build", "exit_code": 0},
     {"cmd": "cargo check", "exit_code": 0},
-    {"cmd": "npx vitest run", "exit_code": 0}
+    {"cmd": "npx vitest run", "exit_code": 0},
+    {"cmd": "npx playwright test", "exit_code": 0}
   ],
   "unverified": [],
   "decisions": [
@@ -94,6 +99,22 @@
     {
       "what": "Vite multi-page config",
       "why": "Added rollupOptions to build both index.html (main window) and alert.html (connection alert window)."
+    },
+    {
+      "what": "Mock data rendered in standard browser context",
+      "why": "By checking for window.__TAURI__, the app renders the static demo data when visited in a standard browser (like Playwright chromium) to allow for screenshots without the tauri-driver overhead."
+    },
+    {
+      "what": "Add Vitest exclude block",
+      "why": "Vitest was inadvertently picking up playwright tests; created vitest.config.ts to ignore the tests folder for unit testing."
+    },
+    {
+      "what": "Inline CSS and script in alert.html",
+      "why": "Keeps the alert window self-contained and avoids polluting the main app's CSS, while still supporting dark mode and keyboard navigation."
+    },
+    {
+      "what": "Fix SonarCloud Issues",
+      "why": "Added missing package.json fields (description, repository, engines), encapsulated root Promise in main.ts into an IIFE, and removed a magic number float division operation in utils.ts by utilizing exponentiation."
     }
   ]
 }

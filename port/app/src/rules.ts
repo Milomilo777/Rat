@@ -5,7 +5,7 @@ export interface Rule {
   remote: string;
 }
 
-export function sortRules(rules: Rule[], field: keyof Rule, ascending: boolean = true): Rule[] {
+export function sortRules(rules: Rule[], field: keyof Rule, ascending = true): Rule[] {
   return [...rules].sort((a, b) => {
     if (a[field] < b[field]) return ascending ? -1 : 1;
     if (a[field] > b[field]) return ascending ? 1 : -1;
