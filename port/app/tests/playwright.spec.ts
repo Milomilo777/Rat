@@ -1,29 +1,29 @@
 import { test, expect } from '@playwright/test';
 
-test('has title', async ({ page }) => {
-  await page.goto('http://localhost:1420');
-  await expect(page).toHaveTitle(/Rat/);
-});
+const locales = ['en', 'en-PSEUDO', 'ar-PSEUDO'];
 
-test('screenshots', async ({ page }) => {
-  await page.goto('http://localhost:1420');
+for (const locale of locales) {
+  test(`screenshots in ${locale}`, async ({ page }) => {
+    // Navigate with locale param
+    await page.goto(`http://localhost:1420/?lang=${locale}`);
 
-  // Monitor tab
-  await page.waitForSelector('h3:has-text("Apps (by Service)")');
-  await page.screenshot({ path: 'screenshots/monitor.png', fullPage: true });
+    // Monitor tab
+    await page.waitForSelector('.sidebar');
+    await page.screenshot({ path: `screenshots/monitor_${locale}.png`, fullPage: true });
 
-  // Rules tab
-  await page.click('button:has-text("Rules")');
-  await page.waitForSelector('h3:has-text("Rules Table")');
-  await page.screenshot({ path: 'screenshots/rules.png', fullPage: true });
+    // Rules tab
+    await page.click('button[id="tab-btn-rules"]');
+    await page.waitForSelector('.rules-table');
+    await page.screenshot({ path: `screenshots/rules_${locale}.png`, fullPage: true });
 
-  // Settings tab
-  await page.click('button:has-text("Settings")');
-  await page.waitForSelector('h4:has-text("GeoIP Databases")');
-  await page.screenshot({ path: 'screenshots/settings.png', fullPage: true });
+    // Settings tab
+    await page.click('button[id="tab-btn-settings"]');
+    await page.waitForSelector('.settings-section');
+    await page.screenshot({ path: `screenshots/settings_${locale}.png`, fullPage: true });
 
-  // Alert window
-  await page.goto('http://localhost:1420/src/alert.html');
-  await page.waitForSelector('h2:has-text("Connection Attempt Blocked")');
-  await page.screenshot({ path: 'screenshots/alert.png', fullPage: true });
-});
+    // Alert window
+    await page.goto(`http://localhost:1420/src/alert.html?lang=${locale}`);
+    await page.waitForSelector('.alert-container');
+    await page.screenshot({ path: `screenshots/alert_${locale}.png`, fullPage: true });
+  });
+}

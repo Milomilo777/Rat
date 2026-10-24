@@ -45,3 +45,11 @@ Decided to submit the changes without further user input, as this is an unattend
 - Documented the `DataSource` trait, usage examples, platform security requirements (WFP vs nftables), and known limits in `port/docs/app.md`.
 - Replaced dangerous `.unwrap()` calls in `FakeDataSource` with `Result<T, String>` returns to gracefully handle bad inputs from the daemon without crashing the desktop shell.
 - Added a `tests::test_bad_ip_does_not_panic` integration test in Rust to verify that the app does not panic on bad inputs.
+
+## Step 5 Changes
+- Implemented a lightweight translation catalog (`src/i18n.ts`) to externalize all UI strings.
+- Created `en-PSEUDO` (accented + 40% length padding) and `ar-PSEUDO` (RTL mapping + length padding) locales for layout testing.
+- Added `<bdi>` (Bidirectional Isolate) tags around numeric/IP values (e.g. ports, local/remote IPs, data sizes) to ensure they are rendered strictly LTR within an RTL context.
+- Configured dynamic RTL layout switching via `document.documentElement.dir = 'rtl'` when the Arabic pseudo-locale is active.
+- Configured Playwright (`tests/playwright.spec.ts`) to capture screenshots for all three locales iteratively via query parameter `?lang=...`.
+- Implemented `tests/i18n.test.ts` using Vitest to enforce that no hard-coded English strings exist in the UI generation functions.

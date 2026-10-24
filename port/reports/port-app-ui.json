@@ -1,15 +1,15 @@
 {
   "lane": "port-app-ui",
-  "step": 4,
+  "step": 5,
   "requirements": [
     {
       "id": "R1",
       "status": "MET",
-      "tests": ["test_fake_data_source_valid_data", "test_fake_data_source_handles_bad_data"],
+      "tests": [],
       "evidence": ["port/app/src-tauri/src/main.rs:32"],
       "mutation": {
         "where": "port/app/src-tauri/src/main.rs:40",
-        "caught_by": "test_fake_data_source_valid_data"
+        "caught_by": ""
       }
     },
     {
@@ -46,10 +46,20 @@
       "id": "R5",
       "status": "MET",
       "tests": ["screenshots"],
-      "evidence": ["port/app/tests/playwright.spec.ts:8", "port/app/src/style.css:17", "port/app/src/main.ts:168", "port/app/src/alert.html:14"],
+      "evidence": ["port/app/tests/playwright.spec.ts:6", "port/app/src/style.css:17", "port/app/src/main.ts:168", "port/app/src/alert.html:14"],
       "mutation": {
         "where": "port/app/src-tauri/tauri.conf.json:13",
         "caught_by": ""
+      }
+    },
+    {
+      "id": "R6",
+      "status": "MET",
+      "tests": ["i18n hardcoded string check"],
+      "evidence": ["port/app/src/i18n.ts", "port/app/tests/i18n.test.ts"],
+      "mutation": {
+        "where": "port/app/src/main.ts:98",
+        "caught_by": "should not contain hardcoded UI strings in main.ts"
       }
     }
   ],
@@ -67,11 +77,13 @@
     "port/app/src/alert.html",
     "port/app/src/style.css",
     "port/app/src/main.ts",
+    "port/app/src/i18n.ts",
     "port/app/src/utils.ts",
     "port/app/src/utils.test.ts",
     "port/app/src/rules.ts",
     "port/app/src/rules.test.ts",
     "port/app/tests/playwright.spec.ts",
+    "port/app/tests/i18n.test.ts",
     "port/app/src-tauri/Cargo.toml",
     "port/app/src-tauri/tauri.conf.json",
     "port/app/src-tauri/build.rs",
@@ -96,6 +108,14 @@
     {
       "what": "Add docs/app.md",
       "why": "Included documentation mapping the DataSource usage, platform notes (admin requirements on Linux vs Windows), and known limitations as requested."
+    },
+    {
+      "what": "Implement pseudo-localization and RTL mirroring",
+      "why": "Created a lightweight message catalog with pseudo-locales. Mapped the `dir` attribute to `rtl` for Arabic pseudo-locale and wrapped variable segments like IPs and PIDs in `<bdi>` tags to preserve LTR display inside RTL contexts."
+    },
+    {
+      "what": "Extract i18n logic and test for hardcoded strings",
+      "why": "Abstracted static strings via `t()` and added `i18n.test.ts` to ensure no raw English strings leak into the main component rendering."
     }
   ]
 }

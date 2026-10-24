@@ -2,13 +2,14 @@
 
  RUN  v1.6.1 /app/port/app
 
+ ✓ tests/i18n.test.ts  (1 test) 4ms
+ ✓ src/utils.test.ts  (8 tests) 5ms
  ✓ src/rules.test.ts  (4 tests) 5ms
- ✓ src/utils.test.ts  (8 tests) 6ms
 
- Test Files  2 passed (2)
-      Tests  12 passed (12)
-   Start at  00:23:30
-   Duration  566ms (transform 91ms, setup 1ms, collect 97ms, tests 11ms, environment 0ms, prepare 215ms)
+ Test Files  3 passed (3)
+      Tests  13 passed (13)
+   Start at  00:40:41
+   Duration  593ms (transform 142ms, setup 0ms, collect 153ms, tests 14ms, environment 1ms, prepare 407ms)
 
 --- tsc ---
 --- npm run build ---
@@ -18,20 +19,22 @@
 
 vite v5.4.21 building for production...
 transforming...
-✓ 9 modules transformed.
+✓ 11 modules transformed.
 rendering chunks...
 computing gzip size...
-dist/index.html                0.39 kB │ gzip: 0.27 kB
-dist/src/alert.html            2.16 kB │ gzip: 0.83 kB
+dist/index.html                0.46 kB │ gzip: 0.29 kB
+dist/src/alert.html            2.06 kB │ gzip: 0.83 kB
 dist/assets/main-B_RHOM46.css  1.93 kB │ gzip: 0.74 kB
-dist/assets/main-BD3QS-lN.js   8.40 kB │ gzip: 2.77 kB
-✓ built in 198ms
+dist/assets/alert-D1bYlSpD.js  1.71 kB │ gzip: 0.65 kB
+dist/assets/i18n-B_p7UUyv.js   3.00 kB │ gzip: 1.67 kB
+dist/assets/main-RLzFdvLI.js   8.27 kB │ gzip: 2.55 kB
+✓ built in 226ms
 --- cargo check ---
    Compiling app v0.1.0 (/app/port/app/src-tauri)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.78s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.71s
 --- cargo test ---
    Compiling app v0.1.0 (/app/port/app/src-tauri)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.33s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.67s
      Running unittests src/main.rs (target/debug/deps/app-7dc8873316ee70ce)
 
 running 2 tests
@@ -42,8 +45,9 @@ test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 --- playwright test ---
 
-Running 2 tests using 2 workers
+Running 3 tests using 2 workers
 
-[1/2] [chromium] › tests/playwright.spec.ts:3:1 › has title
-[2/2] [chromium] › tests/playwright.spec.ts:8:1 › screenshots
-  2 passed (3.3s)
+[1/3] [chromium] › tests/playwright.spec.ts:6:3 › screenshots in en
+[2/3] [chromium] › tests/playwright.spec.ts:6:3 › screenshots in en-PSEUDO
+[3/3] [chromium] › tests/playwright.spec.ts:6:3 › screenshots in ar-PSEUDO
+  3 passed (3.7s)

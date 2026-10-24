@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { formatBytes } from './utils';
 import { Rule } from './rules';
+import { t, setLocale, getLocale } from './i18n';
 
 let currentTab = 'monitor';
 let connectionsData: any[] = [];
@@ -8,8 +9,19 @@ let rulesData: Rule[] = [];
 let dbData: string[] = [];
 
 async function renderApp(): Promise<void> {
+    const urlParams = new URLSearchParams(window.location.search);
+    const lang = urlParams.get('lang');
+    if (lang) {
+        setLocale(lang);
+    }
+
+    if (getLocale() === 'ar-PSEUDO') {
+        document.documentElement.dir = 'rtl';
+    } else {
+        document.documentElement.dir = 'ltr';
+    }
+
     try {
-        // Run in browser with mock data if not in Tauri
         if (window.__TAURI__) {
             connectionsData = await invoke('get_connections');
             rulesData = await invoke('get_rules');
@@ -51,7 +63,7 @@ async function renderApp(): Promise<void> {
         console.error(e);
         const app = document.getElementById('app');
         if (app) {
-            app.innerHTML = `<div>Error loading app data: ${e}</div>`;
+            app.innerHTML = `<div>${t('error_loading')} ${e}</div>`;
         }
     }
 }
@@ -60,9 +72,8 @@ function updateUI() {
     const app = document.getElementById('app');
     if (!app) return;
 
-    // Group connections by service
     const groupedConns = connectionsData.reduce((acc, curr) => {
-        const svc = curr.service_name || 'unknown';
+        const svc = curr.service_name || t('unknown');
         if (!acc[svc]) acc[svc] = [];
         acc[svc].push(curr);
         return acc;
@@ -70,97 +81,98 @@ function updateUI() {
 
     const monitorHtml = `
         <div class="sidebar">
-            <h3>Apps (by Service)</h3>
+            <h3>${t('apps_by_service')}</h3>
             <ul>
                 ${Object.keys(groupedConns).map(svc => `
                     <li tabindex="0" style="background: var(--bg-color); cursor: default; border-bottom: 1px solid var(--border-color); font-weight: bold;">${svc.toUpperCase()}</li>
-                    ${groupedConns[svc].map((c: any) => `<li tabindex="0" style="padding-left: 20px;">${c.conn.process.name} - ${formatBytes(c.conn.bytes_in || 0)} in / ${formatBytes(c.conn.bytes_out || 0)} out</li>`).join('')}
+                    ${groupedConns[svc].map((c: any) => `<li tabindex="0" style="padding-inline-start: 20px;">${c.conn.process.name} - <bdi>${formatBytes(c.conn.bytes_in || 0)}</bdi> ${t('in')} / <bdi>${formatBytes(c.conn.bytes_out || 0)}</bdi> ${t('out')}</li>`).join('')}
                 `).join('')}
             </ul>
         </div>
         <div class="main-content">
-            <h3>Inspector</h3>
+            <h3>${t('inspector')}</h3>
             <div id="inspector">
                 ${connectionsData.map(c => `
                     <div class="conn-card" tabindex="0">
-                        <p><strong>App:</strong> ${c.conn.process.name} (PID: ${c.conn.process.pid})</p>
-                        ${c.process_behind ? `<p><strong>Via:</strong> ${c.process_behind}</p>` : ''}
-                        <p><strong>Local:</strong> ${c.conn.local}</p>
-                        <p><strong>Remote:</strong> ${c.conn.remote || 'None'}</p>
-                        ${c.network_owner ? `<p><strong>Network Owner:</strong> ${c.network_owner}</p>` : ''}
-                        ${c.vpn_mark ? `<p><strong>VPN:</strong> ${c.vpn_mark}</p>` : ''}
-                        ${c.proxy_mark ? `<p><strong>Proxy:</strong> ${c.proxy_mark}</p>` : ''}
-                        ${c.service_name ? `<p><strong>Service:</strong> ${c.service_name}</p>` : ''}
+                        <p><strong>${t('app')}:</strong> ${c.conn.process.name} (${t('pid')}: <bdi>${c.conn.process.pid}</bdi>)</p>
+                        ${c.process_behind ? `<p><strong>${t('via')}:</strong> ${c.process_behind}</p>` : ''}
+                        <p><strong>${t('local')}:</strong> <bdi>${c.conn.local}</bdi></p>
+                        <p><strong>${t('remote')}:</strong> <bdi>${c.conn.remote || t('none')}</bdi></p>
+                        ${c.network_owner ? `<p><strong>${t('network_owner')}:</strong> ${c.network_owner}</p>` : ''}
+                        ${c.vpn_mark ? `<p><strong>${t('vpn')}:</strong> ${c.vpn_mark}</p>` : ''}
+                        ${c.proxy_mark ? `<p><strong>${t('proxy')}:</strong> ${c.proxy_mark}</p>` : ''}
+                        ${c.service_name ? `<p><strong>${t('service')}:</strong> ${c.service_name}</p>` : ''}
                     </div>
                 `).join('')}
             </div>
 
-            <h3>World Map</h3>
-            <!-- Offline SVG Map Placeholder -->
-            <svg width="600" height="300" tabindex="0" style="background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 4px;">
+            <h3>${t('world_map')}</h3>
+            <svg width="100%" height="300" tabindex="0" style="background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 4px;">
                 <rect width="100%" height="100%" fill="var(--bg-color)" />
                 <path d="M50 150 Q 150 50 300 150 T 550 150" fill="none" stroke="var(--accent-color)" stroke-width="2" />
                 <circle cx="50" cy="150" r="4" fill="var(--btn-bg)" />
                 <circle cx="300" cy="150" r="4" fill="var(--btn-bg)" />
                 <circle cx="550" cy="150" r="4" fill="var(--btn-bg)" />
-                <text x="300" y="140" text-anchor="middle" fill="var(--text-color)" font-size="12">World Map (Offline SVG)</text>
+                <text x="50%" y="50%" text-anchor="middle" fill="var(--text-color)" font-size="12">${t('world_map_svg')}</text>
             </svg>
 
             <div style="margin-top: 20px;">
-                <button tabindex="0" onclick="window.simulateAlert()" style="padding: 8px 16px; background: var(--btn-bg); color: var(--btn-text); border: none; border-radius: 4px; cursor: pointer;">Simulate Connection Alert Window</button>
+                <button tabindex="0" onclick="window.simulateAlert()" style="padding: 8px 16px; background: var(--btn-bg); color: var(--btn-text); border: none; border-radius: 4px; cursor: pointer;">${t('simulate_alert')}</button>
             </div>
         </div>
     `;
 
     const rulesHtml = `
         <div class="sidebar">
-            <h3>Profiles</h3>
+            <h3>${t('profiles')}</h3>
             <ul>
-                <li tabindex="0">Default Profile</li>
+                <li tabindex="0">${t('default_profile')}</li>
             </ul>
         </div>
         <div class="main-content">
-            <h3>Rules Table</h3>
-            <table class="rules-table" tabindex="0">
-                <thead>
-                    <tr>
-                        <th>App</th>
-                        <th>Action</th>
-                        <th>Remote</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${rulesData.map(r => `
-                        <tr tabindex="0">
-                            <td>${r.app}</td>
-                            <td class="${r.action === 'allow' ? 'text-green' : 'text-red'}">${r.action.toUpperCase()}</td>
-                            <td>${r.remote}</td>
+            <h3>${t('rules_table')}</h3>
+            <div style="overflow-x: auto;">
+                <table class="rules-table" tabindex="0">
+                    <thead>
+                        <tr>
+                            <th>${t('app')}</th>
+                            <th>${t('action')}</th>
+                            <th>${t('remote')}</th>
                         </tr>
-                    `).join('')}
-                </tbody>
-            </table>
+                    </thead>
+                    <tbody>
+                        ${rulesData.map(r => `
+                            <tr tabindex="0">
+                                <td>${r.app}</td>
+                                <td class="${r.action === 'allow' ? 'text-green' : 'text-red'}">${r.action === 'allow' ? t('allow') : t('deny')}</td>
+                                <td><bdi>${r.remote}</bdi></td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>
         </div>
     `;
 
     const settingsHtml = `
         <div class="main-content">
-            <h3>Settings</h3>
+            <h3>${t('settings')}</h3>
             <div class="settings-section">
-                <h4>GeoIP Databases</h4>
-                <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                <h4>${t('geoip_databases')}</h4>
+                <div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
                     <select id="db-select" tabindex="0" style="padding: 5px; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color);">
                         ${dbData.map(db => `<option value="${db}">${db}</option>`).join('')}
                     </select>
-                    <button tabindex="0" onclick="alert('Update Database trigger')" style="padding: 5px 10px; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); cursor: pointer;">Update Database</button>
-                    <button tabindex="0" onclick="alert('Choose File trigger')" style="padding: 5px 10px; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); cursor: pointer;">Choose File...</button>
+                    <button tabindex="0" onclick="alert('${t('update_database')}')" style="padding: 5px 10px; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); cursor: pointer;">${t('update_database')}</button>
+                    <button tabindex="0" onclick="alert('${t('choose_file')}')" style="padding: 5px 10px; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); cursor: pointer;">${t('choose_file')}</button>
                 </div>
                 <ul>
                     ${dbData.map(db => `<li tabindex="0">${db}</li>`).join('')}
                 </ul>
             </div>
             <div class="settings-section" tabindex="0">
-                <h4>General</h4>
-                <p>Monitor network traffic and manage connection rules.</p>
+                <h4>${t('general')}</h4>
+                <p>${t('general_desc')}</p>
             </div>
         </div>
     `;
@@ -168,11 +180,11 @@ function updateUI() {
     app.innerHTML = `
         <div class="app-container">
             <div class="header">
-                <h1>Rat Network Monitor</h1>
+                <h1>${t('app_title')}</h1>
                 <div class="tabs" role="tablist">
-                    <button id="tab-btn-monitor" role="tab" tabindex="0" class="${currentTab === 'monitor' ? 'active' : ''}" onclick="window.switchTab('monitor')">Monitor</button>
-                    <button id="tab-btn-rules" role="tab" tabindex="0" class="${currentTab === 'rules' ? 'active' : ''}" onclick="window.switchTab('rules')">Rules</button>
-                    <button id="tab-btn-settings" role="tab" tabindex="0" class="${currentTab === 'settings' ? 'active' : ''}" onclick="window.switchTab('settings')">Settings</button>
+                    <button id="tab-btn-monitor" role="tab" tabindex="0" class="${currentTab === 'monitor' ? 'active' : ''}" onclick="window.switchTab('monitor')">${t('monitor')}</button>
+                    <button id="tab-btn-rules" role="tab" tabindex="0" class="${currentTab === 'rules' ? 'active' : ''}" onclick="window.switchTab('rules')">${t('rules')}</button>
+                    <button id="tab-btn-settings" role="tab" tabindex="0" class="${currentTab === 'settings' ? 'active' : ''}" onclick="window.switchTab('settings')">${t('settings')}</button>
                 </div>
             </div>
             <div class="content-area">
@@ -205,7 +217,7 @@ function setupKeyboardNavigation() {
         if (window.__TAURI__) {
             await invoke('simulate_alert');
         } else {
-            window.open('src/alert.html', '_blank', 'width=450,height=250');
+            window.open('src/alert.html?lang=' + getLocale(), '_blank', 'width=450,height=250');
         }
     } catch (e) {
         console.error("Failed to simulate alert:", e);
