@@ -1,6 +1,6 @@
 [
   {
-    "context": "Monitor - Light",
+    "context": "Monitor - Dark",
     "violations": [
       {
         "id": "region",
@@ -41,7 +41,7 @@
     ]
   },
   {
-    "context": "Rules - Light",
+    "context": "Rules - Dark",
     "violations": [
       {
         "id": "region",
@@ -82,11 +82,11 @@
     ]
   },
   {
-    "context": "Settings - Light",
+    "context": "Settings - Dark",
     "violations": []
   },
   {
-    "context": "Alert - Light",
+    "context": "Alert - Dark",
     "violations": []
   }
 ]

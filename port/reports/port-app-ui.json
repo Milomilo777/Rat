@@ -1,6 +1,6 @@
 {
   "lane": "port-app-ui",
-  "step": 8,
+  "step": 9,
   "requirements": [
     {
       "id": "R1",
@@ -84,15 +84,18 @@
     }
   ],
   "files_changed": [
+    "port/Cargo.lock",
     "port/Cargo.toml",
     "port/crates/rat-types/Cargo.toml",
     "port/crates/rat-types/src/lib.rs",
+    "port/app/package-lock.json",
     "port/app/package.json",
     "port/app/tsconfig.json",
     "port/app/vite.config.ts",
     "port/app/vitest.config.ts",
     "port/app/playwright.config.ts",
     "port/app/.eslintrc.cjs",
+    "port/app/.gitignore",
     "port/app/index.html",
     "port/app/src/alert.html",
     "port/app/src/style.css",
@@ -105,15 +108,41 @@
     "port/app/tests/playwright.spec.ts",
     "port/app/tests/i18n.test.ts",
     "port/app/tests/axe.spec.ts",
+    "port/app/src-tauri/Cargo.lock",
     "port/app/src-tauri/Cargo.toml",
     "port/app/src-tauri/tauri.conf.json",
     "port/app/src-tauri/build.rs",
     "port/app/src-tauri/src/main.rs",
+    "port/app/src-tauri/gen/schemas/acl-manifests.json",
+    "port/app/src-tauri/gen/schemas/capabilities.json",
+    "port/app/src-tauri/gen/schemas/desktop-schema.json",
+    "port/app/src-tauri/gen/schemas/linux-schema.json",
     "port/app/src-tauri/icons/icon.png",
     "port/app/src-tauri/icons/icon.ico",
+    "port/app/screenshots/alert.png",
+    "port/app/screenshots/alert_ar-PSEUDO.png",
+    "port/app/screenshots/alert_en-PSEUDO.png",
+    "port/app/screenshots/alert_en.png",
+    "port/app/screenshots/monitor.png",
+    "port/app/screenshots/monitor_ar-PSEUDO.png",
+    "port/app/screenshots/monitor_en-PSEUDO.png",
+    "port/app/screenshots/monitor_en.png",
+    "port/app/screenshots/rules.png",
+    "port/app/screenshots/rules_ar-PSEUDO.png",
+    "port/app/screenshots/rules_en-PSEUDO.png",
+    "port/app/screenshots/rules_en.png",
+    "port/app/screenshots/settings.png",
+    "port/app/screenshots/settings_ar-PSEUDO.png",
+    "port/app/screenshots/settings_en-PSEUDO.png",
+    "port/app/screenshots/settings_en.png",
     "port/docs/app.md",
     "port/reviews/port-ci-by-port-app-ui.md",
-    "port/reviews/port-ci-by-port-app-ui.json"
+    "port/reviews/port-ci-by-port-app-ui.json",
+    "port/reports/axe-results.json",
+    "port/reports/port-app-ui.json",
+    "port/reports/port-app-ui.log",
+    "port/reports/port-app-ui.md",
+    "port/.gitignore"
   ],
   "existing_tests_modified": [],
   "commands": [
@@ -146,12 +175,12 @@
       "why": "Replaced structural headers, fixed table column headers, and adjusted WCAG color thresholds to meet AA contrast ratings in both dark and light modes across both the main and alert windows. Output the axe-core JSON results adjacent to the final report."
     },
     {
-      "what": "Fix SonarCloud duplications",
-      "why": "Re-used `getMockRules` instead of duplicating rulesData initialization blocks. Fixed axe issue by making alert labels more descriptive and WCAG contrast compliant over `#16a34a` (green)."
-    },
-    {
       "what": "QA port-ci",
       "why": "Followed instructions to checkout port-ci branch and verify the self-reported mutation validations, reporting two failures in port-ci's JSON to the reviews folder."
+    },
+    {
+      "what": "Final check and merge",
+      "why": "Verified the branch was already up to date with origin/main and all automated checks still pass cleanly without conflicting."
     }
   ]
 }

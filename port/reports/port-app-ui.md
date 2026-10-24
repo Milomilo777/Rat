@@ -73,3 +73,69 @@ Decided to submit the changes without further user input, as this is an unattend
 - Executed `actionlint` and local scripts against the checked out code and verified the results matched the `git diff`.
 - Discovered and logged failures wherein the recorded mutation verification actions documented in `port-ci`'s JSON failed to be properly "caught" in local reproduction testing (e.g. empty shell scripts returning `0`).
 - Authored the resulting findings into `port/reviews/port-ci-by-port-app-ui.md` and `.json`.
+
+## Final state
+- The branch was successfully rebased/merged with the latest changes from `origin/main`.
+- Conflicts were none (or automatically resolved) due to the strict path isolation in `port/app` and `port/crates/rat-types`.
+- Verified all requirements continue to function in the final state.
+
+```
+--- npm run test ---
+
+ RUN  v1.6.1 /app/port/app
+
+ ✓ tests/i18n.test.ts  (1 test) 6ms
+ ✓ src/rules.test.ts  (4 tests) 5ms
+ ✓ src/utils.test.ts  (8 tests) 7ms
+
+ Test Files  3 passed (3)
+      Tests  13 passed (13)
+   Start at  01:46:47
+   Duration  1.37s (transform 378ms, setup 0ms, collect 368ms, tests 18ms, environment 2ms, prepare 790ms)
+
+--- tsc ---
+--- npm run build ---
+
+> app@1.0.0 build
+> vite build
+
+vite v5.4.21 building for production...
+transforming...
+✓ 12 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                0.46 kB │ gzip: 0.29 kB
+dist/src/alert.html            2.59 kB │ gzip: 0.98 kB
+dist/assets/main-BaexKLX5.css  3.35 kB │ gzip: 1.15 kB
+dist/assets/alert-CIGs0Vh4.js  1.90 kB │ gzip: 0.71 kB
+dist/assets/i18n-YU-iQMS2.js   2.96 kB │ gzip: 1.65 kB
+dist/assets/main-wPKxKSHC.js   9.13 kB │ gzip: 2.80 kB
+✓ built in 399ms
+--- cargo check ---
+   Compiling app v0.1.0 (/app/port/app/src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.13s
+--- cargo test ---
+   Compiling app v0.1.0 (/app/port/app/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.00s
+     Running unittests src/main.rs (target/debug/deps/app-7dc8873316ee70ce)
+
+running 2 tests
+test tests::test_fake_data_source_handles_bad_data ... ok
+test tests::test_fake_data_source_valid_data ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+--- playwright test ---
+
+Running 5 tests using 2 workers
+
+[1/5] [chromium] › tests/axe.spec.ts:11:1 › accessibility checks - light mode
+[2/5] [chromium] › tests/axe.spec.ts:43:1 › accessibility checks - dark mode
+[3/5] [chromium] › tests/playwright.spec.ts:7:5 › screenshot generation › screenshots in en
+[4/5] [chromium] › tests/playwright.spec.ts:7:5 › screenshot generation › screenshots in en-PSEUDO
+[5/5] [chromium] › tests/playwright.spec.ts:7:5 › screenshot generation › screenshots in ar-PSEUDO
+  5 passed (11.8s)
+```
+
+## Follow-ups
+None
