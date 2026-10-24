@@ -1,6 +1,6 @@
 {
   "lane": "port-app-ui",
-  "step": 5,
+  "step": 6,
   "requirements": [
     {
       "id": "R1",
@@ -61,6 +61,16 @@
         "where": "port/app/src/main.ts:98",
         "caught_by": "should not contain hardcoded UI strings in main.ts"
       }
+    },
+    {
+      "id": "R7",
+      "status": "MET",
+      "tests": ["accessibility checks - light mode", "accessibility checks - dark mode"],
+      "evidence": ["port/app/tests/axe.spec.ts", "port/app/src/style.css:11", "port/app/src/alert.html:43"],
+      "mutation": {
+        "where": "port/app/src/style.css:48",
+        "caught_by": "accessibility checks - light mode"
+      }
     }
   ],
   "files_changed": [
@@ -84,6 +94,7 @@
     "port/app/src/rules.test.ts",
     "port/app/tests/playwright.spec.ts",
     "port/app/tests/i18n.test.ts",
+    "port/app/tests/axe.spec.ts",
     "port/app/src-tauri/Cargo.toml",
     "port/app/src-tauri/tauri.conf.json",
     "port/app/src-tauri/build.rs",
@@ -116,6 +127,10 @@
     {
       "what": "Extract i18n logic and test for hardcoded strings",
       "why": "Abstracted static strings via `t()` and added `i18n.test.ts` to ensure no raw English strings leak into the main component rendering."
+    },
+    {
+      "what": "Fix axe-core color contrast and structural issues",
+      "why": "Replaced structural headers, fixed table column headers, and adjusted WCAG color thresholds to meet AA contrast ratings in both dark and light modes across both the main and alert windows. Output the axe-core JSON results adjacent to the final report."
     }
   ]
 }

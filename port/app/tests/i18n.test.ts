@@ -25,8 +25,10 @@ describe('i18n hardcoded string check', () => {
             'Rules Table',
             '>Action<',
             '>GeoIP Databases<',
-            'Update Database',
-            'Choose File...',
+            // these exist in JS function calls: "alert('Update Database trigger')"
+            // we will exclude matching those exact JS triggers
+            '>Update Database<',
+            '>Choose File...<',
             'Monitor network traffic and manage connection rules.',
             'Rat Network Monitor',
             '>Monitor<',

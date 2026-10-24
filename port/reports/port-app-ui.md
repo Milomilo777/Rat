@@ -53,3 +53,11 @@ Decided to submit the changes without further user input, as this is an unattend
 - Configured dynamic RTL layout switching via `document.documentElement.dir = 'rtl'` when the Arabic pseudo-locale is active.
 - Configured Playwright (`tests/playwright.spec.ts`) to capture screenshots for all three locales iteratively via query parameter `?lang=...`.
 - Implemented `tests/i18n.test.ts` using Vitest to enforce that no hard-coded English strings exist in the UI generation functions.
+
+## Step 6 Changes
+- Set up `@axe-core/playwright` and integrated accessibility test suites validating light and dark modes on every rendered layout.
+- Remediated serious and critical Axe violations:
+  - Corrected semantic structure (added `<main>` landmarks, ordered `<hX>` tags, added `<label>` and scope-binding to `<select>`/`<table>` components).
+  - Adjusted `--btn-bg`, `--text-green`, and `--text-red` CSS variables across `style.css` and `alert.html` to pass WCAG 2.2 AA contrast requirements over their underlying backgrounds.
+  - Implemented `@media (prefers-reduced-motion: reduce)` to strip any transition animations locally.
+- Accessibility findings json from the test suite is captured to `port/reports/axe-results.json` ensuring no regressions against the requirements.

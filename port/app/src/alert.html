@@ -11,7 +11,7 @@
         --text-color: #111111;
         --panel-bg: #ffffff;
         --border-color: #cccccc;
-        --accent-color: #2563eb;
+        --accent-color: #1e3a8a;
         --input-bg: #ffffff;
       }
 
@@ -20,9 +20,9 @@
           --bg-color: #1e1e1e;
           --text-color: rgba(255, 255, 255, 0.87);
           --panel-bg: #252526;
-          --border-color: #333333;
-          --accent-color: #4ade80;
-          --input-bg: #333333;
+          --border-color: #444444;
+          --accent-color: #60a5fa;
+          --input-bg: #374151;
         }
       }
 
@@ -43,19 +43,34 @@
         flex-direction: column;
         gap: 15px;
       }
-      .header h2 { margin: 0; font-size: 1.2rem; color: #f87171; }
+      .header h1 { margin: 0; font-size: 1.2rem; color: #b91c1c; }
+      @media (prefers-color-scheme: dark) {
+        .header h1 { color: #f87171; }
+      }
       .details { background: var(--panel-bg); padding: 15px; border-radius: 6px; }
       .actions { display: flex; gap: 10px; margin-top: 10px; }
       button { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-family: inherit; }
-      .btn-allow { background: #4ade80; color: #000; }
-      .btn-deny { background: #f87171; color: #000; }
+      .btn-allow { background: #15803d; color: #ffffff; }
+      .btn-deny { background: #b91c1c; color: #ffffff; }
       .options { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
       select { background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); padding: 5px; border-radius: 4px; font-family: inherit; }
+
+      @media (prefers-reduced-motion: reduce) {
+        *, ::before, ::after {
+          animation-delay: -1ms !important;
+          animation-duration: 1ms !important;
+          animation-iteration-count: 1 !important;
+          background-attachment: initial !important;
+          scroll-behavior: auto !important;
+          transition-duration: 0s !important;
+          transition-delay: 0s !important;
+        }
+      }
     </style>
   </head>
   <body>
-    <div id="app" class="alert-container">
-    </div>
+    <main id="app" class="alert-container">
+    </main>
 
     <script type="module">
       import { t, setLocale, getLocale } from './i18n.ts';
@@ -66,39 +81,41 @@
           setLocale(lang);
       }
 
-      if (getLocale() === 'ar-PSEUDO') {
+      const isRtl = getLocale() === 'ar-PSEUDO';
+      if (isRtl) {
           document.documentElement.dir = 'rtl';
       } else {
           document.documentElement.dir = 'ltr';
       }
 
+      document.documentElement.lang = isRtl ? 'ar' : 'en';
       document.title = t('alert_title');
 
       const app = document.getElementById('app');
       app.innerHTML = `
         <div class="header">
-          <h2 tabindex="0">${t('alert_blocked')}</h2>
+          <h1 tabindex="0">${t('alert_blocked')}</h1>
           <p tabindex="0">${t('alert_wants_to_connect', { app: '<strong>Firefox</strong>', ip: '<bdi><strong>1.1.1.1</strong></bdi>', port: '<bdi>443</bdi>' })}</p>
         </div>
 
         <div class="options">
-          <label>
-            ${t('scope')}
+          <div style="display: flex; flex-direction: column;">
+            <label for="scope">${t('scope')}</label>
             <select id="scope" tabindex="0">
               <option value="any">${t('any_connection')}</option>
               <option value="domain">${t('this_domain')}</option>
               <option value="ip">${t('this_ip')}</option>
               <option value="port">${t('this_port')}</option>
             </select>
-          </label>
-          <label>
-            ${t('timeout')}
+          </div>
+          <div style="display: flex; flex-direction: column;">
+            <label for="timeout">${t('timeout')}</label>
             <select id="timeout" tabindex="0">
               <option value="forever">${t('forever')}</option>
               <option value="until-quit">${t('until_quit')}</option>
               <option value="5m">${t('five_minutes')}</option>
             </select>
-          </label>
+          </div>
         </div>
 
         <div class="actions">

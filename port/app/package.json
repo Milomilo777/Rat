@@ -16,11 +16,16 @@
   "engines": {
     "node": ">=18.0.0"
   },
-  "keywords": ["rat", "firewall", "ui"],
+  "keywords": [
+    "rat",
+    "firewall",
+    "ui"
+  ],
   "author": "Jules",
   "license": "ISC",
   "type": "module",
   "devDependencies": {
+    "@axe-core/playwright": "^4.14.0",
     "@playwright/test": "^1.48.1",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/cli": "^2.0.0",
