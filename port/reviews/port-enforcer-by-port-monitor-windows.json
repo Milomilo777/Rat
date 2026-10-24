@@ -1,0 +1,31 @@
+{
+  "lane": "port-enforcer",
+  "step": 9,
+  "requirements": [
+    {
+      "id": "R1'",
+      "status": "CONFIRMED",
+      "evidence": "Output executed correctly for test_linux_plan_empty, test_linux_plan_with_ports, proptest_linux_plan_no_panic, proptest_linux_plan_order_independent, and test_linux_plan_performance_budget"
+    },
+    {
+      "id": "R2'",
+      "status": "CONFIRMED",
+      "evidence": "Output executed correctly for test_windows_plan_diff, proptest_windows_plan_no_panic, proptest_windows_plan_order_independent, and test_windows_plan_performance_budget"
+    },
+    {
+      "id": "R3",
+      "status": "CONFIRMED",
+      "evidence": "Output executed correctly for test_validation_path, proptest_validate_path_no_panic, proptest_validate_path_rejects_bad_chars, and proptest_validate_path_accepts_good_chars"
+    },
+    {
+      "id": "R4",
+      "status": "CONFIRMED",
+      "evidence": "Output executed correctly for test_linux_plan_with_ports and test_windows_plan_diff"
+    },
+    {
+      "id": "R5'",
+      "status": "CONFIRMED",
+      "evidence": "Output executed correctly for test_windows_plan_diff and test_windows_plan_spaces_non_ascii"
+    }
+  ]
+}
