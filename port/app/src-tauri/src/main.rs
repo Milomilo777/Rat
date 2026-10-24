@@ -4,12 +4,12 @@ use rat_types::{Connection, ProcessInfo, Protocol};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::Manager;
-use tauri::tray::TrayIconBuilder;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
-use tauri::WebviewWindowBuilder;
-use tauri::WebviewUrl;
+use tauri::tray::TrayIconBuilder;
+use tauri::Manager;
 use tauri::State;
+use tauri::WebviewUrl;
+use tauri::WebviewWindowBuilder;
 
 #[derive(Serialize, Debug, Clone)]
 pub struct ConnectionView {
@@ -49,7 +49,9 @@ impl DataSource for FakeDataSource {
         };
 
         let local_1 = local_1_str.parse().map_err(|e| format!("Bad IP: {}", e))?;
-        let remote_1 = "1.1.1.1:443".parse().map_err(|e| format!("Bad IP: {}", e))?;
+        let remote_1 = "1.1.1.1:443"
+            .parse()
+            .map_err(|e| format!("Bad IP: {}", e))?;
         let local_2 = local_2_str.parse().map_err(|e| format!("Bad IP: {}", e))?;
         let remote_2 = "8.8.8.8:53".parse().map_err(|e| format!("Bad IP: {}", e))?;
 
@@ -95,20 +97,28 @@ impl DataSource for FakeDataSource {
                 vpn_mark: None,
                 proxy_mark: Some("SOCKS5 Proxy".to_string()),
                 service_name: Some("domain".to_string()),
-            }
+            },
         ])
     }
 
     fn get_geoip_databases(&self) -> Result<Vec<String>, String> {
-        Ok(vec![
-            "dbip-asn-lite.mmdb".to_string(),
-        ])
+        Ok(vec!["dbip-asn-lite.mmdb".to_string()])
     }
 
     fn get_rules(&self) -> Result<Vec<RuleView>, String> {
         Ok(vec![
-            RuleView { id: "1".to_string(), app: "firefox".to_string(), action: "allow".to_string(), remote: "1.1.1.1".to_string() },
-            RuleView { id: "2".to_string(), app: "curl".to_string(), action: "deny".to_string(), remote: "8.8.8.8".to_string() },
+            RuleView {
+                id: "1".to_string(),
+                app: "firefox".to_string(),
+                action: "allow".to_string(),
+                remote: "1.1.1.1".to_string(),
+            },
+            RuleView {
+                id: "2".to_string(),
+                app: "curl".to_string(),
+                action: "deny".to_string(),
+                remote: "8.8.8.8".to_string(),
+            },
         ])
     }
 }
@@ -137,15 +147,11 @@ fn get_rules(state: State<'_, Mutex<AppState>>) -> Result<Vec<RuleView>, String>
 
 #[tauri::command]
 fn simulate_alert(app: tauri::AppHandle) -> Result<(), String> {
-    WebviewWindowBuilder::new(
-        &app,
-        "alert",
-        WebviewUrl::App("src/alert.html".into())
-    )
-    .title("Connection Alert")
-    .inner_size(450.0, 250.0)
-    .build()
-    .map_err(|e| format!("Failed to build window: {}", e))?;
+    WebviewWindowBuilder::new(&app, "alert", WebviewUrl::App("src/alert.html".into()))
+        .title("Connection Alert")
+        .inner_size(450.0, 250.0)
+        .build()
+        .map_err(|e| format!("Failed to build window: {}", e))?;
 
     Ok(())
 }
@@ -153,15 +159,15 @@ fn simulate_alert(app: tauri::AppHandle) -> Result<(), String> {
 fn main() {
     tauri::Builder::default()
         .manage(Mutex::new(AppState {
-            data_source: Box::new(FakeDataSource { return_bad_data: false }),
+            data_source: Box::new(FakeDataSource {
+                return_bad_data: false,
+            }),
         }))
         .setup(|app| {
             let show_i = MenuItemBuilder::with_id("show", "Show Monitor").build(app)?;
             let quit_i = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
 
-            let menu = MenuBuilder::new(app)
-                .items(&[&show_i, &quit_i])
-                .build()?;
+            let menu = MenuBuilder::new(app).items(&[&show_i, &quit_i]).build()?;
 
             let _tray = TrayIconBuilder::new()
                 .menu(&menu)
@@ -181,7 +187,12 @@ fn main() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_connections, get_geoip_databases, get_rules, simulate_alert])
+        .invoke_handler(tauri::generate_handler![
+            get_connections,
+            get_geoip_databases,
+            get_rules,
+            simulate_alert
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -192,7 +203,9 @@ mod tests {
 
     #[test]
     fn test_fake_data_source_handles_bad_data() {
-        let source = FakeDataSource { return_bad_data: true };
+        let source = FakeDataSource {
+            return_bad_data: true,
+        };
         let res = source.get_connections();
 
         assert!(res.is_err());
@@ -201,7 +214,9 @@ mod tests {
 
     #[test]
     fn test_fake_data_source_valid_data() {
-        let source = FakeDataSource { return_bad_data: false };
+        let source = FakeDataSource {
+            return_bad_data: false,
+        };
         let res = source.get_connections();
 
         assert!(res.is_ok());
