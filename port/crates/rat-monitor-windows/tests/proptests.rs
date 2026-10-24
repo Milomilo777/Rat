@@ -1,5 +1,8 @@
-use rat_monitor_windows::{parse_port, convert_ipv4_addr, convert_ipv6_addr, extract_process_name_from_path, check_is_vpn_interface_type};
 use proptest::prelude::*;
+use rat_monitor_windows::{
+    check_is_vpn_interface_type, convert_ipv4_addr, convert_ipv6_addr,
+    extract_process_name_from_path, parse_port,
+};
 
 proptest! {
     #[test]
