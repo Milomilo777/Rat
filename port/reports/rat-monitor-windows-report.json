@@ -45,7 +45,9 @@
     "port/crates/rat-monitor-windows/fuzz/Cargo.toml",
     "port/crates/rat-monitor-windows/fuzz/fuzz_targets/fuzz_extract_process_name_from_path.rs",
     "port/crates/rat-monitor-windows/fuzz/fuzz_targets/fuzz_check_is_vpn_interface_type.rs",
-    "port/crates/rat-monitor-windows/fuzz/fuzz_targets/fuzz_convert_addrs.rs"
+    "port/crates/rat-monitor-windows/fuzz/fuzz_targets/fuzz_convert_addrs.rs",
+    "port/reviews/port-enforcer-by-port-monitor-windows.json",
+    "port/reviews/port-enforcer-by-port-monitor-windows.md"
   ],
   "existing_tests_modified": [],
   "commands": [
@@ -93,6 +95,10 @@
     {
       "what": "Added benchmarks and limits for performance execution budgets under criterion.",
       "why": "To explicitly verify no unbounded caching logic is evaluated within bounds. Tested under `wine`."
+    },
+    {
+      "what": "Completed peer review validation of `port-enforcer`.",
+      "why": "Verified all expected assertions within peer review requirement."
     }
   ]
 }
