@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { formatBytes } from './utils';
-import { Rule } from './rules';
+import { Rule, getMockRules } from './rules';
 import { t, setLocale, getLocale } from './i18n';
 
 let currentTab = 'monitor';
@@ -48,12 +48,7 @@ async function renderApp(): Promise<void> {
                     service_name: 'domain'
                 }
             ];
-            const allowAction: 'allow' | 'deny' = 'allow';
-            const denyAction: 'allow' | 'deny' = 'deny';
-            rulesData = [
-                { id: '1', app: 'firefox', action: allowAction, remote: '1.1.1.1' },
-                { id: '2', app: 'curl', action: denyAction, remote: '8.8.8.8' }
-            ];
+            rulesData = getMockRules();
             dbData = ['dbip-asn-lite.mmdb'];
         }
 
@@ -164,8 +159,8 @@ function updateUI() {
                     <select id="db-select" aria-label="GeoIP Database Selection" tabindex="0" style="padding: 5px; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color);">
                         ${dbData.map(db => `<option value="${db}">${db}</option>`).join('')}
                     </select>
-                    <button tabindex="0" onclick="alert('Update Database trigger')" style="padding: 5px 10px; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); cursor: pointer;">${t('update_database')}</button>
-                    <button tabindex="0" onclick="alert('Choose File trigger')" style="padding: 5px 10px; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); cursor: pointer;">${t('choose_file')}</button>
+                    <button tabindex="0" onclick="alert('${t('update_database')}')" style="padding: 5px 10px; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); cursor: pointer;">${t('update_database')}</button>
+                    <button tabindex="0" onclick="alert('${t('choose_file')}')" style="padding: 5px 10px; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); cursor: pointer;">${t('choose_file')}</button>
                 </div>
                 <ul aria-labelledby="geoip-heading">
                     ${dbData.map(db => `<li tabindex="0">${db}</li>`).join('')}

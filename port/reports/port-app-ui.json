@@ -1,15 +1,15 @@
 {
   "lane": "port-app-ui",
-  "step": 6,
+  "step": 7,
   "requirements": [
     {
       "id": "R1",
       "status": "MET",
-      "tests": [],
+      "tests": ["test_fake_data_source_valid_data", "test_fake_data_source_handles_bad_data"],
       "evidence": ["port/app/src-tauri/src/main.rs:32"],
       "mutation": {
         "where": "port/app/src-tauri/src/main.rs:40",
-        "caught_by": ""
+        "caught_by": "test_fake_data_source_valid_data"
       }
     },
     {
@@ -45,7 +45,7 @@
     {
       "id": "R5",
       "status": "MET",
-      "tests": ["screenshots"],
+      "tests": ["screenshots in en", "screenshots in en-PSEUDO", "screenshots in ar-PSEUDO"],
       "evidence": ["port/app/tests/playwright.spec.ts:6", "port/app/src/style.css:17", "port/app/src/main.ts:168", "port/app/src/alert.html:14"],
       "mutation": {
         "where": "port/app/src-tauri/tauri.conf.json:13",
@@ -131,6 +131,10 @@
     {
       "what": "Fix axe-core color contrast and structural issues",
       "why": "Replaced structural headers, fixed table column headers, and adjusted WCAG color thresholds to meet AA contrast ratings in both dark and light modes across both the main and alert windows. Output the axe-core JSON results adjacent to the final report."
+    },
+    {
+      "what": "Fix SonarCloud duplications",
+      "why": "Re-used `getMockRules` instead of duplicating rulesData initialization blocks. Fixed axe issue by making alert labels more descriptive and WCAG contrast compliant over `#16a34a` (green)."
     }
   ]
 }

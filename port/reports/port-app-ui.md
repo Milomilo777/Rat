@@ -61,3 +61,9 @@ Decided to submit the changes without further user input, as this is an unattend
   - Adjusted `--btn-bg`, `--text-green`, and `--text-red` CSS variables across `style.css` and `alert.html` to pass WCAG 2.2 AA contrast requirements over their underlying backgrounds.
   - Implemented `@media (prefers-reduced-motion: reduce)` to strip any transition animations locally.
 - Accessibility findings json from the test suite is captured to `port/reports/axe-results.json` ensuring no regressions against the requirements.
+
+## Step 7 Changes
+- Refactored `rulesData` generation and initialization logic in `src/main.ts` and `src/rules.ts` to share `getMockRules()` eliminating SonarCloud code duplication errors.
+- Refactored `src/i18n.ts` string catalogs into variable iterations instead of raw duplicates.
+- Refactored `tests/playwright.spec.ts` variable iterators.
+- Adjusted accessibility tests in `tests/axe.spec.ts` to ensure `WCAG 2.2 AA` bounds are rigorously enforced over the alert button styles.
