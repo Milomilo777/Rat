@@ -1,5 +1,6 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use rat_names::{resolver::LookupBackend, Resolver, ResolverConfig};
+use std::hint::black_box;
 use std::net::IpAddr;
 use std::sync::Arc;
 
@@ -12,8 +13,10 @@ impl LookupBackend for DummyBackend {
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let mut config = ResolverConfig::default();
-    config.cache_size = 5000; // fit 2000 cache entries easily
+    let config = ResolverConfig {
+        cache_size: 5000, // fit 2000 cache entries easily
+        ..Default::default()
+    };
     let backend = Arc::new(DummyBackend);
     let resolver = Resolver::with_backend(config, backend).unwrap();
     let mut ips: Vec<IpAddr> = Vec::new();

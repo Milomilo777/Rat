@@ -13,8 +13,10 @@ impl LookupBackend for DummyBackend {
 
 #[test]
 fn test_cache_hit_budget() {
-    let mut config = ResolverConfig::default();
-    config.cache_size = 5000;
+    let config = ResolverConfig {
+        cache_size: 5000,
+        ..Default::default()
+    };
     let backend = Arc::new(DummyBackend);
     let resolver = Resolver::with_backend(config, backend).unwrap();
     let mut ips: Vec<IpAddr> = Vec::new();
