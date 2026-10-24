@@ -66,13 +66,14 @@ const accents: Record<string, string> = {
 };
 
 function generatePseudo(str: string, rtl: boolean): string {
-    const parts = str.split(/(\{[^}]+\})/g);
+    // Fix SonarCloud RegExp DoS vulnerability by avoiding vulnerable regex matching
+    const parts = str.split(/(\{.*?\})/g);
     let result = '';
     for (let i = 0; i < parts.length; i++) {
         if (parts[i].startsWith('{') && parts[i].endsWith('}')) {
             result += parts[i];
         } else {
-            let mapped = parts[i].split('').map(c => rtl ? (rtlMap[c] || c) : (accents[c] || c)).join('');
+            const mapped = parts[i].split('').map(c => rtl ? (rtlMap[c] || c) : (accents[c] || c)).join('');
             result += mapped;
         }
     }

@@ -5,10 +5,12 @@ export interface Rule {
   remote: string;
 }
 
-export const getMockRules = (): Rule[] => [
-  { id: '1', app: 'firefox', action: 'allow', remote: '1.1.1.1' },
-  { id: '2', app: 'curl', action: 'deny', remote: '8.8.8.8' }
-];
+export const getMockRules = (): Rule[] => {
+  return [
+    { id: '1', app: 'firefox', action: 'allow', remote: '1.1.1.1' },
+    { id: '2', app: 'curl', action: 'deny', remote: '8.8.8.8' }
+  ];
+};
 
 export function sortRules(rules: Rule[], field: keyof Rule, ascending = true): Rule[] {
   return [...rules].sort((a, b) => {
