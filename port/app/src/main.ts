@@ -7,7 +7,7 @@ let connectionsData: any[] = [];
 let rulesData: Rule[] = [];
 let dbData: string[] = [];
 
-async function renderApp() {
+async function renderApp(): Promise<void> {
     try {
         // Run in browser with mock data if not in Tauri
         if (window.__TAURI__) {
@@ -36,9 +36,11 @@ async function renderApp() {
                     service_name: 'domain'
                 }
             ];
+            const allowAction: 'allow' | 'deny' = 'allow';
+            const denyAction: 'allow' | 'deny' = 'deny';
             rulesData = [
-                { id: '1', app: 'firefox', action: 'allow', remote: '1.1.1.1' },
-                { id: '2', app: 'curl', action: 'deny', remote: '8.8.8.8' }
+                { id: '1', app: 'firefox', action: allowAction, remote: '1.1.1.1' },
+                { id: '2', app: 'curl', action: denyAction, remote: '8.8.8.8' }
             ];
             dbData = ['dbip-asn-lite.mmdb'];
         }
@@ -216,7 +218,6 @@ declare global {
     }
 }
 
-// Fix SonarCloud: encapsulate in async IIFE
-(async () => {
-    await renderApp();
-})();
+renderApp().catch((err) => {
+    console.error('Initialization failed:', err);
+});

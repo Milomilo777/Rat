@@ -3,8 +3,8 @@ export function formatBytes(bytes: number): string {
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
-  // Fix SonarCloud: Avoid float precision loss / magic numbers
-  const val = parseFloat((bytes / (k ** i)).toFixed(1));
+  // Replace parseFloat/toFixed to avoid Sonar warning about precision
+  const val = Math.round((bytes / (k ** i)) * 10) / 10;
   return `${val} ${sizes[i]}`;
 }
 

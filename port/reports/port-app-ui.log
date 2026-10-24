@@ -2,13 +2,13 @@
 
  RUN  v1.6.1 /app/port/app
 
- ✓ src/rules.test.ts  (4 tests) 20ms
- ✓ src/utils.test.ts  (8 tests) 9ms
+ ✓ src/utils.test.ts  (8 tests) 6ms
+ ✓ src/rules.test.ts  (4 tests) 5ms
 
  Test Files  2 passed (2)
       Tests  12 passed (12)
-   Start at  23:57:23
-   Duration  899ms (transform 193ms, setup 1ms, collect 166ms, tests 29ms, environment 1ms, prepare 444ms)
+   Start at  00:04:42
+   Duration  759ms (transform 155ms, setup 1ms, collect 145ms, tests 11ms, environment 1ms, prepare 261ms)
 
 --- tsc ---
 --- npm run build ---
@@ -24,14 +24,14 @@ computing gzip size...
 dist/index.html                0.39 kB │ gzip: 0.27 kB
 dist/src/alert.html            2.16 kB │ gzip: 0.83 kB
 dist/assets/main-B_RHOM46.css  1.93 kB │ gzip: 0.74 kB
-dist/assets/main-B3HM_hGn.js   8.37 kB │ gzip: 2.76 kB
-✓ built in 240ms
+dist/assets/main-BD3QS-lN.js   8.40 kB │ gzip: 2.77 kB
+✓ built in 318ms
 --- cargo check ---
    Compiling app v0.1.0 (/app/port/app/src-tauri)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.78s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.13s
 --- cargo test ---
    Compiling app v0.1.0 (/app/port/app/src-tauri)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.64s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.61s
      Running unittests src/main.rs (target/debug/deps/app-7dc8873316ee70ce)
 
 running 0 tests
