@@ -46,7 +46,7 @@ Rat is a reactive application firewall and network monitor on macOS. The goal is
 
 ### simplewall (Windows)
 * **Mechanism:** Windows Filtering Platform (WFP) user-mode API.
-* **Local Port Blocking:** Yes. WFP rules can be configured to block specific local ports or drop traffic from specific PIDs using the `FWPM_CONDITION_ALE_APP_ID` condition.
+* **Local Port Blocking:** Yes. WFP rules can be configured to block specific local ports or drop traffic from specific app paths using the `FWPM_CONDITION_ALE_APP_ID` condition.
 * **Pend connection:** No, standard user-mode WFP drops or allows based on rules. It doesn't hold packets for a prompt without a callout driver.
 * **Privileges:** Requires Admin rights to add WFP filters.
 * **License:** GPLv3.
@@ -83,7 +83,7 @@ Rat is a reactive application firewall and network monitor on macOS. The goal is
 ### Version 1 (Reactive)
 For Version 1, which mimics the macOS reactive approach:
 * **Windows:** Use **WFP from user mode** (similar to simplewall). It requires admin privileges but no kernel drivers, avoiding the EV certificate and attestation signing requirements. To align with Rat v1.2.0, WFP filters will be configured to target specific applications via `FWPM_CONDITION_ALE_APP_ID` (process path matching), which naturally isolates the block to the denied app without needing to enumerate and block its individual local ports.
-* **Linux:** Use **eBPF or netlink socket polling** for monitoring, and **iptables/nftables** rules for enforcement. To align with Rat v1.2.0, nftables rules can be updated dynamically to drop traffic originating from specific local ports or via cgroups/skb matching for specific process IDs.
+* **Linux:** Use **eBPF or netlink socket polling** for monitoring, and **iptables/nftables** rules for enforcement. To align with Rat v1.2.0, nftables rules can be updated dynamically to drop traffic originating from specific local ports or via cgroup matching (`meta cgroup` paths, not raw PIDs - netfilter cannot match PIDs, see review L1; per-PID attribution needs eBPF).
 
 ### Version 2 (Pre-connection prompt)
 For Version 2, which requires holding connections:
@@ -103,7 +103,7 @@ To implement Version 1 enforcement on Windows using the Windows Filtering Platfo
 
 *   **Provider and Sublayer:** Create a dedicated WFP Provider and a high-weight custom Sublayer (e.g., `FWPM_SUBLAYER_WEIGHT_MAX`) so Rat's rules take precedence over standard filters.
     *   *Docs:* [Providers](https://learn.microsoft.com/en-us/windows/win32/fwp/providers), [Sublayers](https://learn.microsoft.com/en-us/windows/win32/fwp/sublayers)
-*   **Layers:** Hook into `FWPM_LAYER_ALE_AUTH_CONNECT_V4` and `FWPM_LAYER_ALE_AUTH_CONNECT_V6` to control outbound TCP connections, and `FWPM_LAYER_ALE_AUTH_SEND_RECV_V4`/`V6` for UDP.
+*   **Layers:** Hook into `FWPM_LAYER_ALE_AUTH_CONNECT_V4` and `FWPM_LAYER_ALE_AUTH_CONNECT_V6` to control outbound TCP connections, and `ALE layering note (corrected 2026-10-25 per external review W1: `FWPM_LAYER_ALE_AUTH_SEND_RECV_V4/V6` does not exist). Outbound UDP is authorized at `FWPM_LAYER_ALE_AUTH_CONNECT_V4`/`V6` (each connect/sendto to a new peer); inbound authorization uses `FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4`/`V6`.
     *   *Docs:* [ALE Layers](https://learn.microsoft.com/en-us/windows/win32/fwp/ale-layers)
 *   **App Identification / Process Blocking:** Use `FwpmGetAppIdFromFileName0` to derive the `FWP_BYTE_BLOB` for matching a process by its executable path. Use the `FWPM_CONDITION_ALE_APP_ID` filter condition to drop connections directly from the denied app, fulfilling the v1.2.0 requirement to isolate blocking per app without blocking remote addresses.
     *   *Docs:* [FwpmGetAppIdFromFileName0](https://learn.microsoft.com/en-us/windows/win32/api/fwpmu/nf-fwpmu-fwpmgetappidfromfilename0)
@@ -118,7 +118,7 @@ To implement Version 2 (and V1 enforcement) on Linux, the following setup is rec
 *   **Local Port Blocking (v1.2.0 compatibility):** For v1 (reactive), dynamically generate `nftables` rules that drop traffic matching `tcp sport { port1, port2 }` or `udp sport { port1, port2 }`, corresponding to the sockets held by denied apps.
     *   *Docs:* [nftables Match expression (sport)](https://wiki.nftables.org/wiki-nftables/index.php/Matching_transport_protocol)
 *   **Queue Target:** Use the `queue` statement to divert matching outbound traffic to userspace via `nfqueue`.
-    *   Example rule: `nft add rule inet filter output tcp dport { 80, 443 } queue num 1`
+    *   Example rule: `nft add rule inet filter output ct state new tcp dport { 80, 443 } queue num 1  # ct state new added per review L3: without it every packet of a flow is queued`
     *   *Docs:* [nftables queueing to userspace](https://wiki.nftables.org/wiki-nftables/index.php/Queueing_to_userspace)
 *   **Userspace Handling:** A daemon binds to the netlink queue (e.g., queue number 1). It reads the packet, correlates it with a socket/process using Netlink/procfs, holds it while a user prompt is active (V2), and issues an `NF_ACCEPT` or `NF_DROP` verdict.
     *   *Docs:* [libnetfilter_queue](https://netfilter.org/projects/libnetfilter_queue/doxygen/html/)
