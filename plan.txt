@@ -1,7 +1,0 @@
-Requirements for `rat-enforcer`:
-- Implement trait `Enforcer { fn plan(&self, wanted: &Blocklist) -> Plan; fn apply(&self, plan: &Plan) -> io::Result<()> }`
-- Linux (R1): backend generates `nft -f` script using `inet rat` table, `ipv4`/`ipv6` sets, and drop rules. `apply` replaces the table atomically. Empty sets leave no stale entries.
-- Windows (R2): backend creates `Windows Defender Firewall` rules named `Rat:` + id (supports remote address + program path). Creates/removes through `netsh advfirewall` or `New-NetFirewallRule` argument vectors (not shell strings).
-- Security (R3): Every address/path validated; blocklist line with spaces, quotes, `;`, newlines or non-address must be rejected (injection safety). Checked with unit test.
-- Safety (R4): `plan` is pure and unit-tested. `apply` runs only with `RAT_ENFORCE=1`, otherwise dry run (prints commands). (mirrors `RAT_DRYRUN` behavior)
-- Efficiency (R5): plan generates a diff-based plan: only changed entries are touched on Windows.
