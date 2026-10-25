@@ -55,6 +55,10 @@
   ],
   "ci_runs": [
     {
+      "url": "https://github.com/Milomilo777/Rat/actions/runs/40185312382/job/121144750850",
+      "conclusion": "failure"
+    },
+    {
       "url": "https://github.com/Milomilo777/Rat/actions/runs/40182496918/job/121136317155",
       "conclusion": "failure"
     },

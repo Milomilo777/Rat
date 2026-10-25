@@ -521,8 +521,24 @@ async fn test_l6_gui_to_daemon_gap() -> Result<(), String> {
     if let Ok(mut sock) = s {
         use std::io::Write;
         use std::io::Read;
-        // Test apply rules
-        let rule = "{\"type\": \"ApplyRules\", \"rules\": []}\n";
+        sock.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+
+        // Protocol requires Hello first
+        let hello = "{\"Hello\": {\"protocol_version\": 1}}\n";
+        let _ = sock.write_all(hello.as_bytes());
+
+        let mut buf = [0u8; 4096];
+        if let Ok(n) = sock.read(&mut buf) {
+             let response = String::from_utf8_lossy(&buf[..n]);
+             if !response.contains("HelloAck") {
+                  return Err("FAIL-PRODUCT: L6: Did not receive HelloAck".into());
+             }
+        } else {
+             return Err("FAIL-PRODUCT: L6: Failed to read HelloAck".into());
+        }
+
+        // Test apply rules (using SetRules)
+        let rule = "{\"SetRules\": {\"rules\": []}}\n";
         let _ = sock.write_all(rule.as_bytes());
 
         let mut status = false;
@@ -537,17 +553,20 @@ async fn test_l6_gui_to_daemon_gap() -> Result<(), String> {
              return Err("FAIL-PRODUCT: L6: IPC sent rules but nft table not updated correctly".into());
         }
 
-        // Test snapshot
-        let snap = "{\"type\": \"RequestSnapshot\"}\n";
-        let _ = sock.write_all(snap.as_bytes());
-        let mut buf = [0u8; 1024];
-        if let Ok(n) = sock.read(&mut buf) {
-             let response = String::from_utf8_lossy(&buf[..n]);
-             if !response.contains("connections") {
-                  return Err("FAIL-PRODUCT: L6: IPC Snapshot does not contain real connections".into());
-             }
-        } else {
-             return Err("FAIL-PRODUCT: L6: Failed to read from IPC socket for Snapshot".into());
+        // Test snapshot (daemon broadcasts Snapshot)
+        // Just wait to receive it
+        let mut got_snap = false;
+        for _ in 0..5 {
+            if let Ok(n) = sock.read(&mut buf) {
+                let response = String::from_utf8_lossy(&buf[..n]);
+                if response.contains("Snapshot") && response.contains("connections") {
+                    got_snap = true;
+                    break;
+                }
+            }
+        }
+        if !got_snap {
+             return Err("FAIL-PRODUCT: L6: IPC Snapshot does not contain real connections".into());
         }
     } else {
          return Err("FAIL-PRODUCT: L6: Daemon socket missing, cannot test GUI-to-daemon gap".into());
