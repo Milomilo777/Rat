@@ -144,8 +144,21 @@ fn wait_child_deadline(child: &mut Child, tool: &str, limit: Duration) -> io::Re
 /// with this — it is pure string work (no filesystem access, so the
 /// plan budget holds) and it is EXACTLY apply()'s rejection
 /// set, because the canonicalize step never rejects (a not-yet-existing
-/// target passes as-is).
+/// target passes as-is). UNC paths are refused here, so the refusal
+/// happens before any canonicalisation.
 pub fn path_validation_error(path: &str) -> Option<&'static str> {
+    // Refuse UNC spellings first, as pure string work: fs::canonicalize on
+    // a UNC target does network I/O (a dead server would stall the
+    // caller), and a live target comes back mangled — the verbatim form
+    // `\\?\UNC\server\share` loses its `\\?\` prefix to validate_path's
+    // strip and yields `UNC\server\share`, which is not a path a rule can
+    // name. Windows treats / and \ as the same separator, so the
+    // forward-slash spelling is the same UNC path there; on POSIX `//` is
+    // an ordinary absolute path and stays accepted.
+    let bytes = path.as_bytes();
+    if bytes.starts_with(b"\\\\") || (cfg!(windows) && bytes.starts_with(b"//")) {
+        return Some("UNC paths are not supported");
+    }
     // Byte-level scans, exactly equivalent to the char-level checks: every
     // delimiter and match target is ASCII, and UTF-8 continuation bytes are
     // never ASCII, so a multibyte character can neither match nor split.
@@ -178,7 +191,9 @@ pub fn path_validation_error(path: &str) -> Option<&'static str> {
 /// free of characters that cannot occur in a real filename or that could
 /// confuse netsh's `name=` parsing (`"` is impossible in a Windows filename,
 /// CR/LF are control characters; `;` stays rejected as defense-in-depth even
-/// though no shell is involved), and
+/// though no shell is involved), not a UNC path (`\\server\share`,
+/// `\\?\UNC\...` — refused before canonicalisation, which on a UNC target
+/// does network I/O and cannot yield a nameable rule path), and
 /// canonicalized (symlinks/junctions resolved) when the target exists, so a
 /// rule cannot point validation at one file and enforcement at another.
 /// `'` IS accepted — it is a legal Windows filename character
@@ -401,6 +416,61 @@ mod tests {
             stdout.trim_start().starts_with("apple"),
             "stdin_data must reach the child and its output come back: {stdout:?}"
         );
+    }
+
+    #[test]
+    #[test]
+    fn test_validation_path_rejects_unc() {
+        // UNC must be refused as pure string work BEFORE any
+        // canonicalisation: fs::canonicalize on a UNC target does network
+        // I/O (a dead server stalls the tick), and a live target comes
+        // back mangled — \\?\UNC\server\share strips to UNC\server\share,
+        // which is not a path a rule can name. The refused spellings are
+        // the plain \\\\server form, the \\\\?\\UNC\\ verbatim form, and
+        // (Windows, where / and \ are the same separator) //server/share.
+        for unc in [
+            r"\\server\share\app.exe",
+            r"\\?\UNC\server\share\app.exe",
+            r"\\localhost\c$\Windows\System32\netsh.exe",
+        ] {
+            assert_eq!(
+                path_validation_error(unc),
+                Some("UNC paths are not supported"),
+                "{unc} must be refused by the string gate"
+            );
+            assert_eq!(
+                validate_path(unc).unwrap_err(),
+                "UNC paths are not supported",
+                "{unc} must be refused before canonicalisation"
+            );
+        }
+        #[cfg(windows)]
+        assert_eq!(
+            path_validation_error("//server/share/app.exe"),
+            Some("UNC paths are not supported"),
+            "//server/share is the same UNC path on Windows"
+        );
+    }
+
+    #[test]
+    fn test_validation_path_unc_refusal_is_prefix_only() {
+        // The refusal keys on a leading UNC prefix, not on backslashes or
+        // `?` in general: ordinary local paths stay valid. A verbatim
+        // local spelling (\\\\?\\C:\\...) is refused with the same error
+        // because rules must name the plain drive path (netsh rejects
+        // `\\?\` anyway).
+        if cfg!(windows) {
+            assert_eq!(
+                path_validation_error(r"C:\Windows\System32\netsh.exe"),
+                None
+            );
+            assert_eq!(
+                path_validation_error(r"\\?\C:\Windows\System32\netsh.exe"),
+                Some("UNC paths are not supported")
+            );
+        } else {
+            assert_eq!(path_validation_error("/usr/bin/netsh"), None);
+        }
     }
 
     proptest! {
