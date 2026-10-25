@@ -177,11 +177,9 @@ async fn test_ipc_edge_cases() {
     // We expect some Error messages back for malformed/oversized.
     for _ in 0..3 {
         if let Some(Ok(line)) = framed.next().await {
-            if let Ok(msg) = serde_json::from_str::<Message>(&line) {
-                if let Message::Error { .. } = msg {
-                    _saw_error = true;
-                    break;
-                }
+            if let Ok(Message::Error { .. }) = serde_json::from_str::<Message>(&line) {
+                _saw_error = true;
+                break;
             }
         }
     }
