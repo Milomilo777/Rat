@@ -273,8 +273,14 @@ fn path_delete_args(name: &str) -> Vec<String> {
 /// The temporary name a rule set is installed under while it replaces an
 /// existing one (`Rat:path:x` -> `Rat:tmp:path:x`); outside the
 /// `Rat:path:*` / `Rat:port:*` read-back wildcards, inside the cleanup's.
+/// The prefix is 4 chars longer than the final one, so a final name near
+/// [`RULE_NAME_MAX`] gets a hashed tmp name instead of an over-long one.
 fn tmp_rule_name(name: &str) -> String {
-    format!("Rat:tmp:{}", name.strip_prefix("Rat:").unwrap_or(name))
+    let tmp = format!("Rat:tmp:{}", name.strip_prefix("Rat:").unwrap_or(name));
+    if tmp.chars().count() <= RULE_NAME_MAX {
+        return tmp;
+    }
+    format!("Rat:tmp:#{}", &sha256_hex(name.as_bytes())[..32])
 }
 
 /// `show rule name=<n>`: exits non-zero exactly when no rule has that name.
@@ -557,12 +563,18 @@ impl Enforcer for WindowsEnforcer {
             }
         }
 
+        // one path that cannot be installed must not keep the others from
+        // being blocked: its error is kept, the loop goes on, the failed
+        // path stays out of `current` (the next diff retries it) and the
+        // first error is returned at the end.
+        let mut add_failed: HashSet<&String> = HashSet::new();
+        let mut first_err: Option<io::Error> = None;
         for path in &add {
             let name = format_rule_name(path);
             // one rule per direction under the SAME name: a listening app
             // is blocked inbound too, and one delete by name (the remove
             // loop, the swap below) removes both.
-            install(&name, &|n: &str| {
+            if let Err(e) = install(&name, &|n: &str| {
                 ["out", "in"]
                     .iter()
                     .map(|dir| {
@@ -575,7 +587,10 @@ impl Enforcer for WindowsEnforcer {
                         )
                     })
                     .collect()
-            })?;
+            }) {
+                add_failed.insert(path);
+                first_err.get_or_insert(e);
+            }
         }
 
         // the port axis. One delete per port (removes all four
@@ -629,7 +644,7 @@ impl Enforcer for WindowsEnforcer {
             .filter(|p| !removed.contains(*p))
             .cloned()
             .collect();
-        paths.extend(add.iter().cloned());
+        paths.extend(add.iter().filter(|p| !add_failed.contains(p)).cloned());
         paths.sort();
         paths.dedup();
         let removed_ports: HashSet<u16> = plan.remove_ports.iter().copied().collect();
@@ -644,7 +659,10 @@ impl Enforcer for WindowsEnforcer {
         local_ports.sort();
         local_ports.dedup();
         self.current = Blocklist { paths, local_ports };
-        Ok(())
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     /// netsh cannot delete by name pattern, so the wildcard
@@ -1823,6 +1841,9 @@ mod tests {
             watch: Mutex<bool>,
             covered: Mutex<std::collections::HashSet<Blocks>>,
             gaps: Mutex<Vec<String>>,
+            /// when set, `add` of a longer rule name fails like a netsh
+            /// that rejects it
+            max_name: Mutex<Option<usize>>,
         }
 
         impl Sim {
@@ -1899,6 +1920,11 @@ mod tests {
                 let mut rules = self.rules.lock().unwrap();
                 match verb {
                     "add" => {
+                        if let Some(max) = *self.max_name.lock().unwrap() {
+                            if name.chars().count() > max {
+                                return Ok(false);
+                            }
+                        }
                         rules.push(SimRule {
                             name,
                             dir,
@@ -2176,6 +2202,84 @@ mod tests {
             );
             assert_eq!(sim.rules_named(&format_rule_name(APP)).len(), 2);
             assert!(second.current.paths.is_empty(), "current stays behind");
+        }
+
+        #[test]
+        fn test_windows_tmp_name_fits_the_limit_for_every_final_name() {
+            // a final name of 197-200 chars used to get a tmp name 4 chars
+            // longer than RULE_NAME_MAX
+            for n in 190..=RULE_NAME_MAX + 3 {
+                let fill = n - "Rat:path:".len() - r"C:\x.exe".len();
+                let p = format!(r"C:\{}x.exe", "a".repeat(fill));
+                let name = format_rule_name(&p);
+                let tmp = tmp_rule_name(&name);
+                assert!(
+                    tmp.chars().count() <= RULE_NAME_MAX,
+                    "{n}: {} chars",
+                    tmp.len()
+                );
+                assert!(tmp.starts_with("Rat:tmp:"));
+                assert_ne!(tmp, name);
+            }
+            assert_eq!(tmp_rule_name("Rat:path:x"), "Rat:tmp:path:x");
+        }
+
+        #[test]
+        fn test_windows_one_unaddable_path_does_not_abort_the_others() {
+            // netsh rejects names over 200 chars; the near-limit path's tmp
+            // name used to exceed it and abort the whole loop
+            let long_ok = format!(
+                r"C:\{}x.exe",
+                "a".repeat(RULE_NAME_MAX - "Rat:path:".len() - r"C:\x.exe".len())
+            );
+            let sim = Arc::new(Sim::default());
+            *sim.max_name.lock().unwrap() = Some(RULE_NAME_MAX);
+            // existing rules of that name, so the swap (tmp name) is used
+            let mut first = enforcer_with(&sim);
+            let plan = first.plan(&paths(&[&long_ok]));
+            first.apply(&plan).expect("first apply");
+            let mut e = enforcer_with(&sim);
+            let plan = e.plan(&paths(&[&long_ok, APP]));
+            let r = e.apply(&plan);
+            assert!(r.is_ok(), "{r:?}");
+            assert_eq!(sim.rules_named(&format_rule_name(APP)).len(), 2);
+            assert_eq!(sim.rules_named(&format_rule_name(&long_ok)).len(), 2);
+        }
+
+        #[test]
+        fn test_windows_failed_path_does_not_stop_later_paths_and_is_retried() {
+            let bad = r"C:\Apps\Bad\bad.exe";
+            let sim = Arc::new(Sim::default());
+            let inner = Arc::clone(&sim);
+            let mut e = WindowsEnforcer {
+                current: Blocklist::default(),
+                runner: Some(Arc::new(move |exe: &Path, args: &[String]| {
+                    let s = args.join(" ");
+                    if s.contains("add") && s.contains("Bad") {
+                        return Ok(false);
+                    }
+                    inner.run(exe, args)
+                })),
+            };
+            let wanted = paths(&[bad, APP]);
+            let plan = e.plan(&wanted);
+            let err = e.apply(&plan).unwrap_err();
+            assert!(err.to_string().contains("Failed to add"), "{err}");
+            assert_eq!(
+                sim.rules_named(&format_rule_name(APP)).len(),
+                2,
+                "later path installed"
+            );
+            assert_eq!(
+                e.current.paths,
+                vec![APP.to_string()],
+                "failed one stays behind"
+            );
+            assert_eq!(
+                e.plan(&wanted).add,
+                vec![bad.to_string()],
+                "retried next tick"
+            );
         }
 
         #[test]
