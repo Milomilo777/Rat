@@ -122,6 +122,12 @@ pub struct Ledger {
     rate_in: f64,
     rate_out: f64,
     plan: EnforcementPlan,
+    /// System-wide (timestamp_ms, rx, tx) per refresh, capped at 2400 points
+    /// (Ledger.swift:276-277) — the live feed for chart ranges up to an hour.
+    history: VecDeque<(u64, f64, f64)>,
+    /// System totals per minute, keyed by `timestamp_ms / 60_000`, pruned past
+    /// a week (Ledger.swift:279-281, :180) — the feed for day/week charts.
+    buckets: BTreeMap<u64, (f64, f64)>,
 }
 
 impl Ledger {
@@ -138,6 +144,8 @@ impl Ledger {
             rate_in: 0.0,
             rate_out: 0.0,
             plan: EnforcementPlan::default(),
+            history: VecDeque::new(),
+            buckets: BTreeMap::new(),
         }
     }
 
@@ -236,6 +244,20 @@ impl Ledger {
         self.session_out += total_tx as u64;
         self.rate_in = total_rx / dt;
         self.rate_out = total_tx / dt;
+
+        // Chart feeds (Ledger.swift:276-281): a live system point per refresh
+        // (capped at 2400) and per-minute buckets, pruned past a week.
+        self.history.push_back((now_ms, total_rx, total_tx));
+        if self.history.len() > 2400 {
+            self.history.pop_front();
+        }
+        let minute = now_ms / 60_000;
+        let week_of_minutes = 7 * 24 * 60;
+        let b = self.buckets.entry(minute).or_insert((0.0, 0.0));
+        b.0 += total_rx;
+        b.1 += total_tx;
+        let cutoff = minute.saturating_sub(week_of_minutes);
+        self.buckets.retain(|&m, _| m >= cutoff);
 
         // R6 + R2 per app: rebuild remotes from the current sample (Swift :347
         // `e.remotes = remotes`), merging this tick's per-remote deltas.
@@ -363,6 +385,18 @@ impl Ledger {
     /// Session totals and current whole-system rates (Ledger.swift:274-275).
     pub fn session(&self) -> (u64, u64) {
         (self.session_in, self.session_out)
+    }
+
+    /// Live system history points `(timestamp_ms, rx, tx)`, oldest first —
+    /// the feed for [`crate::chart_layout`] ranges up to an hour.
+    pub fn history(&self) -> impl Iterator<Item = (u64, f64, f64)> + '_ {
+        self.history.iter().copied()
+    }
+
+    /// Per-minute system buckets `(minute_index, rx, tx)` — the feed for
+    /// day/week chart ranges. Multiply the key by 60_000 for a timestamp.
+    pub fn buckets(&self) -> impl Iterator<Item = (u64, f64, f64)> + '_ {
+        self.buckets.iter().map(|(&m, &(rx, tx))| (m, rx, tx))
     }
 
     pub fn rates(&self) -> (f64, f64) {

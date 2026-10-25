@@ -668,3 +668,98 @@ fn test_summary_domains_strip_port_and_brackets() {
         vec![("2001:db8::1".to_string(), 1), ("9.9.9.9".to_string(), 1),]
     );
 }
+
+// ---------- chart feeds (Ledger.swift:276-281) ----------
+
+#[test]
+fn test_history_point_per_ingest_capped() {
+    let mut l = ledger_warm();
+    let c = counters(
+        conn(1, "/usr/bin/curl", local_remote(51000), net_remote(443)),
+        100,
+        50,
+    );
+    let p = allow_policy();
+    l.ingest(&p, 1_000, std::slice::from_ref(&c), &no_details);
+    l.ingest(&p, 2_500, &[counters(c.clone(), 300, 150)], &no_details);
+    let pts: Vec<_> = l.history().collect();
+    assert_eq!(
+        pts,
+        vec![(1_000, 0.0, 0.0), (2_500, 200.0, 100.0)],
+        "one point per ingest; first sighting is baseline-only"
+    );
+
+    // The ring is capped at 2400 points (Swift Ledger.swift:277).
+    for i in 3..=2401u64 {
+        l.ingest(
+            &p,
+            i * 1_500,
+            &[counters(c.clone(), i * 10, i * 5)],
+            &no_details,
+        );
+    }
+    assert_eq!(l.history().count(), 2400, "capped at 2400");
+    assert_eq!(
+        l.history().next().map(|(t, _, _)| t),
+        Some(2_500),
+        "the oldest point fell off"
+    );
+}
+
+#[test]
+fn test_minute_buckets_accumulate_and_prune() {
+    let mut l = ledger_warm();
+    let c = counters(
+        conn(1, "/usr/bin/curl", local_remote(51000), net_remote(443)),
+        100,
+        50,
+    );
+    let p = allow_policy();
+    // Minute 10: first sighting (baseline only, delta 0) then one delta.
+    // Minute 11: two deltas accumulate into one bucket.
+    l.ingest(
+        &p,
+        10 * 60_000,
+        &[counters(c.clone(), 200, 100)],
+        &no_details,
+    );
+    l.ingest(
+        &p,
+        10 * 60_000 + 30_000,
+        &[counters(c.clone(), 400, 200)],
+        &no_details,
+    );
+    l.ingest(
+        &p,
+        11 * 60_000,
+        &[counters(c.clone(), 600, 300)],
+        &no_details,
+    );
+    l.ingest(
+        &p,
+        11 * 60_000 + 30_000,
+        &[counters(c.clone(), 800, 400)],
+        &no_details,
+    );
+    let buckets: Vec<_> = l.buckets().collect();
+    assert_eq!(
+        buckets,
+        vec![(10, 200.0, 100.0), (11, 400.0, 200.0)],
+        "same-minute deltas accumulate into one bucket; minute 10 kept its shape"
+    );
+
+    // A refresh a week+ later prunes the old minute.
+    l.ingest(
+        &p,
+        (10 + 8 * 24 * 60) * 60_000,
+        &[counters(c.clone(), 800, 400)],
+        &no_details,
+    );
+    let buckets: Vec<_> = l.buckets().collect();
+    assert!(
+        buckets
+            .iter()
+            .all(|(m, _, _)| *m >= 10 + 8 * 24 * 60 - 7 * 24 * 60),
+        "week-old buckets pruned: {buckets:?}"
+    );
+}
