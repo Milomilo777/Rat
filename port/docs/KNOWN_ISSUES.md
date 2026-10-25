@@ -57,6 +57,8 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
   PID reuse and sockets without an inode are not handled yet.
 - **Windows process user (low).** The user is empty for processes whose token cannot be opened without admin
   rights (system services, other users' processes).
+  The user of a process is looked up once and cached by process id plus start time (4096 entries), so a reused id
+  never shows the previous owner; a user renamed while the process runs is not refreshed.
 
 ## Desktop app (`port/app`)
 - Differences from the macOS app: the sidebar groups by service instead of by app; the inspector shows all

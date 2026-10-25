@@ -268,14 +268,81 @@ pub mod process_info {
     use std::path::PathBuf;
     use windows::core::PCWSTR;
     use windows::core::PWSTR;
-    use windows::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, HANDLE, PSID};
+    use windows::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, FILETIME, HANDLE, PSID};
     use windows::Win32::Security::{
         GetTokenInformation, LookupAccountSidW, TokenUser, SID_NAME_USE, TOKEN_QUERY, TOKEN_USER,
     };
     use windows::Win32::System::Threading::{
-        OpenProcess, OpenProcessToken, QueryFullProcessImageNameW,
+        GetProcessTimes, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW,
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
+
+    /// Most entries the user cache holds before it starts over.
+    pub(crate) const USER_CACHE_MAX: usize = 4096;
+
+    /// Process user by (pid, process creation time). The creation time is part
+    /// of the key, so a reused PID never gets the previous owner's user. The
+    /// lookup costs OpenProcessToken + GetTokenInformation x2 +
+    /// LookupAccountSidW (an RPC to lsass, possibly to a domain controller),
+    /// and a sample asks for hundreds of rows every 1.5 s. A failed lookup
+    /// (`None`) is cached too.
+    #[derive(Default)]
+    pub(crate) struct UserCache {
+        map: std::collections::HashMap<(u32, u64), Option<String>>,
+    }
+
+    impl UserCache {
+        pub(crate) fn get_or_insert_with(
+            &mut self,
+            pid: u32,
+            start: u64,
+            lookup: impl FnOnce() -> Option<String>,
+        ) -> Option<String> {
+            if let Some(hit) = self.map.get(&(pid, start)) {
+                return hit.clone();
+            }
+            let user = lookup();
+            // dead processes' entries are never asked for again: start over
+            // instead of tracking them
+            if self.map.len() >= USER_CACHE_MAX {
+                self.map.clear();
+            }
+            self.map.insert((pid, start), user.clone());
+            user
+        }
+
+        pub(crate) fn len(&self) -> usize {
+            self.map.len()
+        }
+    }
+
+    fn user_cache() -> &'static std::sync::Mutex<UserCache> {
+        static CACHE: std::sync::OnceLock<std::sync::Mutex<UserCache>> = std::sync::OnceLock::new();
+        CACHE.get_or_init(Default::default)
+    }
+
+    /// Creation time of the process (100 ns ticks since 1601), the second half
+    /// of the cache key. `None` when it cannot be read: then nothing is cached.
+    fn process_start(process: HANDLE) -> Option<u64> {
+        let (mut created, mut exited, mut kernel, mut user) = (
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+        );
+        unsafe { GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user) }
+            .ok()?;
+        Some(((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64)
+    }
+
+    /// [`process_user`] through the cache.
+    fn cached_process_user(process: HANDLE, pid: u32) -> Option<String> {
+        let Some(start) = process_start(process) else {
+            return process_user(process);
+        };
+        let mut cache = user_cache().lock().unwrap_or_else(|e| e.into_inner());
+        cache.get_or_insert_with(pid, start, || process_user(process))
+    }
 
     /// `DOMAIN\user` (or `user` when the domain is empty) of the process
     /// token. `None` on access denied or any failed call: never a panic.
@@ -379,7 +446,7 @@ pub mod process_info {
 
                 let name = crate::extract_process_name_from_path(exe.as_deref());
 
-                let user = process_user(h);
+                let user = cached_process_user(h, pid);
 
                 let _ = unsafe { CloseHandle(h) };
 
@@ -1169,7 +1236,61 @@ mod edge_case_tests {
 
 #[cfg(all(test, windows))]
 mod process_user_tests {
-    use super::process_info::get_process_info;
+    use super::process_info::{get_process_info, UserCache, USER_CACHE_MAX};
+
+    #[test]
+    fn user_cache_looks_up_once_per_process() {
+        let mut c = UserCache::default();
+        let mut calls = 0;
+        for _ in 0..5 {
+            let u = c.get_or_insert_with(10, 111, || {
+                calls += 1;
+                Some("D\\u".to_string())
+            });
+            assert_eq!(u.as_deref(), Some("D\\u"));
+        }
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn user_cache_never_returns_a_stale_user_for_a_reused_pid() {
+        let mut c = UserCache::default();
+        assert_eq!(
+            c.get_or_insert_with(10, 111, || Some("old".to_string()))
+                .as_deref(),
+            Some("old")
+        );
+        // same PID, later creation time = another process
+        assert_eq!(
+            c.get_or_insert_with(10, 222, || Some("new".to_string()))
+                .as_deref(),
+            Some("new")
+        );
+        assert_eq!(
+            c.get_or_insert_with(10, 111, || Some("x".to_string()))
+                .as_deref(),
+            Some("old")
+        );
+    }
+
+    #[test]
+    fn user_cache_remembers_a_failed_lookup_and_stays_bounded() {
+        let mut c = UserCache::default();
+        let mut calls = 0;
+        for _ in 0..3 {
+            assert!(c
+                .get_or_insert_with(4, 1, || {
+                    calls += 1;
+                    None
+                })
+                .is_none());
+        }
+        assert_eq!(calls, 1);
+        for pid in 0..(USER_CACHE_MAX as u32 * 3) {
+            c.get_or_insert_with(pid, 5, || Some("u".to_string()));
+            assert!(c.len() <= USER_CACHE_MAX, "{} entries", c.len());
+        }
+    }
 
     #[test]
     fn test_process_user_current_process() {
@@ -1178,7 +1299,12 @@ mod process_user_tests {
         assert!(!user.is_empty());
         let env = std::env::var("USERNAME").expect("USERNAME set");
         let user_part = user.rsplit('\\').next().unwrap();
-        assert!(user_part.eq_ignore_ascii_case(&env), "{user} vs {env}");
+        // a SYSTEM process (some CI runners) has USERNAME `<machine>$`
+        let expected = if env.ends_with('$') { "SYSTEM" } else { &env };
+        assert!(user_part.eq_ignore_ascii_case(expected), "{user} vs {env}");
+
+        // the second lookup (cache hit) gives the same answer
+        assert_eq!(get_process_info(std::process::id()).user, Some(user));
     }
 
     #[test]
