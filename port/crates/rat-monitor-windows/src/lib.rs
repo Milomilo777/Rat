@@ -342,6 +342,17 @@ pub mod process_info {
     }
 }
 
+/// M3 (update-09): API-level conditions that disable estats for the whole
+/// process (no admin rights / OS support) - but only for rows a real
+/// process owns: kernel rows (pid 0, e.g. TIME_WAIT) answer NOT_SUPPORTED
+/// for row-class reasons, which is per-row, not global. Takes the raw
+/// Win32 error code so the rule is testable on every platform (ci-04).
+pub fn estats_error_is_global(win32_error: u32, owning_pid: u32) -> bool {
+    const ERROR_ACCESS_DENIED: u32 = 5;
+    const ERROR_NOT_SUPPORTED: u32 = 50;
+    owning_pid != 0 && (win32_error == ERROR_ACCESS_DENIED || win32_error == ERROR_NOT_SUPPORTED)
+}
+
 #[cfg(windows)]
 pub mod stats {
     use windows::Win32::Foundation::WIN32_ERROR;
@@ -445,12 +456,6 @@ pub mod stats {
     /// M3 (update-09): API-level conditions that disable estats for the
     /// whole process (no admin rights / OS support); anything else is a
     /// per-row error.
-    pub fn estats_error_is_global(e: &WIN32_ERROR, owning_pid: u32) -> bool {
-        owning_pid != 0
-            && (*e == windows::Win32::Foundation::ERROR_ACCESS_DENIED
-                || *e == windows::Win32::Foundation::ERROR_NOT_SUPPORTED)
-    }
-
     fn estats_rw_bytes(rw: &TCP_ESTATS_DATA_RW_v0) -> &[u8] {
         unsafe {
             std::slice::from_raw_parts(
@@ -603,7 +608,7 @@ impl ConnectionSource for WindowsMonitor {
                         let rc = stats::enable_tcp_estats_v4(&row);
                         if rc == windows::Win32::Foundation::WIN32_ERROR(0) {
                             self.enabled_rows.insert(key);
-                        } else if stats::estats_error_is_global(&rc, row.dwOwningPid) {
+                        } else if crate::estats_error_is_global(rc.0, row.dwOwningPid) {
                             self.estats_supported = false;
                         }
                     }
@@ -615,7 +620,7 @@ impl ConnectionSource for WindowsMonitor {
                             bytes_out = Some(bout);
                         }
                         Err(e) => {
-                            if stats::estats_error_is_global(&e, row.dwOwningPid) {
+                            if crate::estats_error_is_global(e.0, row.dwOwningPid) {
                                 self.estats_supported = false;
                             }
                         }
@@ -678,7 +683,7 @@ impl ConnectionSource for WindowsMonitor {
                         let rc = stats::enable_tcp_estats_v6(&row);
                         if rc == windows::Win32::Foundation::WIN32_ERROR(0) {
                             self.enabled_rows.insert(key);
-                        } else if stats::estats_error_is_global(&rc, row.dwOwningPid) {
+                        } else if crate::estats_error_is_global(rc.0, row.dwOwningPid) {
                             self.estats_supported = false;
                         }
                     }
@@ -690,7 +695,7 @@ impl ConnectionSource for WindowsMonitor {
                             bytes_out = Some(bout);
                         }
                         Err(e) => {
-                            if stats::estats_error_is_global(&e, row.dwOwningPid) {
+                            if crate::estats_error_is_global(e.0, row.dwOwningPid) {
                                 self.estats_supported = false;
                             }
                         }
@@ -968,6 +973,7 @@ mod edge_case_tests {
     use super::*;
     use std::path::Path;
 
+    #[cfg(windows)]
     #[test]
     fn test_estats_enablement_live_loopback_counts_bytes() {
         // M1 (update-09): without SetPerTcpConnectionEStats the Get side
@@ -1008,15 +1014,15 @@ mod edge_case_tests {
 
     #[test]
     fn test_estats_global_vs_row_errors() {
-        use windows::Win32::Foundation::WIN32_ERROR;
-        // M3 (update-09): only API-level conditions are global.
-        assert!(stats::estats_error_is_global(&WIN32_ERROR(5), 42)); // ACCESS_DENIED, owned row
-        assert!(stats::estats_error_is_global(&WIN32_ERROR(50), 42)); // NOT_SUPPORTED, owned row
-        assert!(!stats::estats_error_is_global(&WIN32_ERROR(50), 0)); // kernel TIME_WAIT row: per-row
-        assert!(!stats::estats_error_is_global(&WIN32_ERROR(1168), 42)); // NOT_FOUND (row vanished)
-        assert!(!stats::estats_error_is_global(&WIN32_ERROR(87), 42)); // INVALID_PARAMETER
+        // M3 (update-09): only API-level conditions on owned rows are global.
+        assert!(estats_error_is_global(5, 42)); // ACCESS_DENIED, owned row
+        assert!(estats_error_is_global(50, 42)); // NOT_SUPPORTED, owned row
+        assert!(!estats_error_is_global(50, 0)); // kernel TIME_WAIT row: per-row
+        assert!(!estats_error_is_global(1168, 42)); // NOT_FOUND (row vanished)
+        assert!(!estats_error_is_global(87, 42)); // INVALID_PARAMETER
     }
 
+    #[cfg(windows)]
     #[test]
     fn test_mib_tcp6_row_layouts_differ_and_copy_is_faithful() {
         // M2 (update-09): the owner-pid row and the plain row have
