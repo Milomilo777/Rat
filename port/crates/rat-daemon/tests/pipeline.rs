@@ -74,6 +74,7 @@ impl EnforcementBackend for RecorderBackend {
         Ok(EnforceOutcome {
             applied: true,
             refused: vec![],
+            rejected: vec![],
         })
     }
 }
@@ -854,6 +855,48 @@ fn test_windows_backend_enforces_denied_local_ports() {
         })
         .expect("dry-run enforce");
     assert!(outcome.applied, "port removal re-applies the ruleset");
+}
+
+// review-01 R8: ONE invalid path (a `"` cannot occur in a real Windows
+// filename) must not fail the whole enforce — the backend reports it in
+// `outcome.rejected`, skips it, and applies the rest. The skipped entry
+// must also not churn the diff: the next tick with the same wanted state is
+// a no-op (applied == false) that still reports the rejection.
+#[cfg(windows)]
+#[test]
+fn test_windows_backend_reports_rejected_path_and_enforces_rest() {
+    use rat_enforcer::Blocklist;
+
+    std::env::set_var("RAT_DRY_RUN", "1");
+    let mut backend = rat_daemon::core::WindowsBackend::new();
+
+    let good = r"C:\evil\app.exe";
+    let bad = r#"C:\Users\bad"; app.exe"#;
+    let wanted = Blocklist {
+        paths: vec![good.to_string(), bad.to_string()],
+        local_ports: vec![],
+    };
+    let outcome = backend
+        .enforce(&wanted)
+        .expect("one invalid path must not fail the whole enforce");
+    assert!(
+        outcome.applied,
+        "the valid path is still enforced: {outcome:?}"
+    );
+    assert!(
+        outcome.rejected.contains(&bad.to_string()),
+        "the invalid path is reported: {outcome:?}"
+    );
+    assert!(outcome.refused.is_empty());
+
+    // Already-effective state is a no-op (the rejected entry stays in the
+    // report but never causes perpetual re-apply churn).
+    let outcome = backend.enforce(&wanted).expect("dry-run enforce");
+    assert!(!outcome.applied, "unchanged state must not re-apply");
+    assert!(
+        outcome.rejected.contains(&bad.to_string()),
+        "the rejection stays reported on later ticks: {outcome:?}"
+    );
 }
 
 #[cfg(not(windows))]

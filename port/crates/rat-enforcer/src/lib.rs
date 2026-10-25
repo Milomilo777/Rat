@@ -37,23 +37,57 @@ pub fn dry_run_enabled(env_value: Option<&str>) -> bool {
     env_value == Some("1")
 }
 
-/// S6 (update-08): an enforcer path must be absolute, free of shell-meta
-/// characters and `..` segments, and canonicalized (symlinks/junctions
-/// resolved) when the target exists, so a rule cannot point validation at
-/// one file and enforcement at another.
+/// The rejection rules of [`validate_path`] WITHOUT the canonicalize: `None`
+/// means the path would pass. review-01 R8: plan() decides reject-vs-report
+/// with this — it is pure string work (no filesystem access, so the
+/// PROPOSALS #7 plan budget holds) and it is EXACTLY apply()'s rejection
+/// set, because the canonicalize step never rejects (a not-yet-existing
+/// target passes as-is).
+pub fn path_validation_error(path: &str) -> Option<&'static str> {
+    // Byte-level scans, exactly equivalent to the char-level checks: every
+    // delimiter and match target is ASCII, and UTF-8 continuation bytes are
+    // never ASCII, so a multibyte character can neither match nor split.
+    // plan() runs this per path per tick (PROPOSALS #7 budget) and the
+    // debug-build char-pattern iterators measured ~4µs per 25-char path
+    // (39ms/10000) — the byte scan is ~10x cheaper.
+    if path
+        .as_bytes()
+        .iter()
+        .any(|b| matches!(b, b'"' | b';' | b'\n' | b'\r'))
+    {
+        return Some("invalid characters in path");
+    }
+    // Equivalent to a Component::ParentDir scan: a `..` segment on either
+    // separator is the same defect.
+    if path
+        .as_bytes()
+        .split(|b| *b == b'/' || *b == b'\\')
+        .any(|seg| seg == b"..")
+    {
+        return Some("parent-directory components are not allowed");
+    }
+    if !std::path::Path::new(path).is_absolute() {
+        return Some("path must be absolute");
+    }
+    None
+}
+
+/// S6 (update-08): an enforcer path must be absolute, free of `..` segments,
+/// free of characters that cannot occur in a real filename or that could
+/// confuse netsh's `name=` parsing (`"` is impossible in a Windows filename,
+/// CR/LF are control characters; `;` stays rejected as defense-in-depth even
+/// though no shell is involved — PROPOSALS review-01 R8 follow-up), and
+/// canonicalized (symlinks/junctions resolved) when the target exists, so a
+/// rule cannot point validation at one file and enforcement at another.
+/// review-01 R8: `'` IS accepted — it is a legal Windows filename character
+/// and no shell is involved anywhere (netsh is spawned via Command::args), so
+/// an apostrophe in a user path (O'Brien) must not make the path
+/// unenforceable.
 pub fn validate_path(path: &str) -> Result<String, &'static str> {
-    if path.contains(['"', '\'', ';', '\n', '\r']) {
-        return Err("invalid characters in path");
+    if let Some(err) = path_validation_error(path) {
+        return Err(err);
     }
     let p = std::path::Path::new(path);
-    if !p.is_absolute() {
-        return Err("path must be absolute");
-    }
-    if p.components()
-        .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        return Err("parent-directory components are not allowed");
-    }
     match std::fs::canonicalize(p) {
         Ok(real) => {
             let s = real.to_string_lossy();
@@ -121,7 +155,14 @@ mod tests {
         assert!(validate_path("/usr/bin/app\"").is_err());
         assert!(validate_path("/usr/bin/app\n").is_err());
         assert!(validate_path("/usr/bin/app\r").is_err());
-        assert!(validate_path("/usr/bin/app'").is_err());
+        // review-01 R8: an apostrophe is a legal filename character on
+        // Windows and no shell is involved (netsh is spawned via
+        // Command::args), so O'Brien-style paths must be enforceable.
+        if cfg!(windows) {
+            assert!(validate_path(r"C:\Users\O'Brien\app.exe").is_ok());
+        } else {
+            assert!(validate_path("/usr/bin/app'").is_ok());
+        }
         assert!(validate_path("/usr/bin/رنامه").is_ok() || cfg!(windows));
         // S6: relative, parent-hopping, and env-var strings are rejected.
         assert!(validate_path("app.exe").is_err(), "relative rejected");
@@ -158,12 +199,13 @@ mod tests {
         }
 
         #[test]
-        fn proptest_validate_path_rejects_bad_chars(s in ".*[\"';\n\r].*") {
+        // review-01 R8: `'` is legal, so it left the rejected class.
+        fn proptest_validate_path_rejects_bad_chars(s in ".*[\";\n\r].*") {
             assert!(validate_path(&s).is_err());
         }
 
         #[test]
-        fn proptest_validate_path_accepts_good_absolute_paths(s in "[^\"';\n\r/\\\\]+") {
+        fn proptest_validate_path_accepts_good_absolute_paths(s in "[^\";\n\r/\\\\]+") {
             let base = if cfg!(windows) { r"C:\x" } else { "/x" };
             assert!(validate_path(&format!("{base}{s}")).is_ok());
         }

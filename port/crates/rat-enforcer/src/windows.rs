@@ -36,6 +36,13 @@ pub struct WindowsPlan {
     /// DHCP and more for the whole machine). The caller decides how to tell
     /// the user; per-port rules below still apply.
     pub refused: Vec<String>,
+    /// review-01 R8: whole-program entries (from `wanted` or from `current`)
+    /// that FAILED path validation. They are reported here and skipped — no
+    /// rule is ever created from or deleted by an unvalidated string (the S6
+    /// invariant), they are never claimed into the enforcer's `current`, and
+    /// the REST of the plan still applies. Same contract as `refused`: the
+    /// caller decides how to tell the user.
+    pub rejected: Vec<String>,
 }
 
 pub fn generate_windows_plan(current: &Blocklist, wanted: &Blocklist) -> WindowsPlan {
@@ -45,12 +52,25 @@ pub fn generate_windows_plan(current: &Blocklist, wanted: &Blocklist) -> Windows
 
     let mut add = Vec::new();
     let mut refused = Vec::new();
+    // review-01 R8: entries that fail path validation are REPORTED here and
+    // skipped — one unenforceable entry must not fail (or silently void) the
+    // rest of the plan. Same channel as `refused`: the caller tells the user.
+    let mut rejected = Vec::new();
     for path in &wanted.paths {
         if crate::is_shared_service_host(path) {
             // W2: never block a shared service host per-program.
             if !refused.contains(path) {
                 refused.push(path.clone());
             }
+            continue;
+        }
+        // R8 (add axis): apply the validation RULES at plan stage — an
+        // invalid wanted path is reported and never becomes a rule. This is
+        // exactly apply()'s rejection set (the canonicalize step there never
+        // rejects) and pure string work, so the PROPOSALS #7 plan budget
+        // holds; apply() still canonicalizes.
+        if crate::path_validation_error(path).is_some() {
+            rejected.push(path.clone());
             continue;
         }
         if !current_set.contains(path) {
@@ -60,9 +80,20 @@ pub fn generate_windows_plan(current: &Blocklist, wanted: &Blocklist) -> Windows
 
     let mut remove = Vec::new();
     for path in &current.paths {
-        if !wanted_set.contains(path) {
-            remove.push(path.clone());
+        if wanted_set.contains(path) {
+            continue;
         }
+        // R8 (remove axis): a rule name that fails the validation rules
+        // (e.g. a hostile hand-made `Rat:path:*` rule picked up by the
+        // read-back) cannot be built into a netsh delete command. It is
+        // reported and never enters `remove`, so apply() cannot claim it
+        // gone — the entry stays in `current` (no diff churn) and the
+        // uninstall cleanup still removes every Rat rule.
+        if crate::path_validation_error(path).is_some() {
+            rejected.push(path.clone());
+            continue;
+        }
+        remove.push(path.clone());
     }
 
     // review-01 R5: the port axis diffs like the path axis. Local ports are
@@ -88,6 +119,8 @@ pub fn generate_windows_plan(current: &Blocklist, wanted: &Blocklist) -> Windows
     add.sort();
     remove.sort();
     refused.sort();
+    rejected.sort();
+    rejected.dedup();
     add_ports.sort();
     add_ports.dedup();
     remove_ports.sort();
@@ -99,6 +132,7 @@ pub fn generate_windows_plan(current: &Blocklist, wanted: &Blocklist) -> Windows
         add_ports,
         remove_ports,
         refused,
+        rejected,
     }
 }
 
@@ -226,14 +260,30 @@ impl Enforcer for WindowsEnforcer {
 
         // S6 (update-08): validate AND canonicalize every path before use,
         // so rule names and program= targets always name the real binary.
-        let validated = |paths: &[String]| -> io::Result<Vec<String>> {
-            paths
-                .iter()
-                .map(|p| crate::validate_path(p).map_err(io::Error::other))
-                .collect()
+        // review-01 R8: ONE invalid path must not fail the whole plan (the
+        // previous `collect()?` aborted every other entry — a hostile
+        // read-back rule name or one weird path disabled ALL enforcement).
+        // Entries that fail validation are SKIPPED on BOTH axes: no rule is
+        // ever created from or deleted by an unvalidated string (the S6/S7
+        // invariant), the skipped entry is never claimed into `current`, and
+        // plan() reports it via `WindowsPlan::rejected` for plan-built plans
+        // (the caller tells the user); a hand-built plan's skips are the
+        // caller's own to observe. The W2 shared-host refusal below is the
+        // one remaining whole-plan abort: it refuses to CREATE a dangerous
+        // rule, a different class than tolerating an unenforceable one.
+        let partition = |paths: &[String]| -> (Vec<String>, Vec<String>) {
+            let mut ok = Vec::new();
+            let mut bad = Vec::new();
+            for p in paths {
+                match crate::validate_path(p) {
+                    Ok(v) => ok.push(v),
+                    Err(_) => bad.push(p.clone()),
+                }
+            }
+            (ok, bad)
         };
-        let remove = validated(&plan.remove)?;
-        let add = validated(&plan.add)?;
+        let (remove, _skipped_removes) = partition(&plan.remove);
+        let (add, _skipped_adds) = partition(&plan.add);
 
         // W2 (PROPOSALS #1): plan() already refuses shared service hosts; a
         // hand-built plan must not be able to smuggle one through — fail
@@ -465,12 +515,20 @@ mod tests {
 
     #[test]
     fn test_windows_plan_diff() {
+        // review-01 R8: plan() validates every path it diffs, so these must
+        // be absolute paths that are valid on the host this test runs on
+        // (the plan stage is where an invalid entry is reported and skipped).
+        let (old, new) = if cfg!(windows) {
+            (r"C:\Apps\Old\app.exe", r"C:\Apps\New\app.exe")
+        } else {
+            ("/usr/bin/old", "/usr/bin/new")
+        };
         let current = Blocklist {
-            paths: vec!["/usr/bin/old".to_string()],
+            paths: vec![old.to_string()],
             local_ports: vec![],
         };
         let wanted = Blocklist {
-            paths: vec!["/usr/bin/new".to_string()],
+            paths: vec![new.to_string()],
             local_ports: vec![],
         };
 
@@ -482,13 +540,14 @@ mod tests {
 
         assert_eq!(plan.add.len(), 1);
         if let Some(first_add) = plan.add.first() {
-            assert_eq!(first_add, "/usr/bin/new");
+            assert_eq!(first_add, new);
         }
 
         assert_eq!(plan.remove.len(), 1);
         if let Some(first_remove) = plan.remove.first() {
-            assert_eq!(first_remove, "/usr/bin/old");
+            assert_eq!(first_remove, old);
         }
+        assert!(plan.rejected.is_empty(), "valid paths are never rejected");
     }
 
     #[test]
@@ -515,6 +574,61 @@ mod tests {
     }
 
     #[test]
+    fn test_windows_plan_rejects_invalid_path_and_reports_it() {
+        // review-01 R8: ONE invalid path (a `"` cannot occur in a real
+        // Windows filename) must not fail or void the plan — it is reported
+        // in `rejected` and skipped, the rest of the plan still applies.
+        let good = r"C:\Apps\Denied\app.exe";
+        let bad = r#"C:\Users\bad"; app.exe"#;
+        let wanted = Blocklist {
+            paths: vec![good.to_string(), bad.to_string()],
+            local_ports: vec![],
+        };
+        let enforcer = WindowsEnforcer {
+            current: Blocklist::default(),
+            runner: None,
+        };
+        let plan = enforcer.plan(&wanted);
+        assert_eq!(plan.add, vec![good.to_string()], "the good path is added");
+        assert_eq!(
+            plan.rejected,
+            vec![bad.to_string()],
+            "the invalid path is reported, not silently dropped"
+        );
+        assert!(plan.refused.is_empty());
+    }
+
+    #[test]
+    fn test_windows_plan_invalid_current_path_reported_not_removed() {
+        // review-01 R8 (remove axis): a rule name that fails validation (a
+        // hostile read-back entry, e.g. a hand-made `Rat:path:*` rule) cannot
+        // be built into a netsh delete command. It is reported and never
+        // enters `remove` — so apply() cannot claim it gone and the entry
+        // stays in `current` instead of churning the diff forever.
+        let good_gone = r"C:\Apps\Old\gone.exe";
+        let bad = r#"C:\Users\bad"; app.exe"#;
+        let current = Blocklist {
+            paths: vec![good_gone.to_string(), bad.to_string()],
+            local_ports: vec![],
+        };
+        let wanted = Blocklist {
+            paths: vec![r"C:\Apps\Kept\app.exe".to_string()],
+            local_ports: vec![],
+        };
+        let enforcer = WindowsEnforcer {
+            current,
+            runner: None,
+        };
+        let plan = enforcer.plan(&wanted);
+        assert_eq!(
+            plan.remove,
+            vec![good_gone.to_string()],
+            "only valid stale entries are removed"
+        );
+        assert_eq!(plan.rejected, vec![bad.to_string()]);
+    }
+
+    #[test]
     fn test_windows_apply_refuses_shared_service_host_plan() {
         // Fail closed even for a hand-built plan, also in dry-run.
         std::env::set_var("RAT_DRY_RUN", "1");
@@ -524,6 +638,7 @@ mod tests {
             add_ports: vec![],
             remove_ports: vec![],
             refused: vec![],
+            rejected: vec![],
         };
         let mut enforcer = WindowsEnforcer {
             current: Blocklist::default(),
@@ -636,12 +751,19 @@ mod tests {
     }
 
     #[test]
-    fn test_windows_apply_rejects_invalid_path() {
-        // S7 (update-08): tests never touch a real firewall.
+    fn test_windows_apply_reports_invalid_path_and_applies_rest() {
+        // S7 (update-08) as amended by review-01 R8: the S7 invariant stands
+        // — no rule is ever created for a path that fails validate_path, not
+        // even in dry-run — but ONE invalid path must no longer abort the
+        // whole plan: it is reported (plan.rejected) and skipped, the rest
+        // applies. (Previously this test pinned the abort the reviewer
+        // flagged: `collect()?` failed the plan on the first invalid entry.)
         std::env::set_var("RAT_DRY_RUN", "1");
         let current = Blocklist::default();
+        let good = r"C:\Program Files\App\app.exe";
+        let bad = "C:\\Program Files\\App\"; evil";
         let wanted = Blocklist {
-            paths: vec!["C:\\Program Files\\App\"; evil".to_string()],
+            paths: vec![good.to_string(), bad.to_string()],
             local_ports: vec![],
         };
         let mut enforcer = WindowsEnforcer {
@@ -649,19 +771,34 @@ mod tests {
             runner: None,
         };
         let plan = enforcer.plan(&wanted);
-        // Even in dry-run mode, apply must refuse paths that fail validate_path.
-        assert!(enforcer.apply(&plan).is_err());
+        assert_eq!(plan.add, vec![good.to_string()]);
+        assert_eq!(plan.rejected, vec![bad.to_string()]);
+        enforcer
+            .apply(&plan)
+            .expect("an invalid path must not fail the whole plan");
+        assert_eq!(
+            enforcer.current.paths,
+            vec![good.to_string()],
+            "only the valid path is claimed into current"
+        );
     }
 
     #[test]
     fn test_windows_plan_performance_budget() {
+        // review-01 R8: plan() validates (and canonicalizes) every path, so
+        // the budget must hold WITH that cost, on host-valid absolute paths.
+        let prefix = if cfg!(windows) {
+            r"C:\Apps\Perf"
+        } else {
+            "/usr/bin/perf"
+        };
         let mut current_paths = Vec::new();
         let mut wanted_paths = Vec::new();
         for i in 0..5000 {
-            current_paths.push(format!("/usr/bin/app_{}", i));
+            current_paths.push(format!("{prefix}_old_{}", i));
         }
         for i in 2500..7500 {
-            wanted_paths.push(format!("/usr/bin/app_{}", i));
+            wanted_paths.push(format!("{prefix}_new_{}", i));
         }
 
         let current = Blocklist {
@@ -973,6 +1110,92 @@ mod tests {
             assert!(
                 enforcer.plan(&wanted).remove_ports.is_empty(),
                 "current must advance past a no-match port delete"
+            );
+        }
+
+        // review-01 R8: a hand-built plan (the daemon never builds one — this
+        // is apply()'s own defense) with ONE invalid entry must not abort the
+        // whole plan either: the invalid entry is skipped (no rule is created
+        // from or deleted by an unvalidated string — the S6/S7 invariant),
+        // never claimed into `current`, and the rest applies. Both validated()
+        // call sites (add and remove axis) get their own test.
+        #[test]
+        fn test_windows_apply_skips_hand_built_invalid_add() {
+            let fake = Arc::new(FakeNetsh {
+                rules: Mutex::new(HashMap::new()),
+            });
+            let bad = r#"C:\Users\bad"; app.exe"#;
+            let mut enforcer = WindowsEnforcer {
+                current: Blocklist::default(),
+                runner: Some(runner(Arc::clone(&fake))),
+            };
+            let plan = WindowsPlan {
+                add: vec![bad.to_string(), APP.to_string()],
+                remove: vec![],
+                add_ports: vec![],
+                remove_ports: vec![],
+                refused: vec![],
+                rejected: vec![],
+            };
+            enforcer
+                .apply(&plan)
+                .expect("an invalid add must not fail the whole plan");
+            assert_eq!(
+                fake.count(&format_rule_name(APP)),
+                1,
+                "the rest of the plan (the valid block) is applied"
+            );
+            assert_eq!(
+                fake.count(&format_rule_name(bad)),
+                0,
+                "no rule is ever created for an unvalidated path"
+            );
+            assert_eq!(
+                enforcer.current.paths,
+                vec![APP.to_string()],
+                "the skipped entry is never claimed into current"
+            );
+        }
+
+        #[test]
+        fn test_windows_apply_skips_hand_built_invalid_remove() {
+            let fake = Arc::new(FakeNetsh {
+                rules: Mutex::new(HashMap::new()),
+            });
+            let bad = r#"C:\Users\bad"; app.exe"#;
+            let gone = r"C:\Apps\Old\gone.exe";
+            let shared = Arc::clone(&fake);
+            let mut enforcer = WindowsEnforcer {
+                current: Blocklist {
+                    paths: vec![gone.to_string(), bad.to_string()],
+                    local_ports: vec![],
+                },
+                runner: Some(Arc::new(move |exe: &Path, args: &[String]| {
+                    if args.iter().any(|a| a.contains("bad")) {
+                        // If apply ever built a delete from the unvalidated
+                        // name, this Err would abort the plan (pre-R8 shape).
+                        return Err(io::Error::other("delete attempted on unvalidated name"));
+                    }
+                    shared.run(exe, args)
+                })),
+            };
+            let plan = WindowsPlan {
+                add: vec![],
+                remove: vec![bad.to_string(), gone.to_string()],
+                add_ports: vec![],
+                remove_ports: vec![],
+                refused: vec![],
+                rejected: vec![],
+            };
+            enforcer
+                .apply(&plan)
+                .expect("an invalid remove must not fail the whole plan");
+            // The valid stale entry was deleted (R7: no-match is tolerated);
+            // the invalid name was never touched.
+            assert_eq!(fake.count(&format_rule_name(gone)), 0);
+            assert!(
+                enforcer.current.paths.contains(&bad.to_string()),
+                "the skipped remove is never claimed out of current"
             );
         }
 

@@ -35,6 +35,9 @@ pub struct EnforceOutcome {
     pub applied: bool,
     /// Paths the backend REFUSED to block (shared service hosts, W2).
     pub refused: Vec<String>,
+    /// Paths the backend could NOT enforce (failed path validation,
+    /// review-01 R8): reported, skipped, the rest of the plan still applies.
+    pub rejected: Vec<String>,
 }
 
 /// The enforcement half of the pipeline (PROPOSALS #10): turn the ledger's
@@ -127,6 +130,7 @@ impl EnforcementBackend for WindowsBackend {
         // denied_local_ports).
         let plan = self.enforcer.plan(wanted);
         let refused = plan.refused.clone();
+        let rejected = plan.rejected.clone();
         if plan.add.is_empty()
             && plan.remove.is_empty()
             && plan.add_ports.is_empty()
@@ -135,6 +139,7 @@ impl EnforcementBackend for WindowsBackend {
             return Ok(EnforceOutcome {
                 applied: false,
                 refused,
+                rejected,
             });
         }
         // S7: apply() honours RAT_DRY_RUN. review-01 R6: apply() itself
@@ -145,6 +150,7 @@ impl EnforcementBackend for WindowsBackend {
         Ok(EnforceOutcome {
             applied: true,
             refused,
+            rejected,
         })
     }
 }
@@ -208,6 +214,7 @@ impl EnforcementBackend for LinuxBackend {
         Ok(EnforceOutcome {
             applied: true,
             refused: Vec::new(),
+            rejected: Vec::new(),
         })
     }
 }
@@ -394,6 +401,7 @@ pub async fn run_pipeline(
     let mut ticker = tokio::time::interval(SAMPLE_INTERVAL);
     let mut last_conns: Vec<Connection> = Vec::new();
     let mut last_refused: Vec<String> = Vec::new();
+    let mut last_rejected: Vec<String> = Vec::new();
     let mut next_alert_id: u64 = 0;
     let mut current_alert_id: Option<u64> = None;
     let mut sent_alert_key: Option<String> = None;
@@ -506,6 +514,17 @@ pub async fn run_pipeline(
                         );
                     }
                     last_refused = outcome.refused;
+                }
+                // review-01 R8: paths that failed validation are reported
+                // (once per change, like refusals) instead of aborting the
+                // whole plan — the rest of the plan still applies.
+                if outcome.rejected != last_rejected {
+                    for path in &outcome.rejected {
+                        eprintln!(
+                            "rat-daemon: cannot enforce {path} (invalid path, reported and skipped)"
+                        );
+                    }
+                    last_rejected = outcome.rejected;
                 }
             }
             Err(e) => eprintln!("rat-daemon: enforcement failed: {e}"),
