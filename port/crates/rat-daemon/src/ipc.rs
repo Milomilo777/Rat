@@ -96,12 +96,14 @@ fn peer_allowed(uid: u32, gid: u32, pid: Option<i32>) -> bool {
 }
 
 #[cfg(unix)]
-pub async fn start_ipc_server(
+pub async fn start_ipc_server_with_options(
     socket_path: &str,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
     snapshot_rx: tokio::sync::broadcast::Receiver<ServerMessage>,
     commands: tokio::sync::mpsc::Sender<Command>,
+    options: IpcOptions,
 ) -> std::io::Result<()> {
+    let write_timeout = options.write_timeout;
     use std::os::unix::fs::PermissionsExt;
     use tokio::net::UnixListener;
 
@@ -134,6 +136,7 @@ pub async fn start_ipc_server(
 
     // bounded concurrent clients.
     let client_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CLIENTS));
+    let active_alert = track_active_alert(&snapshot_rx, &shutdown);
 
     // always tighten the socket to owner+group read/write.
     let mut perms = std::fs::metadata(socket_path)?.permissions();
@@ -165,15 +168,16 @@ pub async fn start_ipc_server(
                         };
                         let snap_rx = snapshot_rx.resubscribe();
                         let cmd_tx = commands.clone();
+                        let alert = active_alert.clone();
                         tokio::spawn(async move {
                             let _permit = permit;
-                            handle_connection(stream, snap_rx, cmd_tx).await;
+                            handle_connection(stream, snap_rx, cmd_tx, alert, write_timeout).await;
                         });
                     }
                     Err(_) => {
                         // back off so a persistent accept
                         // error (e.g. EMFILE) cannot spin the CPU.
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        back_off_after_accept_error().await;
                     }
                 }
             }
@@ -510,12 +514,14 @@ fn pipe_client_pid(server: &tokio::net::windows::named_pipe::NamedPipeServer) ->
 }
 
 #[cfg(windows)]
-pub async fn start_ipc_server(
+pub async fn start_ipc_server_with_options(
     pipe_name: &str,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
     snapshot_rx: tokio::sync::broadcast::Receiver<ServerMessage>,
     commands: tokio::sync::mpsc::Sender<Command>,
+    options: IpcOptions,
 ) -> std::io::Result<()> {
+    let write_timeout = options.write_timeout;
     use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 
     let sd_guard = std::sync::Arc::new(security_descriptor()?);
@@ -523,11 +529,13 @@ pub async fn start_ipc_server(
 
     // bounded concurrent clients.
     let client_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CLIENTS));
+    let active_alert = track_active_alert(&snapshot_rx, &shutdown);
 
     let mut server_options = ServerOptions::new();
     let mut first = true;
 
     loop {
+        let creating_first = first;
         if first {
             server_options.first_pipe_instance(true);
             first = false;
@@ -535,7 +543,7 @@ pub async fn start_ipc_server(
             server_options.first_pipe_instance(false);
         }
 
-        let server: std::io::Result<NamedPipeServer> = {
+        let create = || -> std::io::Result<NamedPipeServer> {
             let mut security_attributes = windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
                 nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>()
                     as u32,
@@ -548,6 +556,18 @@ pub async fn start_ipc_server(
                     &mut security_attributes as *mut _ as *mut _,
                 )
             }
+        };
+        // The FIRST instance fails while another process owns the pipe name
+        // (often the previous service instance, still shutting down): retry
+        // with backoff for a bounded time, then report it. Later instances
+        // are ours by then, so a failure there is final at once.
+        let server = if creating_first {
+            tokio::select! {
+                _ = shutdown.recv() => break,
+                created = create_with_retry(create, options.pipe_retry_window, pipe_name) => created,
+            }
+        } else {
+            create()
         };
 
         let server = match server {
@@ -581,15 +601,16 @@ pub async fn start_ipc_server(
                         };
                         let snap_rx = snapshot_rx.resubscribe();
                         let cmd_tx = commands.clone();
+                        let alert = active_alert.clone();
                         tokio::spawn(async move {
                             let _permit = permit;
-                            handle_connection(server, snap_rx, cmd_tx).await;
+                            handle_connection(server, snap_rx, cmd_tx, alert, write_timeout).await;
                         });
                     }
                     Err(_) => {
                         // back off so a persistent connect
                         // error cannot spin the CPU.
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        back_off_after_accept_error().await;
                     }
                 }
             }
@@ -614,13 +635,143 @@ const MAX_CONCURRENT_CLIENTS: usize = 4;
 /// message — each `SetRules` a full enforce — onto an unbounded backlog.
 pub const COMMAND_QUEUE_CAPACITY: usize = 16;
 
+/// A client that does not accept a reply within this long is dropped, so a
+/// GUI that stopped reading cannot hold one of the four client slots for ever.
+pub const CLIENT_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long start-up keeps retrying when the daemon's pipe is still owned by
+/// another process (typically the previous service instance that is shutting
+/// down) before giving up with an error.
+pub const PIPE_RETRY_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Tunables of [`start_ipc_server_with_options`]; the defaults are what the
+/// daemon runs with, tests shorten them.
+#[derive(Debug, Clone, Copy)]
+pub struct IpcOptions {
+    /// See [`CLIENT_WRITE_TIMEOUT`].
+    pub write_timeout: std::time::Duration,
+    /// See [`PIPE_RETRY_WINDOW`] (Windows only).
+    pub pipe_retry_window: std::time::Duration,
+}
+
+impl Default for IpcOptions {
+    fn default() -> Self {
+        Self {
+            write_timeout: CLIENT_WRITE_TIMEOUT,
+            pipe_retry_window: PIPE_RETRY_WINDOW,
+        }
+    }
+}
+
+/// Serve clients on `endpoint` (unix socket path / Windows pipe name) with the
+/// default options.
+pub async fn start_ipc_server(
+    endpoint: &str,
+    shutdown: tokio::sync::broadcast::Receiver<()>,
+    snapshot_rx: tokio::sync::broadcast::Receiver<ServerMessage>,
+    commands: tokio::sync::mpsc::Sender<Command>,
+) -> std::io::Result<()> {
+    start_ipc_server_with_options(
+        endpoint,
+        shutdown,
+        snapshot_rx,
+        commands,
+        IpcOptions::default(),
+    )
+    .await
+}
+
+/// Pause after a failed accept/connect so a persistent error (e.g. EMFILE)
+/// cannot spin the CPU.
+const ACCEPT_ERROR_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
+async fn back_off_after_accept_error() {
+    tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
+}
+
+/// Run `create` until it succeeds, backing off 50 ms doubling to 1 s, for at
+/// most `window`; then fail with the last error's kind and a message that says
+/// the name is owned by another process.
+#[cfg_attr(not(windows), allow(dead_code))]
+async fn create_with_retry<T>(
+    mut create: impl FnMut() -> std::io::Result<T>,
+    window: std::time::Duration,
+    what: &str,
+) -> std::io::Result<T> {
+    let deadline = tokio::time::Instant::now() + window;
+    let mut delay = std::time::Duration::from_millis(50);
+    loop {
+        let err = match create() {
+            Ok(created) => return Ok(created),
+            Err(err) => err,
+        };
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(std::io::Error::new(
+                err.kind(),
+                format!(
+                    "{what} is still owned by another process after {window:?} ({err}); is another rat-daemon running?"
+                ),
+            ));
+        }
+        eprintln!("rat-daemon: cannot create {what} ({err}); retrying");
+        tokio::time::sleep(delay.min(deadline - now)).await;
+        delay = (delay * 2).min(std::time::Duration::from_secs(1));
+    }
+}
+
+/// The alert clients are currently asked about (the last `AlertRequest` not
+/// yet followed by its `AlertCleared`), kept so a GUI that connects later can
+/// be shown it: the broadcast only reaches clients that were already there.
+type ActiveAlert = std::sync::Arc<std::sync::Mutex<Option<ServerMessage>>>;
+
+fn track_active_alert(
+    snapshot_rx: &tokio::sync::broadcast::Receiver<ServerMessage>,
+    shutdown: &tokio::sync::broadcast::Receiver<()>,
+) -> ActiveAlert {
+    let state: ActiveAlert = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let mut rx = snapshot_rx.resubscribe();
+    let mut stop = shutdown.resubscribe();
+    let tracked = state.clone();
+    tokio::spawn(async move {
+        loop {
+            let msg = tokio::select! {
+                _ = stop.recv() => break,
+                msg = rx.recv() => msg,
+            };
+            let mut slot = tracked.lock().unwrap_or_else(|e| e.into_inner());
+            match msg {
+                Ok(alert @ ServerMessage::AlertRequest { .. }) => *slot = Some(alert),
+                Ok(ServerMessage::AlertCleared { id }) => {
+                    if matches!(&*slot, Some(ServerMessage::AlertRequest { id: held, .. }) if *held == id)
+                    {
+                        *slot = None;
+                    }
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+    state
+}
+
 /// a client has this long to complete the Hello handshake
 /// before the slot is given up (4 bounded slots: unauthenticated clients
 /// cannot pin the daemon forever).
 const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// The server's write half of one client: framed lines plus the write
+/// timeout. A send that times out leaves a half-written line on the wire, so
+/// the writer is dead from then on and the connection must be closed.
+struct ClientWriter<W> {
+    inner: tokio_util::codec::FramedWrite<W, tokio_util::codec::LinesCodec>,
+    timeout: std::time::Duration,
+    dead: bool,
+}
+
 async fn send_server<W>(
-    writer: &mut tokio_util::codec::FramedWrite<W, tokio_util::codec::LinesCodec>,
+    writer: &mut ClientWriter<W>,
     msg: ServerMessage,
 ) -> Result<(), tokio_util::codec::LinesCodecError>
 where
@@ -631,7 +782,20 @@ where
     let Ok(line) = msg.to_string() else {
         return Ok(());
     };
-    writer.send(line).await
+    if writer.dead {
+        return Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into());
+    }
+    match tokio::time::timeout(writer.timeout, writer.inner.send(line)).await {
+        Ok(result) => result,
+        Err(_) => {
+            writer.dead = true;
+            eprintln!(
+                "rat-daemon: dropping an IPC client that did not read its replies for {:?}",
+                writer.timeout
+            );
+            Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into())
+        }
+    }
 }
 
 /// Forward one client command onto the pipeline's BOUNDED queue. A full
@@ -641,7 +805,7 @@ where
 /// (shutdown), and the command dies with the connection.
 async fn forward_command<W>(
     commands: &tokio::sync::mpsc::Sender<Command>,
-    writer: &mut tokio_util::codec::FramedWrite<W, tokio_util::codec::LinesCodec>,
+    writer: &mut ClientWriter<W>,
     cmd: Command,
 ) where
     W: tokio::io::AsyncWrite + Unpin,
@@ -663,6 +827,8 @@ async fn handle_connection<S>(
     stream: S,
     mut snapshot_rx: tokio::sync::broadcast::Receiver<ServerMessage>,
     commands: tokio::sync::mpsc::Sender<Command>,
+    active_alert: ActiveAlert,
+    write_timeout: std::time::Duration,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
@@ -671,14 +837,21 @@ async fn handle_connection<S>(
         read_half,
         tokio_util::codec::LinesCodec::new_with_max_length(MAX_CLIENT_LINE),
     );
-    let mut writer = tokio_util::codec::FramedWrite::new(
-        write_half,
-        tokio_util::codec::LinesCodec::new_with_max_length(MAX_SERVER_LINE),
-    );
+    let mut writer = ClientWriter {
+        inner: tokio_util::codec::FramedWrite::new(
+            write_half,
+            tokio_util::codec::LinesCodec::new_with_max_length(MAX_SERVER_LINE),
+        ),
+        timeout: write_timeout,
+        dead: false,
+    };
 
     // the FIRST client message must be Hello; nothing is sent
     // to the client before the handshake completes, and a version mismatch
     // or any other opener is answered with Error and the connection closed.
+    // Id of the active alert replayed after the handshake: the same request may
+    // also sit in this client's own broadcast queue and must not be sent twice.
+    let mut replayed_alert_id: Option<u64> = None;
     let first = tokio::time::timeout(HANDSHAKE_TIMEOUT, reader.next()).await;
     match first {
         Ok(Some(Ok(line))) => match ClientMessage::from_json_str(&line) {
@@ -695,6 +868,20 @@ async fn handle_connection<S>(
                 .is_err()
                 {
                     return;
+                }
+                // An alert that is already active was broadcast before this
+                // client existed: hand it over right after the handshake.
+                let held = active_alert
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                if let Some(alert) = held {
+                    if let ServerMessage::AlertRequest { id, .. } = &alert {
+                        replayed_alert_id = Some(*id);
+                    }
+                    if send_server(&mut writer, alert).await.is_err() {
+                        return;
+                    }
                 }
             }
             Ok(ClientMessage::Hello { protocol_version }) => {
@@ -749,6 +936,14 @@ async fn handle_connection<S>(
             msg = snapshot_rx.recv() => {
                 match msg {
                     Ok(msg) => {
+                        if let (ServerMessage::AlertRequest { id, .. }, Some(replayed)) =
+                            (&msg, replayed_alert_id)
+                        {
+                            if *id == replayed {
+                                replayed_alert_id = None;
+                                continue;
+                            }
+                        }
                         if send_server(&mut writer, msg).await.is_err() {
                             break;
                         }
@@ -841,6 +1036,11 @@ async fn handle_connection<S>(
                     None => break,
                 }
             }
+        }
+        // A reply that timed out (arms above ignore send errors) ends the
+        // connection: the line on the wire is incomplete.
+        if writer.dead {
+            break;
         }
     }
 }
@@ -1094,5 +1294,76 @@ mod peer_tests {
             !peer_allowed(stranger, gid, None),
             "uid {stranger} with unrelated gid {gid} must be refused"
         );
+    }
+}
+
+#[cfg(test)]
+mod backoff_tests {
+    use super::{back_off_after_accept_error, ACCEPT_ERROR_BACKOFF};
+
+    // The accept loops call this after every failed accept; without the pause
+    // a persistent error would busy-loop a core.
+    #[tokio::test]
+    async fn accept_error_backoff_really_waits() {
+        let start = std::time::Instant::now();
+        back_off_after_accept_error().await;
+        let waited = start.elapsed();
+        assert!(
+            waited >= ACCEPT_ERROR_BACKOFF - std::time::Duration::from_millis(5),
+            "returned after only {waited:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::create_with_retry;
+    use std::time::{Duration, Instant};
+
+    // A name that frees up within the window is taken over.
+    #[tokio::test]
+    async fn retries_until_the_creation_succeeds() {
+        let mut calls = 0;
+        let got = create_with_retry(
+            || {
+                calls += 1;
+                if calls < 4 {
+                    Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+                } else {
+                    Ok(calls)
+                }
+            },
+            Duration::from_secs(5),
+            "test pipe",
+        )
+        .await
+        .expect("must succeed once the owner is gone");
+        assert_eq!(got, 4);
+    }
+
+    // A name that stays owned ends in a clear error after the bounded window,
+    // keeping the error kind.
+    #[tokio::test]
+    async fn gives_up_after_the_window_with_a_clear_error() {
+        let window = Duration::from_millis(400);
+        let start = Instant::now();
+        let mut calls = 0;
+        let err = create_with_retry(
+            || -> std::io::Result<()> {
+                calls += 1;
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            },
+            window,
+            "test pipe",
+        )
+        .await
+        .expect_err("a pipe that stays owned must fail");
+        let waited = start.elapsed();
+        assert!(waited >= window, "gave up early after {waited:?}");
+        assert!(waited < window + Duration::from_secs(2), "took {waited:?}");
+        assert!(calls >= 3, "only {calls} attempts");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        let text = err.to_string();
+        assert!(text.contains("test pipe") && text.contains("owned by another process"));
     }
 }

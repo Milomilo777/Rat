@@ -43,14 +43,12 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
 - **Busy daemon (low).** At most 16 client commands wait for the daemon; queued `SetRules` lists are merged into
   the newest one. When the queue is full the client gets an Error reply and the command (also an alert answer)
   is dropped; the desktop app does not retry it yet.
-- **Pipe start-up (low).** If another process already owns `\\.\pipe\rat`, the daemon exits; there is no retry, and
-  the GUI does not verify the server's identity.
-- **Slow clients (low).** A client that never reads its replies can hold one of the four client slots.
-- **Alerts (low).** A GUI that connects after an alert became active does not receive that alert; an alert that is
-  re-queued with the same key may not be broadcast again.
+- **Pipe identity (low).** The GUI does not verify that the process behind the pipe is the Rat service; a process
+  that creates the pipe before the service starts could answer the GUI. (The daemon retries for 3 s when the pipe
+  is still owned by a previous instance, then exits with an error.)
 - **Read-back order (low).** Paths read back from existing firewall rules at startup are not sorted/deduplicated.
-- **Untested hardening.** Task-death exit + backoff and reply-then-close on oversized messages are implemented but
-  have no test that fails when they are removed; the Unix peer check relies on platform tests.
+- **Untested hardening (low).** The pause after a failed accept is tested on its own helper, not on a real accept
+  error (none can be provoked); the Unix peer check relies on platform tests.
 
 ## Monitoring (`rat-monitor-*`)
 - **Linux byte counters (low).** Per-connection byte counts on Linux come from the kernel's `sock_diag` and

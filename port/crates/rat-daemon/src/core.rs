@@ -516,6 +516,13 @@ pub async fn run_pipeline(
                                         if answer_current_alert(&mut ledger, &policy, verdict, scope, lifetime) {
                                             persist_rules(&store, &policy);
                                         }
+                                        // The answered alert is gone. The same (app, host)
+                                        // may be queued again at once (Allow once makes no
+                                        // rule): that is a NEW alert, so forget the sent key
+                                        // and tell clients the old one is cleared.
+                                        sent_alert_key = None;
+                                        current_alert_id = None;
+                                        let _ = snapshot_tx.send(ServerMessage::AlertCleared { id });
                                     } else {
                                         eprintln!("rat-daemon: ignoring stale AlertAnswer id {id}");
                                     }

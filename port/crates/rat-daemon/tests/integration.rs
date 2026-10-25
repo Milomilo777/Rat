@@ -48,6 +48,18 @@ async fn spawn_server_with_commands(
     tokio::sync::broadcast::Sender<()>,
     tokio::sync::mpsc::Receiver<rat_daemon::core::Command>,
 ) {
+    spawn_server_with_write_timeout(test, rat_daemon::ipc::CLIENT_WRITE_TIMEOUT).await
+}
+
+async fn spawn_server_with_write_timeout(
+    test: &str,
+    write_timeout: Duration,
+) -> (
+    String,
+    tokio::sync::broadcast::Sender<ServerMessage>,
+    tokio::sync::broadcast::Sender<()>,
+    tokio::sync::mpsc::Receiver<rat_daemon::core::Command>,
+) {
     #[cfg(unix)]
     let endpoint = format!("/tmp/rat_it_{test}_{}.sock", std::process::id());
     #[cfg(windows)]
@@ -59,7 +71,17 @@ async fn spawn_server_with_commands(
 
     let ep = endpoint.clone();
     tokio::spawn(async move {
-        let _ = rat_daemon::ipc::start_ipc_server(&ep, shutdown_rx, snapshot_rx, cmd_tx).await;
+        let _ = rat_daemon::ipc::start_ipc_server_with_options(
+            &ep,
+            shutdown_rx,
+            snapshot_rx,
+            cmd_tx,
+            rat_daemon::ipc::IpcOptions {
+                write_timeout,
+                ..Default::default()
+            },
+        )
+        .await;
     });
 
     #[cfg(unix)]
@@ -851,19 +873,33 @@ async fn test_second_daemon_cannot_steal_live_pipe() {
     assert!(ready, "first daemon never created its pipe");
     tokio::time::sleep(Duration::from_millis(200)).await;
 
+    let retry_window = Duration::from_millis(600);
+    let started = Instant::now();
     let second = tokio::time::timeout(
         Duration::from_secs(5),
-        rat_daemon::ipc::start_ipc_server(
+        rat_daemon::ipc::start_ipc_server_with_options(
             &pipe_name,
             shutdown_tx.subscribe(),
             snapshot_tx.subscribe(),
             tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY).0,
+            rat_daemon::ipc::IpcOptions {
+                pipe_retry_window: retry_window,
+                ..Default::default()
+            },
         ),
     )
     .await
     .expect("second start_ipc_server did not return");
     let err = second.expect_err("second daemon must be refused while the pipe is live");
     assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(
+        started.elapsed() >= retry_window,
+        "the second daemon must retry for the whole window before giving up"
+    );
+    assert!(
+        err.to_string().contains("owned by another process"),
+        "the error must say what is wrong: {err}"
+    );
 
     // the live daemon must still accept a client afterwards
     let client = ClientOptions::new()
@@ -1229,4 +1265,281 @@ async fn test_set_rules_flood_gets_error_reply_not_a_hang() {
         other => panic!("expected Error, got {other:?}"),
     }
     let _ = shutdown_tx.send(());
+}
+
+// A client that stops reading its replies must not hold one of the four
+// client slots for ever: the server gives each write a timeout, drops the
+// client (with a log line) and the slot comes back. Four clients handshake and
+// then never read; a flood of large broadcasts blocks every handler's write;
+// after the (shortened) timeout a fifth client must get its handshake, and the
+// stalled clients must see their connection end.
+#[tokio::test]
+async fn test_client_that_never_reads_is_dropped_and_frees_its_slot() {
+    use futures::StreamExt;
+
+    let (endpoint, snapshot_tx, shutdown_tx, _cmd_rx) =
+        spawn_server_with_write_timeout("neverreads", Duration::from_millis(500)).await;
+
+    let mut stalled = Vec::new();
+    for _ in 0..4 {
+        let stream = connect_ep(&endpoint).await;
+        let (r, w) = tokio::io::split(stream);
+        let mut reader = FramedRead::new(r, LinesCodec::new());
+        let mut writer = FramedWrite::new(w, LinesCodec::new());
+        send_client(
+            &mut writer,
+            &ClientMessage::Hello {
+                protocol_version: PROTOCOL_VERSION,
+            },
+        )
+        .await;
+        match read_server(&mut reader, READ_TIMEOUT).await {
+            Some(ServerMessage::HelloAck { .. }) => {}
+            other => panic!("expected HelloAck, got {other:?}"),
+        }
+        stalled.push((reader, writer));
+    }
+
+    // 3 MiB per message: far beyond any socket / pipe buffer, so the write of
+    // the first one cannot finish while nobody reads.
+    for _ in 0..4 {
+        let _ = snapshot_tx.send(ServerMessage::Error {
+            message: "x".repeat(3 * 1024 * 1024),
+        });
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // The slots are free again: a fifth client gets its handshake.
+    let stream = connect_ep(&endpoint).await;
+    let (r, w) = tokio::io::split(stream);
+    let mut reader = FramedRead::new(r, LinesCodec::new());
+    let mut writer = FramedWrite::new(w, LinesCodec::new());
+    send_client(
+        &mut writer,
+        &ClientMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    )
+    .await;
+    match read_server(&mut reader, READ_TIMEOUT).await {
+        Some(ServerMessage::HelloAck { .. }) => {}
+        other => panic!("a fifth client must get a slot once stalled ones are dropped: {other:?}"),
+    }
+
+    // And a stalled client's connection really ended (EOF or error after the
+    // data that was already in flight).
+    let (first_reader, _first_writer) = &mut stalled[0];
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match first_reader.next().await {
+                Some(Ok(_)) => continue,
+                _ => return,
+            }
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "the stalled client was never disconnected");
+
+    let _ = shutdown_tx.send(());
+}
+
+fn test_alert() -> rat_ledger::Alert {
+    rat_ledger::Alert {
+        app: "/apps/late.exe".to_string(),
+        app_name: "late".to_string(),
+        host: "example.test".to_string(),
+        remote: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 443),
+        proto: Protocol::Tcp,
+        details: Default::default(),
+        reported_ms: 1,
+    }
+}
+
+#[cfg(unix)]
+type TestStream = tokio::net::UnixStream;
+#[cfg(windows)]
+type TestStream = tokio::net::windows::named_pipe::NamedPipeClient;
+
+/// Connect, handshake, return the split halves with the HelloAck consumed.
+async fn handshaked_client(
+    endpoint: &str,
+) -> (
+    FramedRead<tokio::io::ReadHalf<TestStream>, LinesCodec>,
+    FramedWrite<tokio::io::WriteHalf<TestStream>, LinesCodec>,
+) {
+    let stream = connect_ep(endpoint).await;
+    let (r, w) = tokio::io::split(stream);
+    let mut reader = FramedRead::new(r, LinesCodec::new());
+    let mut writer = FramedWrite::new(w, LinesCodec::new());
+    send_client(
+        &mut writer,
+        &ClientMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    )
+    .await;
+    match read_server(&mut reader, READ_TIMEOUT).await {
+        Some(ServerMessage::HelloAck { .. }) => {}
+        other => panic!("expected HelloAck, got {other:?}"),
+    }
+    (reader, writer)
+}
+
+// A GUI that connects while an alert is active gets that alert right after
+// the handshake (it missed the broadcast). Once the alert is cleared, a later
+// GUI gets nothing.
+#[tokio::test]
+async fn test_late_client_receives_the_active_alert_after_the_handshake() {
+    let (endpoint, snapshot_tx, shutdown_tx) = spawn_server("latealert").await;
+
+    // An early client proves the broadcast went out.
+    let (mut early, _early_writer) = handshaked_client(&endpoint).await;
+    snapshot_tx
+        .send(ServerMessage::AlertRequest {
+            id: 7,
+            alert: Box::new(test_alert()),
+        })
+        .expect("a handler is listening");
+    assert!(matches!(
+        read_server(&mut early, READ_TIMEOUT).await,
+        Some(ServerMessage::AlertRequest { id: 7, .. })
+    ));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let (mut late, _late_writer) = handshaked_client(&endpoint).await;
+    match read_server(&mut late, READ_TIMEOUT).await {
+        Some(ServerMessage::AlertRequest { id: 7, alert }) => {
+            assert_eq!(*alert, test_alert());
+        }
+        other => panic!("a late client must get the active alert, got {other:?}"),
+    }
+
+    // Cleared: the next late client gets no alert.
+    snapshot_tx
+        .send(ServerMessage::AlertCleared { id: 7 })
+        .expect("a handler is listening");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (mut later, _later_writer) = handshaked_client(&endpoint).await;
+    use futures::StreamExt;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), later.next())
+            .await
+            .is_err(),
+        "no alert is active, so nothing may be sent after the handshake"
+    );
+
+    let _ = shutdown_tx.send(());
+}
+
+// Reply-then-close: a client that sends an oversized line, or a line that is
+// not a valid message, gets ONE Error reply and the connection is closed
+// (no second attempt). The older oversize test stops reading at the reply, so
+// it would still pass if the daemon kept the connection open.
+#[tokio::test]
+async fn test_bad_client_message_gets_one_error_and_the_connection_closes() {
+    use futures::{SinkExt, StreamExt};
+
+    let (endpoint, _snapshot_tx_keepalive, shutdown_tx) = spawn_server("replyclose").await;
+
+    for (label, payload, needle) in [
+        ("oversized", "a".repeat(200 * 1024), "LinesCodec error"),
+        ("invalid json", "{not json".to_string(), "Invalid JSON"),
+    ] {
+        let (mut reader, mut writer) = handshaked_client(&endpoint).await;
+        // The server may hang up while the oversized line is still being
+        // written; a failed write is part of the expected rejection.
+        let _ = writer.send(payload).await;
+
+        let first = read_server(&mut reader, READ_TIMEOUT).await;
+        match first {
+            Some(ServerMessage::Error { message }) => {
+                assert!(
+                    message.contains(needle),
+                    "{label}: unexpected error: {message}"
+                )
+            }
+            other => panic!("{label}: expected one Error reply, got {other:?}"),
+        }
+        // Then the connection ends: EOF (or a reset), never another frame
+        // followed by silence.
+        let rest = tokio::time::timeout(Duration::from_secs(5), reader.next())
+            .await
+            .unwrap_or_else(|_| panic!("{label}: the connection was not closed after the reply"));
+        assert!(
+            !matches!(rest, Some(Ok(_))),
+            "{label}: expected the connection to close, got {rest:?}"
+        );
+    }
+
+    let _ = shutdown_tx.send(());
+}
+
+// A pipe still held by the previous daemon (it is shutting down) is not a
+// fatal start-up error: the new daemon retries with backoff and takes the
+// pipe over as soon as the old one lets go.
+#[cfg(windows)]
+#[tokio::test]
+async fn test_pipe_start_retries_until_the_previous_owner_lets_go() {
+    use tokio::net::windows::named_pipe::ClientOptions;
+
+    let pipe_name = format!(r"\\.\pipe\rat_it_retry_{}", std::process::id());
+
+    let (old_shutdown_tx, old_shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let (old_snapshot_tx, old_snapshot_rx) = tokio::sync::broadcast::channel(16);
+    let old_cmd_tx = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY).0;
+    let pn = pipe_name.clone();
+    let old = tokio::spawn(async move {
+        rat_daemon::ipc::start_ipc_server(&pn, old_shutdown_rx, old_snapshot_rx, old_cmd_tx).await
+    });
+    let mut ready = false;
+    for _ in 0..100 {
+        match ClientOptions::new().open(&pipe_name) {
+            Ok(client) => {
+                drop(client);
+                ready = true;
+                break;
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+    assert!(ready, "the old daemon never created its pipe");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let (new_shutdown_tx, new_shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let (_new_snapshot_tx, new_snapshot_rx) = tokio::sync::broadcast::channel(16);
+    let new_cmd_tx = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY).0;
+    let pn = pipe_name.clone();
+    let new = tokio::spawn(async move {
+        rat_daemon::ipc::start_ipc_server_with_options(
+            &pn,
+            new_shutdown_rx,
+            new_snapshot_rx,
+            new_cmd_tx,
+            rat_daemon::ipc::IpcOptions {
+                pipe_retry_window: Duration::from_secs(8),
+                ..Default::default()
+            },
+        )
+        .await
+    });
+
+    // The new daemon is blocked while the old one holds the pipe...
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        !new.is_finished(),
+        "the new daemon must keep retrying, not exit"
+    );
+
+    // ...and takes over once the old one is gone.
+    old_shutdown_tx.send(()).expect("old shutdown send");
+    drop(old_snapshot_tx);
+    old.await.expect("old join").expect("old clean shutdown");
+
+    // A client of the NEW daemon completes the handshake on the shared name.
+    let (reader, writer) = handshaked_client(&pipe_name).await;
+    drop((reader, writer));
+    assert!(!new.is_finished(), "the new daemon must be serving");
+
+    new_shutdown_tx.send(()).expect("new shutdown send");
+    new.await.expect("new join").expect("new clean shutdown");
 }

@@ -31,7 +31,7 @@ The main components are:
 
 Line-delimited JSON. **The FIRST client message must be `Hello`**; the server answers
 `HelloAck` (version matched) or `Error` + close (mismatch), and pushes NO server messages before the handshake
-completed. A client that does not handshake within 10 s is dropped. Bump `PROTOCOL_VERSION` on breaking changes.
+completed. A client that does not handshake within 10 s is dropped; so is a client that does not accept a reply within 10 s (`CLIENT_WRITE_TIMEOUT`; a log line is written and the slot is freed). Bump `PROTOCOL_VERSION` on breaking changes.
 
 Client -> server:
 ```json
@@ -76,7 +76,9 @@ Server -> client:
   messages: a client that cannot parse them must ignore unknown lines (the desktop app does).
 * `Snapshot` is pushed after every sampling pass (1.5 s) and after every applied command.
 * `AlertRequest` goes out once per NEW current alert (one prompt per app|domain key until answered, AlertCenter
-  parity); the id must be echoed back in `AlertAnswer`.
+  parity); the id must be echoed back in `AlertAnswer`. An alert answered with "allow once" that is queued again
+  at once is a new alert (new id, `AlertCleared` for the old one first). A client that handshakes while an alert is
+  active receives that `AlertRequest` right after `HelloAck`.
 
 ### Example usage (Client side receiving Snapshot)
 
@@ -157,7 +159,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     is off, an `Error` message "Windows Firewall is turned off for: ..." goes out on every pass so a client that
     connects later sees it too (the desktop app shows it as the connection detail), and a message follows when
     all profiles are on again. A profile that policy leaves "not configured" is never reported as off.
-* **Both**: a second daemon refuses to start while the endpoint is owned by a live one;
+* **Both**: a second daemon refuses to start while the endpoint is owned by a live one (Windows: it retries with
+  backoff for `PIPE_RETRY_WINDOW`, 3 s, so a predecessor that is still shutting down can let go, then exits with an
+  "owned by another process" error);
   concurrent clients are capped at 4; inbound lines cap at 64 KiB.
 
 ## Known Limits

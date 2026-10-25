@@ -1427,3 +1427,137 @@ async fn test_startup_removes_only_the_daemons_own_leftover_temp_files() {
         .expect("clean shutdown is not an error");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// "Allow once" creates no rule, so the same (app, host) asks again at once and
+// the new alert has the SAME key as the answered one. It must still be
+// broadcast as a new alert (new id), with the old one cleared first; otherwise
+// the GUI never learns about it and the connection stays undecided.
+#[tokio::test]
+async fn test_requeued_alert_with_the_same_key_is_broadcast_again() {
+    let app = test_app();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let (snapshot_tx, mut rx) = tokio::sync::broadcast::channel(64);
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY);
+
+    let policy = RuleEnginePolicy(rat_core::RuleEngine::new());
+    let ledger = Ledger::new(LedgerConfig { warmup_ms: 0 }, AlertCenterConfig::default());
+    let task = tokio::spawn(rat_daemon::core::run_pipeline(
+        ScriptedSource {
+            conns: vec![conn(app, "evil", 443, 54321)],
+        },
+        policy,
+        ledger,
+        RecorderBackend::default(),
+        dummy_store(),
+        cmd_rx,
+        snapshot_tx,
+        shutdown_rx,
+    ));
+
+    let first = wait_for_msg(&mut rx, |m| match m {
+        ServerMessage::AlertRequest { id, .. } => Some(id),
+        _ => None,
+    })
+    .await;
+    cmd_tx
+        .send(Command::AlertAnswer {
+            id: first,
+            verdict: Verdict::Allow,
+            scope: rat_ledger::AnswerScope::Any,
+            lifetime: Lifetime::Once,
+        })
+        .await
+        .unwrap();
+    let cleared = wait_for_msg(&mut rx, |m| match m {
+        ServerMessage::AlertCleared { id } => Some(id),
+        _ => None,
+    })
+    .await;
+    assert_eq!(cleared, first);
+    let second = wait_for_msg(&mut rx, |m| match m {
+        ServerMessage::AlertRequest { id, .. } => Some(id),
+        _ => None,
+    })
+    .await;
+    assert_ne!(second, first, "the re-queued alert needs a fresh id");
+
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("pipeline must end on shutdown")
+        .unwrap();
+}
+
+/// A monitor that dies on its first sample, killing the pipeline task.
+struct PanicSource;
+
+impl ConnectionSource for PanicSource {
+    fn sample(&mut self) -> io::Result<Vec<Connection>> {
+        panic!("injected monitor death");
+    }
+}
+
+// Task death must end the daemon with an error (so the service manager
+// restarts it) instead of leaving a half-dead process that still answers IPC
+// but enforces nothing.
+#[tokio::test]
+async fn test_pipeline_task_death_ends_the_daemon_with_an_error() {
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        rat_daemon::run_components(
+            test_endpoint("coredeath"),
+            PanicSource,
+            RecorderBackend::default(),
+            temp_rules_path("coredeath"),
+            tokio::sync::broadcast::channel(1).1,
+        ),
+    )
+    .await
+    .expect("a dead pipeline must end the daemon, not leave it running");
+    let err = result.expect_err("a pipeline that died on its own is a failure");
+    assert!(
+        err.to_string().contains("core pipeline exited"),
+        "unexpected error: {err}"
+    );
+}
+
+// The same for the IPC side: when the endpoint cannot be claimed (a live
+// daemon owns it) run_components returns the error instead of running
+// headless.
+#[tokio::test]
+async fn test_ipc_task_death_ends_the_daemon_with_an_error() {
+    let endpoint = test_endpoint("ipcdeath");
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let first = tokio::spawn(rat_daemon::run_components(
+        endpoint.clone(),
+        ScriptedSource { conns: vec![] },
+        RecorderBackend::default(),
+        temp_rules_path("ipcdeath1"),
+        shutdown_rx,
+    ));
+    wait_until(Duration::from_secs(10), || endpoint_serving(&endpoint)).await;
+
+    let second = tokio::time::timeout(
+        Duration::from_secs(10),
+        rat_daemon::run_components(
+            endpoint.clone(),
+            ScriptedSource { conns: vec![] },
+            RecorderBackend::default(),
+            temp_rules_path("ipcdeath2"),
+            tokio::sync::broadcast::channel(1).1,
+        ),
+    )
+    .await
+    .expect("a daemon that cannot claim the endpoint must exit, not hang");
+    assert!(
+        second.is_err(),
+        "the second daemon must fail, got {second:?}"
+    );
+
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), first)
+        .await
+        .expect("the first daemon must end on shutdown")
+        .unwrap()
+        .unwrap();
+}
