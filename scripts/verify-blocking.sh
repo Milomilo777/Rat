@@ -19,6 +19,7 @@
 set -u
 [ "$(id -u)" = 0 ] || { echo "run with sudo" >&2; exit 2; }
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# shellcheck disable=SC2012
 DAEMON="${1:-$(ls -d "$HOME"/Library/Developer/Xcode/DerivedData/Rat-*/Build/Products/Debug/Rat.app/Contents/MacOS/rat-enforcerd 2>/dev/null | head -1)}"
 [ -x "$DAEMON" ] || DAEMON="$ROOT/RatFilter/.build/debug/rat-enforcerd"
 [ -x "$DAEMON" ] || { echo "rat-enforcerd not found; pass its path" >&2; exit 2; }
@@ -34,8 +35,9 @@ RAT_TRACE=${RAT_TRACE:-} "$DAEMON" --denied "$WORK/denied.txt" --blocklist "$WOR
   --proxied "$WORK/proxied.json" --owner-uid "$(id -u)" &
 DPID=$!
 PXPID=
+# shellcheck disable=SC2317
 cleanup() {
-  kill -9 $APID $BPID $PXPID 2>/dev/null; kill $DPID 2>/dev/null
+  kill -9 "$APID" "$BPID" "$PXPID" 2>/dev/null; kill "$DPID" 2>/dev/null
   /usr/bin/pkill -9 -f "[s]cripts/test-proxy.py ${PPORT:-18089}" 2>/dev/null   # /usr/bin/python3 runs the interpreter as a child
   /sbin/pfctl -a "$ANCHOR" -F all >/dev/null 2>&1; rm -rf "$WORK"
 }
@@ -44,7 +46,7 @@ trap cleanup EXIT INT TERM
 sleep 1
 
 echo "== start-up cleanup"
-[ ! -e "$WORK/legacy-blocklist.txt" ] && echo "  ok legacy blocklist file deleted" || { echo "  FAIL legacy blocklist file still there"; FAIL=1; }
+if [ ! -e "$WORK/legacy-blocklist.txt" ]; then echo "  ok legacy blocklist file deleted"; else echo "  FAIL legacy blocklist file still there"; FAIL=1; fi
 
 HOST=proof.ovh.net
 IP=$(/usr/bin/dig +short +time=3 +tries=1 A $HOST | grep -E '^[0-9.]+$' | head -1)
@@ -81,15 +83,15 @@ A3=$(size "$WORK/a.out"); B3=$(size "$WORK/b.out")
 echo "  curl bytes: 0.3 s after deny +$((AQ - A1)), at 1.5 s +$((A2 - A1)), at 3 s +$((AR - A1))  (curl keeps reading what was already in its socket buffer; the network side is cut at once)"
 echo "  1.5 s after deny: curl +$((A2 - A1)) bytes (trickle before the cut), python3 +$((B2 - B1))"
 echo "  next 3 s:        curl +$((A3 - A2)) bytes, python3 +$((B3 - B2)) bytes"
-[ "$A3" -eq "$A2" ] && echo "  ok denied curl stream is dead" || { echo "  FAIL denied curl kept downloading"; FAIL=1; }
-[ "$B3" -gt "$B2" ] && echo "  ok allowed python3 kept downloading from the same address" || { echo "  FAIL allowed python3 was interrupted (collateral)"; FAIL=1; }
+if [ "$A3" -eq "$A2" ]; then echo "  ok denied curl stream is dead"; else echo "  FAIL denied curl kept downloading"; FAIL=1; fi
+if [ "$B3" -gt "$B2" ]; then echo "  ok allowed python3 kept downloading from the same address"; else echo "  FAIL allowed python3 was interrupted (collateral)"; FAIL=1; fi
 kill -0 $APID 2>/dev/null && echo "  note: curl is still running (waiting), not downloading" || echo "  curl exited (connection reset)"
 
 echo "== DNS for allowed apps while curl is denied (1.1.1.1, 8.8.8.8, 9.9.9.9)"
 for s in 1.1.1.1 8.8.8.8 9.9.9.9; do
   ok=0
-  for i in 1 2 3; do /usr/bin/dig +short +time=2 +tries=1 @$s example.com | grep -qE '^[0-9.]+$' && ok=$((ok + 1)); done
-  [ "$ok" = 3 ] && echo "  ok @$s 3/3" || { echo "  FAIL @$s $ok/3"; FAIL=1; }
+  for _ in 1 2 3; do /usr/bin/dig +short +time=2 +tries=1 @$s example.com | grep -qE '^[0-9.]+$' && ok=$((ok + 1)); done
+  if [ "$ok" = 3 ]; then echo "  ok @$s 3/3"; else echo "  FAIL @$s $ok/3"; FAIL=1; fi
 done
 
 echo "== anchor contents: ports only, no address table, no pass rule"
@@ -133,7 +135,7 @@ print("  ok both destinations and the proxy process were seen on lo0" if ok else
 sys.exit(0 if ok else 1)
 PY
 perm=$(/usr/bin/stat -f %Lp "$WORK/proxied.json" 2>/dev/null)
-[ "$perm" = 600 ] && echo "  ok flow file is private (mode 600)" || { echo "  FAIL flow file mode $perm"; FAIL=1; }
+if [ "$perm" = 600 ]; then echo "  ok flow file is private (mode 600)"; else echo "  FAIL flow file mode $perm"; FAIL=1; fi
 
 /usr/bin/curl -s --limit-rate 400k --proxy "http://127.0.0.1:$PPORT" -o "$WORK/pa.out" "https://$HOST/files/1Gb.dat" &
 APID=$!
@@ -163,16 +165,16 @@ A2=$(size "$WORK/pa.out"); B2=$(size "$WORK/pb.out")
 sleep 3
 A3=$(size "$WORK/pa.out"); B3=$(size "$WORK/pb.out")
 echo "  after deny: curl +$((A2 - A1)) then +$((A3 - A2)) bytes, python3 +$((B2 - B1)) then +$((B3 - B2)) bytes"
-[ "$A3" -eq "$A2" ] && echo "  ok denied curl's proxied stream is dead" || { echo "  FAIL denied curl kept downloading through the proxy"; FAIL=1; }
-[ "$B3" -gt "$B2" ] && echo "  ok allowed python3 kept downloading through the same proxy" || { echo "  FAIL allowed python3 was interrupted"; FAIL=1; }
+if [ "$A3" -eq "$A2" ]; then echo "  ok denied curl's proxied stream is dead"; else echo "  FAIL denied curl kept downloading through the proxy"; FAIL=1; fi
+if [ "$B3" -gt "$B2" ]; then echo "  ok allowed python3 kept downloading through the same proxy"; else echo "  FAIL allowed python3 was interrupted"; FAIL=1; fi
 echo "  anchor rules while curl is denied:"
 /sbin/pfctl -a "$ANCHOR" -s rules 2>/dev/null | grep 'on lo0' | sed 's/^/    /'
-/sbin/pfctl -a "$ANCHOR" -s rules 2>/dev/null | grep -q 'on lo0' && echo "  ok loopback rules present" || { echo "  FAIL no loopback rule"; FAIL=1; }
+if /sbin/pfctl -a "$ANCHOR" -s rules 2>/dev/null | grep -q 'on lo0'; then echo "  ok loopback rules present"; else echo "  FAIL no loopback rule"; FAIL=1; fi
 /sbin/pfctl -a "$ANCHOR" -s rules 2>/dev/null | grep -qE '^pass|<' && { echo "  FAIL pass rule or table"; FAIL=1; }
 kill -9 $APID $BPID 2>/dev/null; wait $APID $BPID 2>/dev/null; APID=; BPID=
 
 PT=0; PL=0
-for i in 1 2 3 4 5; do
+for _ in 1 2 3 4 5; do
   for mode in connect socks; do
     PT=$((PT + 1))
     if [ $mode = connect ]; then r=$(/usr/bin/curl -s -o /dev/null --max-time 6 -w '%{http_code} %{size_download}' --proxy "http://127.0.0.1:$PPORT" https://example.com)
@@ -194,7 +196,7 @@ kill $PXPID 2>/dev/null; /usr/bin/pkill -9 -f "[s]cripts/test-proxy.py $PPORT"; 
 echo "== deny list emptied: curl must work again"
 : > "$WORK/denied.txt"; sleep 7
 r=$(/usr/bin/curl -s -o /dev/null --connect-timeout 4 --max-time 8 -w '%{http_code}' https://example.com)
-[ "$r" = 200 ] && echo "  ok example.com -> 200" || { echo "  FAIL example.com -> $r"; FAIL=1; }
+if [ "$r" = 200 ]; then echo "  ok example.com -> 200"; else echo "  FAIL example.com -> $r"; FAIL=1; fi
 
 [ "$FAIL" = 0 ] && echo "PASS (fresh-process leak rate: $LEAKS/$TOTAL direct, ${PL:-?}/${PT:-?} through the proxy)" || echo "FAIL"
 exit "$FAIL"
