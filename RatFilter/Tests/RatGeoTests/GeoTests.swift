@@ -42,6 +42,39 @@ final class GeoTests: XCTestCase {
     func testSystemZoneTabResolvesCurrentZone() {
         XCTAssertNotNil(TimeZoneLocator.coordinates(forZone: "Europe/Berlin"))
     }
+
+    // MARK: QA Acceptance Tests (R7, R8, R9, R10) — from the qa-core-swift lane
+
+    func testQAR7MalformedFileRejection() {
+        XCTAssertThrowsError(try MMDB(data: Data("completely garbage file content".utf8)))
+        XCTAssertThrowsError(try MMDB(data: Data()))
+    }
+
+    func testQAR8AndR10MMDBSecurityPointerLoopsAndGiantMaps() throws {
+        // Pointer loops: A record that points to itself.
+        let loopRecord: [UInt8] = [0x20, 0x00]
+        let dbLoop = try MMDB(data: MMDBRobustnessTests.tinyDatabase(record: loopRecord))
+        // Shouldn't crash, should return nil due to decode budget or safety check.
+        XCTAssertNil(dbLoop.lookup("1.2.3.4"))
+
+        // Giant map: declaring a map with 65k entries but truncated.
+        let giantMapRecord: [UInt8] = [0xef, 0xff, 0xff]
+        let dbGiant = try MMDB(data: MMDBRobustnessTests.tinyDatabase(record: giantMapRecord))
+        XCTAssertNil(dbGiant.lookup("1.2.3.4"))
+    }
+
+    func testQAR9IPv6Lookups() throws {
+        // Need to test an IPv6 DB. Let's create an IPv6 tiny DB.
+        let ipv6DBData = MMDBRobustnessTests.tinyDatabase(record: MMDBRobustnessTests.asnRecord(12345, "IPv6 Corp"), ipVersion: 6)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("rat-asn-v6-\(UUID()).mmdb")
+        try ipv6DBData.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let db = try ASNDatabase(path: url.path)
+        // Check lookup on IPv6
+        XCTAssertEqual(db.owner("2001:db8::1"), NetworkOwner(number: 12345, organization: "IPv6 Corp"))
+        XCTAssertEqual(db.owner("::1"), NetworkOwner(number: 12345, organization: "IPv6 Corp"))
+    }
 }
 
 /// 1.2.0: user-chosen database files are untrusted input to a hand-written reader.
