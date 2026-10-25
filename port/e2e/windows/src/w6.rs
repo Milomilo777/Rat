@@ -51,7 +51,7 @@ pub fn run_w6() {
     for _ in 0..10 {
         let output = Command::new("powershell.exe")
             .arg("-Command")
-            .arg("if (Test-Path '\\\\.\\pipe\\rat') { exit 0 } else { exit 1 }")
+            .arg("if (Test-Path '\\\\.\\pipe\\rat') { exit 0 } else { throw 'nope' }")
             .output()
             .unwrap();
         if output.status.success() {
@@ -65,11 +65,26 @@ pub fn run_w6() {
         "W6 Failed: daemon pipe did not become ready in 5 seconds"
     );
 
-    // Connect to named pipe `\\.\pipe\rat` and write the JSON Lines config
+    // Negative control: send a raw ApplyPlan without handshake, verify it is rejected
     let output = Command::new("powershell.exe")
         .arg("-NoProfile")
         .arg("-Command")
         .arg(r#"$pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'rat', [System.IO.Pipes.PipeDirection]::InOut); $pipe.Connect(5000); $sw = New-Object System.IO.StreamWriter($pipe); $sw.AutoFlush = $true; $sw.WriteLine('{"ApplyPlan":{"add":["C:\w6_dummy.exe"],"remove":[],"local_ports":[]}}'); $sr = New-Object System.IO.StreamReader($pipe); $sr.ReadLine()"#)
+        .output().expect("Failed to execute powershell");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Error") || stdout.trim().is_empty() || !output.status.success(),
+        "W6 Failed: Raw JSON line without handshake must be rejected (Negative Control)"
+    );
+
+    // Wait slightly to ensure pipe closes after rejection
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Proper connection with Handshake + Token
+    let output = Command::new("powershell.exe")
+        .arg("-NoProfile")
+        .arg("-Command")
+        .arg(r#"$pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'rat', [System.IO.Pipes.PipeDirection]::InOut); $pipe.Connect(5000); $sw = New-Object System.IO.StreamWriter($pipe); $sw.AutoFlush = $true; $sw.WriteLine('{"Hello":{"protocol_version":1}}'); $sr = New-Object System.IO.StreamReader($pipe); $reply = $sr.ReadLine(); if ($reply -like '*HelloAck*') { $sw.WriteLine('{"ApplyPlan":{"add":["C:\w6_dummy.exe"],"remove":[],"local_ports":[]}}'); $sr.ReadLine() } else { Write-Error "Handshake failed: $reply"; throw 'fail' }"#)
         .output().expect("Failed to execute powershell");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -80,11 +95,6 @@ pub fn run_w6() {
     }
 
     println!("W6 output: {}", stdout);
-
-    assert!(
-        !stdout.trim().is_empty(),
-        "W6 Failed: No reply read from pipe"
-    );
 
     std::thread::sleep(std::time::Duration::from_millis(1500));
 

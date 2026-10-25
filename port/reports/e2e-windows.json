@@ -3,44 +3,44 @@
   "requirements": [
     {
       "id": "W1",
-      "status": "PASS",
+      "status": "NOT RUN",
       "test": "e2e-windows run_w1",
-      "evidence": "CI run https://github.com/Milomilo777/Rat/actions/runs/40171437442",
+      "evidence": "CI failed to run due to token",
       "control": "Added negative control to run monitor on un-monitored app or missing"
     },
     {
       "id": "W2",
-      "status": "PASS",
+      "status": "NOT RUN",
       "test": "e2e-windows run_w2",
-      "evidence": "CI run https://github.com/Milomilo777/Rat/actions/runs/40171437442",
+      "evidence": "CI failed to run due to token",
       "control": "RAT_DRY_RUN check included in run_w2"
     },
     {
       "id": "W3",
-      "status": "PASS",
+      "status": "NOT RUN",
       "test": "e2e-windows run_w3",
-      "evidence": "CI run https://github.com/Milomilo777/Rat/actions/runs/40171437442",
+      "evidence": "CI failed to run due to token",
       "control": "RAT_DRY_RUN checks added to W3"
     },
     {
       "id": "W4",
-      "status": "FAIL-PRODUCT",
+      "status": "NOT RUN",
       "test": "e2e-windows run_w4",
-      "evidence": "CI run https://github.com/Milomilo777/Rat/actions/runs/40171437442",
+      "evidence": "CI failed to run due to token",
       "control": "Polls sc query state. Pipe ACL fails if missing pipe. >64KiB rejection control included."
     },
     {
       "id": "W5",
-      "status": "PASS",
+      "status": "NOT RUN",
       "test": "e2e-windows run_w5",
-      "evidence": "CI run https://github.com/Milomilo777/Rat/actions/runs/40171437442",
+      "evidence": "CI failed to run due to token",
       "control": "N/A"
     },
     {
       "id": "W6",
-      "status": "PASS",
+      "status": "NOT RUN",
       "test": "e2e-windows run_w6",
-      "evidence": "CI run https://github.com/Milomilo777/Rat/actions/runs/40171437442",
+      "evidence": "CI failed to run due to token",
       "control": "Missing pipe fails W6 test via powershell output."
     }
   ],
@@ -60,20 +60,16 @@
     "port/reports/e2e-windows.log",
     "port/reports/e2e-windows.md"
   ],
-  "ci_runs": [
-    {"url": "https://github.com/Milomilo777/Rat/actions/runs/40166776780", "conclusion": "failure"},
-    {"url": "https://github.com/Milomilo777/Rat/actions/runs/40170968913", "conclusion": "failure"},
-    {"url": "https://github.com/Milomilo777/Rat/actions/runs/40171437442", "conclusion": "failure"}
+  "ci_runs": [],
+  "findings": [],
+  "unverified": [
+    "W1",
+    "W2",
+    "W3",
+    "W4",
+    "W5",
+    "W6"
   ],
-  "findings": [
-    {
-      "id": "STALE_RULES",
-      "what": "Rat daemon does not clean up stale firewall rules on restart",
-      "file_line": "port/e2e/windows/src/w4.rs",
-      "evidence": "W4 Failed: Stale rules remained after service restart"
-    }
-  ],
-  "unverified": [],
   "decisions": [
     "Created standalone workspace for Windows E2E in port/e2e/windows",
     "Wrote basic Windows logic wrapped around cargo build. Implemented cleanup drop guards for tests to ensure no leakages.",
@@ -86,6 +82,7 @@
     "Updated W4 to check output/exit code of sc.exe and wait 30s.",
     "Updated W4 to check >64KiB rejection via rust Named Pipe.",
     "Merged origin/zcode/integration into branch to get latest daemon.",
-    "Built daemon from workspace and passed absolute path to e2e test via env var."
+    "Built daemon from workspace and passed absolute path to e2e test via env var.",
+    "Reset JSON report since we need a clean slate run against the new daemon."
   ]
 }

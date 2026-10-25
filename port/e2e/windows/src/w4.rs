@@ -32,19 +32,29 @@ fn wait_for_service_state(state: &str) {
             .unwrap();
         let out_str = String::from_utf8_lossy(&out.stdout);
         if out_str.contains(state) {
+            println!("Service reached state {}: \n{}", state, out_str);
             return;
         }
         std::thread::sleep(Duration::from_millis(500));
     }
-    let out = Command::new("sc.exe")
-        .arg("query")
+
+    // Failed to reach state
+    let out_qc = Command::new("sc.exe")
+        .arg("qc")
         .arg("RatDaemon")
         .output()
         .unwrap();
+    let out_events = Command::new("powershell.exe")
+        .arg("-Command")
+        .arg("Get-WinEvent -LogName System -MaxEvents 30 | Where-Object {$_.ProviderName -eq 'Service Control Manager'} | Select-Object -ExpandProperty Message")
+        .output()
+        .unwrap();
+
     panic!(
-        "W4 Failed: Service did not reach {} state in 30s. Output:\n{}",
+        "W4 Failed: Service did not reach {} state in 30s.\nsc qc output:\n{}\nEvent logs:\n{}",
         state,
-        String::from_utf8_lossy(&out.stdout)
+        String::from_utf8_lossy(&out_qc.stdout),
+        String::from_utf8_lossy(&out_events.stdout)
     );
 }
 
@@ -95,7 +105,7 @@ pub fn run_w4() {
     // Negative control: Check pipe existence with dummy pipe to ensure we can catch absence.
     let output = Command::new("powershell.exe")
         .arg("-Command")
-        .arg("if (Test-Path '\\\\.\\pipe\\rat_missing_dummy') { (Get-Acl -Path '\\\\.\\pipe\\rat_missing_dummy').AccessToString } else { exit 1 }")
+        .arg("if (Test-Path '\\\\.\\pipe\\rat_missing_dummy') { (Get-Acl -Path '\\\\.\\pipe\\rat_missing_dummy').AccessToString } else { throw 'nope' }")
         .output().unwrap();
     assert!(
         !output.status.success(),
@@ -105,7 +115,7 @@ pub fn run_w4() {
     // Check pipe existence. If the pipe is absent, Get-Acl will error.
     let output = Command::new("powershell.exe")
         .arg("-Command")
-        .arg("if (Test-Path '\\\\.\\pipe\\rat') { (Get-Acl -Path '\\\\.\\pipe\\rat').AccessToString } else { exit 1 }")
+        .arg("if (Test-Path '\\\\.\\pipe\\rat') { (Get-Acl -Path '\\\\.\\pipe\\rat').AccessToString } else { throw 'nope' }")
         .output().unwrap();
 
     assert!(
@@ -169,6 +179,7 @@ pub fn run_w4() {
         .output()
         .unwrap();
     assert!(out.status.success(), "W4 Failed: sc start 2 failed");
+
     wait_for_service_state("RUNNING");
 
     // Verify stale rules are gone

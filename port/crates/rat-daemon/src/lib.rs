@@ -20,22 +20,52 @@ use rat_types::ConnectionSource;
 pub async fn run_components(
     endpoint: String,
     source: impl ConnectionSource + Send + 'static,
-    backend: impl EnforcementBackend + 'static,
+    mut backend: impl EnforcementBackend + 'static,
+    rules_path: std::path::PathBuf,
     shutdown_rx: tokio::sync::broadcast::Receiver<()>,
 ) -> std::io::Result<()> {
-    // #8 obligation: remove the rules a crashed predecessor left behind
-    // BEFORE the first apply, so startup never duplicates or trusts stale
-    // state. Best-effort: a failure here (no admin yet, nft absent) must not
-    // keep the monitor from running — systemd/SCM Restart=on-failure covers
-    // repeated failures, and the first apply retries the same diff.
-    if let Err(e) = backend.cleanup() {
-        eprintln!("rat-daemon: startup cleanup failed: {e}");
+    // The saved plan (Swift RulesModel parity): rules survive restarts and
+    // are the anchor the reconcile below diffs against.
+    let store = std::sync::Arc::new(rat_core::RuleStore::new(rules_path));
+    let (engine, loaded) = match store.load_set() {
+        Ok(set) => {
+            let count = set.rules.len();
+            (rat_core::RuleEngine::with_rule_set(set), count)
+        }
+        Err(e) => {
+            eprintln!("rat-daemon: rules file unreadable ({e}); starting with defaults");
+            (rat_core::RuleEngine::new(), 0)
+        }
+    };
+    let policy = RuleEnginePolicy(engine);
+
+    // R2/e2e-01 (macOS parity: repair-at-restart, Enforcer.swift:110-111):
+    // RECONCILE, never wipe-then-apply. A cleanup() here would drop wanted
+    // rules and leave a fail-open window until the first re-add. Instead:
+    // read back what is really in the firewall, adopt it as the backend's
+    // view of current state, then make the saved plan's anchor effective —
+    // the backend's diff removes only the stale extras and adds what is
+    // missing; a wanted rule is never deleted. Foreign rules are never
+    // touched: existing() lists only this daemon's own prefixed rules. All
+    // of this happens BEFORE the IPC endpoint is created below, so no
+    // client is ever served against unrepaired state. Failures are
+    // best-effort: a daemon that cannot read the firewall still serves, and
+    // the pipeline's first tick re-attempts the diff.
+    match backend.existing() {
+        Ok(found) => backend.adopt(found),
+        Err(e) => {
+            eprintln!("rat-daemon: firewall read-back failed ({e}); reconciling from an empty view")
+        }
     }
+    let anchor = core::static_blocklist(&policy.0.all_rules());
+    if let Err(e) = backend.enforce(&anchor) {
+        eprintln!("rat-daemon: startup reconcile enforce failed: {e} (first tick retries)");
+    }
+    eprintln!("rat-daemon: {loaded} rules loaded, startup reconcile done");
 
     let (snapshot_tx, snapshot_rx) = tokio::sync::broadcast::channel(16);
     let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
 
-    let policy = RuleEnginePolicy(rat_core::RuleEngine::new());
     let ledger = Ledger::new(LedgerConfig::default(), AlertCenterConfig::default());
 
     let shutdown_core = shutdown_rx.resubscribe();
@@ -47,6 +77,7 @@ pub async fn run_components(
         policy,
         ledger,
         backend,
+        store,
         command_rx,
         snapshot_tx.clone(),
         shutdown_core,
@@ -83,8 +114,19 @@ pub async fn run_components(
             Err(e)
         }
         None => {
-            let _ = ipc_task.await;
-            let _ = core_task.await;
+            // The select above may have exited through one of the task arms,
+            // in which case that JoinHandle's output is already consumed and
+            // re-polling it panics ("JoinHandle polled after completion",
+            // reproduced 2026-10-25 with the multi-thread reconcile test).
+            // Reap only a task that has not finished; a finished one whose
+            // output the select took is left to the runtime reaper, and a
+            // finished one the select never got to has no one waiting on it.
+            if !ipc_task.is_finished() {
+                let _ = ipc_task.await;
+            }
+            if !core_task.is_finished() {
+                let _ = core_task.await;
+            }
             Ok(())
         }
     }
@@ -97,13 +139,46 @@ pub async fn run_daemon(shutdown_rx: tokio::sync::broadcast::Receiver<()>) -> st
     {
         let source = rat_monitor_windows::WindowsMonitor::new();
         let backend = core::WindowsBackend::new();
-        run_components(ipc::PIPE_NAME.to_string(), source, backend, shutdown_rx).await
+        run_components(
+            ipc::PIPE_NAME.to_string(),
+            source,
+            backend,
+            default_rules_path(),
+            shutdown_rx,
+        )
+        .await
     }
     #[cfg(not(windows))]
     {
         let source = rat_monitor_linux::LinuxMonitor::new(std::path::PathBuf::from("/proc"));
         let backend = core::LinuxBackend::new();
-        run_components(ipc::SOCKET_PATH.to_string(), source, backend, shutdown_rx).await
+        run_components(
+            ipc::SOCKET_PATH.to_string(),
+            source,
+            backend,
+            default_rules_path(),
+            shutdown_rx,
+        )
+        .await
+    }
+}
+
+/// Where the daemon persists its rule set (Swift RulesModel parity: the rules
+/// survive a restart and are the saved plan the startup reconcile diffs
+/// against). `RAT_RULES_FILE` overrides for tests and non-service installs;
+/// the service runs as SYSTEM, so the machine-wide ProgramData / etc location
+/// is the right home — per-user state would be invisible to it.
+pub fn default_rules_path() -> std::path::PathBuf {
+    if let Some(p) = std::env::var_os("RAT_RULES_FILE") {
+        return std::path::PathBuf::from(p);
+    }
+    if cfg!(windows) {
+        let program_data = std::env::var_os("ProgramData")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\ProgramData"));
+        program_data.join("rat").join("rules.json")
+    } else {
+        std::path::PathBuf::from("/etc/rat/rules.json")
     }
 }
 

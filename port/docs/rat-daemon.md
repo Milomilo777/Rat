@@ -17,11 +17,16 @@ The main components are:
   sample whenever a command arrives so SetRules/AlertAnswer take effect immediately.
 * `rat_daemon::core::Command`: what IPC clients may ask the pipeline to do (`SetRules`, `AlertAnswer`).
 * `rat_daemon::core::{EnforcementBackend, WindowsBackend, LinuxBackend}`: the enforcer seam — netsh advfirewall
-  per-program rules on Windows (ADR 0001 as amended), the whole `inet rat` nft table on Linux.
+  per-program rules plus per-port rules for the denied sockets' local ports (`Rat:port:<n>`, review-01 R5) on
+  Windows, the whole `inet rat` nft table on Linux.
 * `rat_daemon::ipc::start_ipc_server`: asynchronous IPC listener handling framed JSON lines.
-* `rat_daemon::run_components`: daemon shell — startup `cleanup()` (#8), then pipeline + IPC until shutdown
-  (shutdown `cleanup()` best-effort). `run_daemon` is the production wiring; `run_cleanup` backs the uninstall
-  path (`rat-daemon --cleanup`).
+* `rat_daemon::run_components`: daemon shell — loads the saved rule set (`rat_core::RuleStore`, `RAT_RULES_FILE`
+  or `%ProgramData%\rat\rules.json` / `/etc/rat/rules.json`), RECONCILES the firewall at startup (read back the
+  daemon's own `Rat:path:*` and `Rat:port:*` rules, adopt them as the diff baseline, enforce the saved plan's
+  static anchor — never wipe-then-apply, review-01 R2 / e2e-01) all BEFORE the IPC endpoint serves, then pipeline
+  + IPC until shutdown. A clean stop KEEPS the rules (macOS persistent-anchor parity, review-01 R3): enforcement
+  stays active while the daemon is down and the next startup reconciles. `run_daemon` is the production wiring;
+  `run_cleanup` backs the uninstall path (`rat-daemon --cleanup`), the ONLY full removal (both rule families).
 
 ## IPC protocol (v1)
 
@@ -121,7 +126,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   country are not filled yet — the details closure only wires the std-only parts (well-known service names from
   rat-names, shared-service-host classification). rDNS needs an async resolver with a cache, not a blocking
   lookup inside the pipeline.
-* The rule set is not persisted by the daemon; persistence stays with the GUI/its store (SetRules installs
-  whatever the client sends at startup).
+* The rule set IS persisted daemon-side now (review-01 R1/e2e-01): every SetRules/AlertAnswer-created rule is
+  written back to the store (`save_set` keeps Forever rules only — UntilQuit session rules die with the daemon),
+  reloaded at the next startup, and its static anchor is reconciled into the firewall before the IPC serves.
+  The GUI no longer has to re-send the rules at startup (it still may: SetRules is authoritative when it does).
+  Note: the store's parent directory (`%ProgramData%\rat` / `/etc/rat`) must exist — the installer creates it;
+  a failed save is logged and retried on the next change, never fatal.
 * IPC drops clients that lag too much instead of buffering infinitely.
 * Malformed JSON messages are rejected with an `Error` response but won't cause the server to crash.

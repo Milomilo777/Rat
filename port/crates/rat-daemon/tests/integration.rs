@@ -382,12 +382,16 @@ async fn run_snapshot_pipeline(endpoint: &str) {
     let policy = rat_ledger::RuleEnginePolicy(rat_core::RuleEngine::new());
     let ledger = rat_ledger::Ledger::new(Default::default(), Default::default());
     let backend = NoopBackend;
+    let store = std::sync::Arc::new(rat_core::RuleStore::new(std::env::temp_dir().join(
+        format!("rat_it_snapshot_{}_{}.json", std::process::id(), line!()),
+    )));
 
     let _core_task = tokio::spawn(rat_daemon::core::run_pipeline(
         source,
         policy,
         ledger,
         backend,
+        store,
         cmd_rx,
         snapshot_tx,
         shutdown_rx,
@@ -483,6 +487,12 @@ impl rat_daemon::core::EnforcementBackend for NoopBackend {
     fn cleanup(&self) -> std::io::Result<()> {
         Ok(())
     }
+
+    fn existing(&self) -> std::io::Result<rat_enforcer::Blocklist> {
+        Ok(rat_enforcer::Blocklist::default())
+    }
+
+    fn adopt(&mut self, _existing: rat_enforcer::Blocklist) {}
 
     fn enforce(
         &mut self,

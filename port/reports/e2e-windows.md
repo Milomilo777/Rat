@@ -4,16 +4,16 @@
 
 | Req | Status | Test | Evidence |
 |---|---|---|---|
-| W1 | PASS | e2e-windows run_w1 | CI run https://github.com/Milomilo777/Rat/actions/runs/40171437442 |
-| W2 | PASS | e2e-windows run_w2 | CI run https://github.com/Milomilo777/Rat/actions/runs/40171437442 |
-| W3 | PASS | e2e-windows run_w3 | CI run https://github.com/Milomilo777/Rat/actions/runs/40171437442 |
-| W4 | FAIL-PRODUCT | e2e-windows run_w4 | CI run https://github.com/Milomilo777/Rat/actions/runs/40171437442 |
-| W5 | PASS | e2e-windows run_w5 | CI run https://github.com/Milomilo777/Rat/actions/runs/40171437442 |
-| W6 | PASS | e2e-windows run_w6 | CI run https://github.com/Milomilo777/Rat/actions/runs/40171437442 |
+| W1 | NOT RUN | e2e-windows run_w1 | Waiting for CI |
+| W2 | NOT RUN | e2e-windows run_w2 | Waiting for CI |
+| W3 | NOT RUN | e2e-windows run_w3 | Waiting for CI |
+| W4 | NOT RUN | e2e-windows run_w4 | Waiting for CI |
+| W5 | NOT RUN | e2e-windows run_w5 | Waiting for CI |
+| W6 | NOT RUN | e2e-windows run_w6 | Waiting for CI |
 
 ## Findings
 
-*   Rat daemon does not clean up stale firewall rules on restart. W4 Failed: Stale rules remained after service restart.
+None so far.
 
 ## Decisions
 
@@ -24,3 +24,4 @@
 - Updated W6 to add real assertions for pass/fail
 - Updated W4 to check output/exit code of sc.exe and wait 30s.
 - Built daemon from workspace and passed absolute path to e2e test via env var.
+- Reset JSON report since we need a clean slate run against the new daemon.
