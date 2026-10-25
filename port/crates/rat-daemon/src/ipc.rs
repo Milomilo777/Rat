@@ -6,6 +6,45 @@ pub const SOCKET_PATH: &str = "/run/rat/rat.sock";
 pub const PIPE_NAME: &str = r"\\.\pipe\rat";
 
 #[cfg(unix)]
+fn effective_uid() -> u32 {
+    // std has no geteuid(); /proc/self/status exposes it without a libc dep.
+    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+        for line in status.lines() {
+            if let Some(rest) = line.strip_prefix("Uid:\t") {
+                if let Some(uid) = rest.split_whitespace().nth(1).and_then(|e| e.parse().ok()) {
+                    return uid;
+                }
+            }
+        }
+    }
+    u32::MAX
+}
+
+#[cfg(unix)]
+fn rat_group_gid() -> Option<u32> {
+    let group = std::env::var("RAT_IPC_GROUP").unwrap_or_else(|_| "rat".to_string());
+    let content = std::fs::read_to_string("/etc/group").ok()?;
+    for line in content.lines() {
+        let mut fields = line.split(':');
+        if fields.next() == Some(group.as_str()) {
+            // group:password:gid:... — the third field is the GID
+            if let Some(gid) = fields.nth(1).and_then(|g| g.parse().ok()) {
+                return Some(gid);
+            }
+        }
+    }
+    None
+}
+
+/// S2 (update-08): who may talk to the privileged daemon over the unix
+/// socket — root, the daemon's own user, or a member of the `rat` group
+/// (primary gid; override the group name with RAT_IPC_GROUP).
+#[cfg(unix)]
+fn peer_allowed(uid: u32, gid: u32) -> bool {
+    uid == 0 || uid == effective_uid() || rat_group_gid().is_some_and(|g| g == gid)
+}
+
+#[cfg(unix)]
 pub async fn start_ipc_server(
     socket_path: &str,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
@@ -46,6 +85,15 @@ pub async fn start_ipc_server(
             res = listener.accept() => {
                 match res {
                     Ok((stream, _)) => {
+                        // S2 (update-08): drop connections from peers that are
+                        // neither root, us, nor in the rat group.
+                        let allowed = stream
+                            .peer_cred()
+                            .ok()
+                            .is_some_and(|c| peer_allowed(c.uid(), c.gid()));
+                        if !allowed {
+                            continue;
+                        }
                         let snap_rx = snapshot_rx.resubscribe();
                         tokio::spawn(async move {
                             handle_connection(stream, snap_rx).await;
@@ -95,6 +143,11 @@ pub async fn start_ipc_server(
     use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
     use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorA;
 
+    // S2 (update-08): no per-client identity check on Windows. The pipe is
+    // deliberately open to Interactive Users for the GUI; they hold only
+    // read/write (PIPE_SDDL, S1) and cannot create instances or change the
+    // DACL. A token check can be added with GetNamedPipeClientProcessId when
+    // the GUI/daemon handshake (PROPOSALS) lands.
     const SDDL_REVISION_1: u32 = 1;
 
     let sd_val = {
@@ -252,6 +305,40 @@ mod sddl_tests {
         assert!(
             !iu.contains("GA"),
             "Interactive Users must not get GENERIC_ALL: {iu}"
+        );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod peer_tests {
+    use super::{effective_uid, peer_allowed};
+
+    // S2 (update-08): root and the daemon's own user are always allowed;
+    // anyone else only via the rat group's gid.
+    #[test]
+    fn test_peer_allowed_root_and_self() {
+        assert!(peer_allowed(0, 9999), "root must always be allowed");
+        let self_uid = effective_uid();
+        assert_ne!(self_uid, u32::MAX, "could not read /proc/self/status");
+        assert!(
+            peer_allowed(self_uid, 9999),
+            "the daemon's own uid must be allowed"
+        );
+    }
+
+    #[test]
+    fn test_peer_allowed_rejects_strangers() {
+        let stranger = effective_uid().wrapping_add(1);
+        // gid 9999 is not a group we recognize as ours in the test environment;
+        // if it somehow is, pick another.
+        let gid = if super::rat_group_gid() == Some(9999) {
+            9998
+        } else {
+            9999
+        };
+        assert!(
+            !peer_allowed(stranger, gid),
+            "uid {stranger} with unrelated gid {gid} must be refused"
         );
     }
 }
