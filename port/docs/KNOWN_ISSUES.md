@@ -72,6 +72,10 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
 - The app waits for the write of a rule change or an alert answer to the daemon, not for the daemon to apply it.
   A closed alert window is reopened with the next snapshot until the alert is answered.
 - The rule form takes a full program path; a bare name such as `firefox` does not match.
+- The alert window can re-render while the pointer is over it, so a click may land on an alert that was just
+  replaced (low). The daemon rejects an answer for an alert that no longer exists, so no wrong rule is created.
+- A rule's `approved` and `enabled` flags are not shown in the app (low); the app keeps their values when it sends
+  the rules back.
 - The app's connection to a real daemon is covered by unit tests against an in-memory daemon, not yet by the
   real-OS end-to-end suites; the browser-based accessibility (axe) checks were not re-run for the new rule form
   and banner.
