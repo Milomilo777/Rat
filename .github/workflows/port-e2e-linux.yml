@@ -2,7 +2,10 @@ name: Port E2E Linux
 
 on:
   push:
-    branches: ['e2e/linux-v1']
+    branches: [main, 'v1/**', 'e2e/**']
+    paths: ['port/**', '.github/workflows/port-e2e-linux.yml']
+  pull_request:
+    paths: ['port/**', '.github/workflows/port-e2e-linux.yml']
   workflow_dispatch:
 
 permissions:

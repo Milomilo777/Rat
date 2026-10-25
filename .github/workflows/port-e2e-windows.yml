@@ -1,8 +1,10 @@
 name: Port E2E Windows
 on:
   push:
-    branches:
-      - 'e2e/windows-v1'
+    branches: [main, 'v1/**', 'e2e/**']
+    paths: ['port/**', '.github/workflows/port-e2e-windows.yml']
+  pull_request:
+    paths: ['port/**', '.github/workflows/port-e2e-windows.yml']
   workflow_dispatch:
 
 jobs:
