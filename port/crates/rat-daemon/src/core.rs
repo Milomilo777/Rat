@@ -29,6 +29,17 @@ pub enum Command {
     },
     /// Broadcast the current rule set as `ServerMessage::Rules`.
     GetRules,
+    /// Incremental edit: add one rule (or replace the rule with the same
+    /// id), keeping every other rule — the whole-list replace stays
+    /// `SetRules`. Boxed like the wire type (serde shape is unchanged).
+    AddRule {
+        rule: Box<rat_core::Rule>,
+    },
+    /// Incremental edit: remove one rule by id. An unknown id is logged and
+    /// changes nothing.
+    RemoveRule {
+        id: uuid::Uuid,
+    },
 }
 
 /// What [`EnforcementBackend::enforce`] did.
@@ -453,7 +464,6 @@ pub async fn run_pipeline(
     let mut next_alert_id: u64 = 0;
     let mut current_alert_id: Option<u64> = None;
     let mut sent_alert_key: Option<String> = None;
-
     loop {
         tokio::select! {
             _ = shutdown.recv() => {
@@ -512,6 +522,27 @@ pub async fn run_pipeline(
                                     let _ = snapshot_tx.send(ServerMessage::Rules {
                                         rules: policy.0.rule_set().rules,
                                     });
+                                }
+                                Command::AddRule { rule } => {
+                                    // Incremental edit: upsert by id, every
+                                    // other rule keeps its place. Saved like
+                                    // SetRules; an identical re-delivery
+                                    // (client retry) changes nothing and
+                                    // skips the write.
+                                    if policy.0.upsert(*rule) {
+                                        persist_rules(&store, &policy);
+                                    }
+                                }
+                                Command::RemoveRule { id } => {
+                                    // A stale id (rule already gone) is
+                                    // reported, not silently swallowed.
+                                    if policy.0.remove(id) {
+                                        persist_rules(&store, &policy);
+                                    } else {
+                                        eprintln!(
+                                            "rat-daemon: ignoring RemoveRule for unknown rule id {id}"
+                                        );
+                                    }
                                 }
                             }
                         }

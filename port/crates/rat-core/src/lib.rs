@@ -667,8 +667,33 @@ impl RuleEngine {
         self.set.lock().unwrap().rules.push(rule);
     }
 
-    pub fn remove(&self, id: Uuid) {
-        self.set.lock().unwrap().rules.retain(|r| r.id != id);
+    /// Add `rule`, or replace the existing rule with the same id. An
+    /// incremental edit must stay correct under a client retry, so the same
+    /// id can never end up twice. Returns whether the set changed.
+    pub fn upsert(&self, rule: Rule) -> bool {
+        let mut s = self.set.lock().unwrap();
+        match s.rules.iter().position(|r| r.id == rule.id) {
+            Some(i) => {
+                if s.rules[i] == rule {
+                    return false;
+                }
+                s.rules[i] = rule;
+                true
+            }
+            None => {
+                s.rules.push(rule);
+                true
+            }
+        }
+    }
+
+    /// Remove the rule with `id`. Returns whether a rule was removed, so a
+    /// caller can tell an edit from a stale id.
+    pub fn remove(&self, id: Uuid) -> bool {
+        let mut s = self.set.lock().unwrap();
+        let before = s.rules.len();
+        s.rules.retain(|r| r.id != id);
+        before != s.rules.len()
     }
 
     pub fn matching_rule(&self, c: &AppConnection) -> Option<Rule> {
@@ -948,6 +973,37 @@ mod tests {
             RuleEngine::new().evaluate(&conn("a.com", 443)),
             Verdict::Ask
         );
+    }
+
+    // An incremental edit (AddRule over IPC) upserts: same id replaces,
+    // never duplicates; an identical re-delivery reports no change.
+    #[test]
+    fn test_upsert_adds_then_replaces_same_id() {
+        let e = RuleEngine::new();
+        let mut r = new_rule();
+        r.process_path = Some("/bin/a".to_string());
+        assert!(e.upsert(r.clone()));
+        let mut edited = r.clone();
+        edited.verdict = Verdict::Allow;
+        assert!(e.upsert(edited.clone()));
+        let all = e.all_rules();
+        assert_eq!(all.len(), 1, "same id must replace, not duplicate");
+        assert_eq!(all[0].verdict, Verdict::Allow);
+        assert!(!e.upsert(edited), "identical rule reports no change");
+    }
+
+    // RemoveRule over IPC must be able to tell an edit from a stale id.
+    #[test]
+    fn test_remove_reports_whether_a_rule_was_removed() {
+        let e = RuleEngine::new();
+        let r = new_rule();
+        assert!(e.upsert(r.clone()));
+        assert!(e.remove(r.id));
+        assert!(
+            !e.remove(r.id),
+            "second remove of the same id removed nothing"
+        );
+        assert!(e.all_rules().is_empty());
     }
 
     #[test]

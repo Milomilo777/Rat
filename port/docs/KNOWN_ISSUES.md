@@ -29,9 +29,10 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
   tick; a new allowed app that reuses the same ephemeral port can be blocked meanwhile (also seen on Linux, E2E L4).
 
 ## Daemon and IPC (`rat-daemon`)
-- **Rule edits replace the whole list (medium).** The app reads the rules with `GetRules`, changes the list and
-  sends it back with `SetRules`; a rule the daemon creates in between (for example from an alert answer) can be
-  overwritten. Incremental add/remove messages would fix this.
+- **Whole-list replace remains (low).** `SetRules` still replaces the daemon's whole rule set; a client that
+  uses it (the desktop app still does for single edits) can overwrite a rule the daemon created in between. Single-rule
+  edits go through `AddRule` / `RemoveRule`. A daemon older than this change closes the connection on those
+  messages (unknown variant), so app and daemon must be updated together.
 - **IPC access (medium, Windows).** The named pipe admits only elevated administrators and SYSTEM, so the desktop
   app must run elevated.
 - **No installer or uninstaller (medium).** The service is installed by hand (see the install guides). Rules and

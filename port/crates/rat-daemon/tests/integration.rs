@@ -350,6 +350,134 @@ async fn test_get_rules_is_forwarded_and_the_reply_delivered() {
     let _ = shutdown_tx.send(());
 }
 
+// A3, red-first: an incremental rule edit (`AddRule`) sent as a RAW line —
+// exactly what an external client that cannot use this crate's enum (the
+// TypeScript app) writes on the wire. It must be a legal client message:
+// the command is forwarded and the connection keeps serving (the `GetRules`
+// right after it is forwarded too). On the pre-fix protocol the line is an
+// unknown variant — "Invalid JSON" + close — so nothing is ever forwarded.
+#[tokio::test]
+async fn test_incremental_rule_edit_raw_line_is_accepted() {
+    let (endpoint, _snapshot_tx, shutdown_tx, mut cmd_rx) =
+        spawn_server_with_commands("add_rule_raw").await;
+    let (r, w) = tokio::io::split(connect_ep(&endpoint).await);
+    let mut reader = FramedRead::new(r, LinesCodec::new());
+    let mut writer = FramedWrite::new(w, LinesCodec::new());
+    send_client(
+        &mut writer,
+        &ClientMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    )
+    .await;
+    assert!(matches!(
+        read_server(&mut reader, READ_TIMEOUT).await,
+        Some(ServerMessage::HelloAck { .. })
+    ));
+
+    {
+        use futures::SinkExt;
+        writer
+            .send(r#"{"AddRule":{"rule":{"id":"6ec0bd7f-11d0-4c7d-a9bf-96f16b1c3f2c","verdict":"deny","processPath":"/bin/added"}}}"#.to_string())
+            .await
+            .expect("write raw AddRule line");
+    }
+    send_client(&mut writer, &ClientMessage::GetRules).await;
+
+    let first = tokio::time::timeout(READ_TIMEOUT, cmd_rx.recv())
+        .await
+        .expect("no command forwarded: the AddRule line was rejected")
+        .expect("command channel closed");
+    // The first forwarded command is the AddRule (not the GetRules behind
+    // it); its exact shape is pinned by the typed forwarding test.
+    assert!(
+        !matches!(first, rat_daemon::core::Command::GetRules),
+        "the raw AddRule line must forward a command of its own"
+    );
+    let second = tokio::time::timeout(READ_TIMEOUT, cmd_rx.recv())
+        .await
+        .expect("connection stopped serving after the AddRule line")
+        .expect("command channel closed");
+    assert_eq!(second, rat_daemon::core::Command::GetRules);
+    let _ = shutdown_tx.send(());
+}
+
+// The incremental edits cross the IPC layer as pipeline commands with
+// their payloads intact (rule for AddRule, bare id for RemoveRule), and the
+// connection keeps serving afterwards.
+#[tokio::test]
+async fn test_add_rule_and_remove_rule_are_forwarded() {
+    let (endpoint, _snapshot_tx, shutdown_tx, mut cmd_rx) =
+        spawn_server_with_commands("add_remove_rules").await;
+    let (r, w) = tokio::io::split(connect_ep(&endpoint).await);
+    let mut reader = FramedRead::new(r, LinesCodec::new());
+    let mut writer = FramedWrite::new(w, LinesCodec::new());
+    send_client(
+        &mut writer,
+        &ClientMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    )
+    .await;
+    assert!(matches!(
+        read_server(&mut reader, READ_TIMEOUT).await,
+        Some(ServerMessage::HelloAck { .. })
+    ));
+
+    let rule = serde_json::from_str::<rat_core::Rule>(
+        r#"{"id":"6ec0bd7f-11d0-4c7d-a9bf-96f16b1c3f2c","verdict":"deny","processPath":"/bin/added"}"#,
+    )
+    .expect("rule json decodes");
+    send_client(
+        &mut writer,
+        &ClientMessage::AddRule {
+            rule: Box::new(rule.clone()),
+        },
+    )
+    .await;
+    assert_eq!(
+        tokio::time::timeout(READ_TIMEOUT, cmd_rx.recv())
+            .await
+            .expect("AddRule forwarded")
+            .expect("command channel closed"),
+        rat_daemon::core::Command::AddRule {
+            rule: Box::new(rule),
+        }
+    );
+
+    send_client(
+        &mut writer,
+        &ClientMessage::RemoveRule {
+            id: "6ec0bd7f-11d0-4c7d-a9bf-96f16b1c3f2c"
+                .parse()
+                .expect("uuid"),
+        },
+    )
+    .await;
+    assert_eq!(
+        tokio::time::timeout(READ_TIMEOUT, cmd_rx.recv())
+            .await
+            .expect("RemoveRule forwarded")
+            .expect("command channel closed"),
+        rat_daemon::core::Command::RemoveRule {
+            id: "6ec0bd7f-11d0-4c7d-a9bf-96f16b1c3f2c"
+                .parse()
+                .expect("uuid"),
+        }
+    );
+
+    // The connection survived both edits and still serves.
+    send_client(&mut writer, &ClientMessage::GetRules).await;
+    assert_eq!(
+        tokio::time::timeout(READ_TIMEOUT, cmd_rx.recv())
+            .await
+            .expect("connection still serving")
+            .expect("command channel closed"),
+        rat_daemon::core::Command::GetRules
+    );
+    let _ = shutdown_tx.send(());
+}
+
 #[tokio::test]
 async fn test_hello_ack() {
     let (endpoint, _snapshot_tx, shutdown_tx) = spawn_server("hello_ack").await;

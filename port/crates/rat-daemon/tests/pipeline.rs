@@ -1086,6 +1086,119 @@ async fn test_get_rules_answers_the_current_in_memory_set() {
         .unwrap();
 }
 
+// A3: AddRule/RemoveRule edit the set INCREMENTALLY — the rules around an
+// edit keep their place (the pre-fix client move was a whole-list SetRules
+// per edit) — and the edited set persists like SetRules. A stale RemoveRule
+// id is ignored without touching the set.
+#[tokio::test]
+async fn test_add_and_remove_rule_edit_the_set_incrementally_and_persist() {
+    let app = test_app();
+    let added_path = if cfg!(windows) {
+        r"C:\added\tool.exe"
+    } else {
+        "/usr/bin/added"
+    };
+    let store = dummy_store();
+    let store_path = store.url.clone();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let (snapshot_tx, mut rx) = tokio::sync::broadcast::channel(64);
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY);
+
+    let keep = deny_rule(app);
+    let added = deny_rule(added_path);
+
+    let policy = RuleEnginePolicy(rat_core::RuleEngine::new());
+    let ledger = Ledger::new(LedgerConfig { warmup_ms: 0 }, AlertCenterConfig::default());
+    let recorder = RecorderBackend::default();
+    let task = tokio::spawn(rat_daemon::core::run_pipeline(
+        ScriptedSource { conns: vec![] },
+        policy,
+        ledger,
+        recorder.clone(),
+        store,
+        cmd_rx,
+        snapshot_tx,
+        shutdown_rx,
+    ));
+
+    async fn rules_now(rx: &mut tokio::sync::broadcast::Receiver<ServerMessage>) -> Vec<Rule> {
+        wait_for_msg(rx, |m| match m {
+            ServerMessage::Rules { rules } => Some(rules),
+            _ => None,
+        })
+        .await
+    }
+
+    cmd_tx
+        .send(Command::SetRules {
+            rules: vec![keep.clone()],
+        })
+        .await
+        .unwrap();
+    cmd_tx.send(Command::GetRules).await.unwrap();
+    let first = rules_now(&mut rx).await;
+    assert_eq!(first, vec![keep.clone()], "seed via SetRules");
+
+    // The incremental add keeps the seeded rule and lands its own.
+    cmd_tx
+        .send(Command::AddRule {
+            rule: Box::new(added.clone()),
+        })
+        .await
+        .unwrap();
+    cmd_tx.send(Command::GetRules).await.unwrap();
+    let second = rules_now(&mut rx).await;
+    assert_eq!(
+        second,
+        vec![keep.clone(), added.clone()],
+        "AddRule must edit the list, not replace it"
+    );
+    // The added unscoped deny is enforced as part of the static anchor
+    // without waiting for a connection sample.
+    wait_until(Duration::from_secs(5), || {
+        recorder
+            .last_enforced()
+            .is_some_and(|b| b.paths.iter().any(|p| p == added_path))
+    })
+    .await;
+
+    // Remove one rule: only that rule goes.
+    cmd_tx
+        .send(Command::RemoveRule { id: keep.id })
+        .await
+        .unwrap();
+    cmd_tx.send(Command::GetRules).await.unwrap();
+    let third = rules_now(&mut rx).await;
+    assert_eq!(
+        third,
+        vec![added.clone()],
+        "RemoveRule takes exactly one rule"
+    );
+
+    // A stale id changes nothing (and must not wedge the pipeline).
+    cmd_tx
+        .send(Command::RemoveRule { id: Uuid::new_v4() })
+        .await
+        .unwrap();
+    cmd_tx.send(Command::GetRules).await.unwrap();
+    let fourth = rules_now(&mut rx).await;
+    assert_eq!(
+        fourth,
+        vec![added.clone()],
+        "stale RemoveRule id is a no-op"
+    );
+
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("pipeline must end on shutdown")
+        .unwrap();
+
+    // Persisted like SetRules: exactly the surviving rule is on disk.
+    let loaded = RuleStore::new(store_path).load().expect("rules were saved");
+    assert_eq!(loaded, vec![added], "exactly the surviving rule persists");
+}
+
 // The daemon tells clients when the alert it asked about is gone, so the app
 // can keep a local alert until the daemon confirms it was handled.
 #[tokio::test]

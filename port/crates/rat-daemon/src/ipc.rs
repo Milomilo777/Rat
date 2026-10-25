@@ -772,6 +772,22 @@ async fn handle_connection<S>(
                             Ok(ClientMessage::GetRules) => {
                                 forward_command(&commands, &mut writer, Command::GetRules).await;
                             }
+                            Ok(ClientMessage::AddRule { rule }) => {
+                                forward_command(
+                                    &commands,
+                                    &mut writer,
+                                    Command::AddRule { rule },
+                                )
+                                .await;
+                            }
+                            Ok(ClientMessage::RemoveRule { id }) => {
+                                forward_command(
+                                    &commands,
+                                    &mut writer,
+                                    Command::RemoveRule { id },
+                                )
+                                .await;
+                            }
                             Ok(ClientMessage::AlertAnswer { id, verdict, scope, lifetime }) => {
                                 forward_command(
                                     &commands,
