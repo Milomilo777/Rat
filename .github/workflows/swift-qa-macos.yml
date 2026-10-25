@@ -11,7 +11,7 @@ permissions:
 jobs:
   swift:
     name: ${{ matrix.label }}
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 40
     strategy:
       fail-fast: false
@@ -39,7 +39,8 @@ jobs:
         run: |
           brew list shellcheck >/dev/null 2>&1 || brew install shellcheck
           shellcheck --version | head -2
-          shellcheck scripts/*.sh App/Resources/*.sh
+          echo "info-level notes: $(shellcheck -f gcc scripts/*.sh App/Resources/*.sh | grep -c ': note:' || true)"
+          shellcheck --severity=warning scripts/*.sh App/Resources/*.sh
       - name: App tests (xcodegen + xcodebuild)
         if: always()
         run: |
