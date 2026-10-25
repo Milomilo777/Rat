@@ -46,8 +46,8 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
 - **First tick (low).** If the first connection sample fails, static rules are enforced only after a later
   successful sample or a GUI command.
 - **Read-back order (low).** Paths read back from existing firewall rules at startup are not sorted/deduplicated.
-- **Untested hardening.** Task-death exit + backoff and reply-then-close on oversized messages are implemented but
-  have no test that fails when they are removed; the Unix peer check relies on platform tests.
+- **Untested hardening (low).** The pause after a failed accept is tested on its own helper, not on a real accept
+  error (none can be provoked); the Unix peer check relies on platform tests.
 
 ## Monitoring (`rat-monitor-*`)
 - **Linux byte counters (low).** Per-connection byte counts on Linux come from the kernel's `sock_diag` and

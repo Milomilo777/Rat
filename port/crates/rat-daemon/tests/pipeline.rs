@@ -1274,3 +1274,77 @@ async fn test_requeued_alert_with_the_same_key_is_broadcast_again() {
         .expect("pipeline must end on shutdown")
         .unwrap();
 }
+
+/// A monitor that dies on its first sample, killing the pipeline task.
+struct PanicSource;
+
+impl ConnectionSource for PanicSource {
+    fn sample(&mut self) -> io::Result<Vec<Connection>> {
+        panic!("injected monitor death");
+    }
+}
+
+// Task death must end the daemon with an error (so the service manager
+// restarts it) instead of leaving a half-dead process that still answers IPC
+// but enforces nothing.
+#[tokio::test]
+async fn test_pipeline_task_death_ends_the_daemon_with_an_error() {
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        rat_daemon::run_components(
+            test_endpoint("coredeath"),
+            PanicSource,
+            RecorderBackend::default(),
+            temp_rules_path("coredeath"),
+            tokio::sync::broadcast::channel(1).1,
+        ),
+    )
+    .await
+    .expect("a dead pipeline must end the daemon, not leave it running");
+    let err = result.expect_err("a pipeline that died on its own is a failure");
+    assert!(
+        err.to_string().contains("core pipeline exited"),
+        "unexpected error: {err}"
+    );
+}
+
+// The same for the IPC side: when the endpoint cannot be claimed (a live
+// daemon owns it) run_components returns the error instead of running
+// headless.
+#[tokio::test]
+async fn test_ipc_task_death_ends_the_daemon_with_an_error() {
+    let endpoint = test_endpoint("ipcdeath");
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let first = tokio::spawn(rat_daemon::run_components(
+        endpoint.clone(),
+        ScriptedSource { conns: vec![] },
+        RecorderBackend::default(),
+        temp_rules_path("ipcdeath1"),
+        shutdown_rx,
+    ));
+    wait_until(Duration::from_secs(10), || endpoint_serving(&endpoint)).await;
+
+    let second = tokio::time::timeout(
+        Duration::from_secs(10),
+        rat_daemon::run_components(
+            endpoint.clone(),
+            ScriptedSource { conns: vec![] },
+            RecorderBackend::default(),
+            temp_rules_path("ipcdeath2"),
+            tokio::sync::broadcast::channel(1).1,
+        ),
+    )
+    .await
+    .expect("a daemon that cannot claim the endpoint must exit, not hang");
+    assert!(
+        second.is_err(),
+        "the second daemon must fail, got {second:?}"
+    );
+
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), first)
+        .await
+        .expect("the first daemon must end on shutdown")
+        .unwrap()
+        .unwrap();
+}

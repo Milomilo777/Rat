@@ -1285,3 +1285,46 @@ async fn test_late_client_receives_the_active_alert_after_the_handshake() {
 
     let _ = shutdown_tx.send(());
 }
+
+// Reply-then-close: a client that sends an oversized line, or a line that is
+// not a valid message, gets ONE Error reply and the connection is closed
+// (no second attempt). The older oversize test stops reading at the reply, so
+// it would still pass if the daemon kept the connection open.
+#[tokio::test]
+async fn test_bad_client_message_gets_one_error_and_the_connection_closes() {
+    use futures::{SinkExt, StreamExt};
+
+    let (endpoint, _snapshot_tx_keepalive, shutdown_tx) = spawn_server("replyclose").await;
+
+    for (label, payload, needle) in [
+        ("oversized", "a".repeat(200 * 1024), "LinesCodec error"),
+        ("invalid json", "{not json".to_string(), "Invalid JSON"),
+    ] {
+        let (mut reader, mut writer) = handshaked_client(&endpoint).await;
+        // The server may hang up while the oversized line is still being
+        // written; a failed write is part of the expected rejection.
+        let _ = writer.send(payload).await;
+
+        let first = read_server(&mut reader, READ_TIMEOUT).await;
+        match first {
+            Some(ServerMessage::Error { message }) => {
+                assert!(
+                    message.contains(needle),
+                    "{label}: unexpected error: {message}"
+                )
+            }
+            other => panic!("{label}: expected one Error reply, got {other:?}"),
+        }
+        // Then the connection ends: EOF (or a reset), never another frame
+        // followed by silence.
+        let rest = tokio::time::timeout(Duration::from_secs(5), reader.next())
+            .await
+            .unwrap_or_else(|_| panic!("{label}: the connection was not closed after the reply"));
+        assert!(
+            !matches!(rest, Some(Ok(_))),
+            "{label}: expected the connection to close, got {rest:?}"
+        );
+    }
+
+    let _ = shutdown_tx.send(());
+}

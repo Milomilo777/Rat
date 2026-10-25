@@ -176,7 +176,7 @@ pub async fn start_ipc_server_with_write_timeout(
                     Err(_) => {
                         // back off so a persistent accept
                         // error (e.g. EMFILE) cannot spin the CPU.
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        back_off_after_accept_error().await;
                     }
                 }
             }
@@ -595,7 +595,7 @@ pub async fn start_ipc_server_with_write_timeout(
                     Err(_) => {
                         // back off so a persistent connect
                         // error cannot spin the CPU.
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        back_off_after_accept_error().await;
                     }
                 }
             }
@@ -640,6 +640,14 @@ pub async fn start_ipc_server(
         CLIENT_WRITE_TIMEOUT,
     )
     .await
+}
+
+/// Pause after a failed accept/connect so a persistent error (e.g. EMFILE)
+/// cannot spin the CPU.
+const ACCEPT_ERROR_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
+async fn back_off_after_accept_error() {
+    tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
 }
 
 /// The alert clients are currently asked about (the last `AlertRequest` not
@@ -1199,6 +1207,24 @@ mod peer_tests {
         assert!(
             !peer_allowed(stranger, gid, None),
             "uid {stranger} with unrelated gid {gid} must be refused"
+        );
+    }
+}
+
+#[cfg(test)]
+mod backoff_tests {
+    use super::{back_off_after_accept_error, ACCEPT_ERROR_BACKOFF};
+
+    // The accept loops call this after every failed accept; without the pause
+    // a persistent error would busy-loop a core.
+    #[tokio::test]
+    async fn accept_error_backoff_really_waits() {
+        let start = std::time::Instant::now();
+        back_off_after_accept_error().await;
+        let waited = start.elapsed();
+        assert!(
+            waited >= ACCEPT_ERROR_BACKOFF - std::time::Duration::from_millis(5),
+            "returned after only {waited:?}"
         );
     }
 }
