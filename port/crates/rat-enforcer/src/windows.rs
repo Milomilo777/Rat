@@ -310,42 +310,50 @@ impl Enforcer for WindowsEnforcer {
                 Ok(Command::new(&netsh).args(args).status()?.success())
             }
         };
-        // review-01 R7: the reconcile remove loops' delete of an
-        // ALREADY-GONE rule (user/GPO removed it) is netsh exit 1 with "No
-        // rules match the specified criteria" — success for that delete,
-        // because its desired state is already reached. Only that exit is
-        // tolerated: any other delete failure still aborts the plan
-        // (fail-closed, `current` stays behind, the next diff retries).
-        // Production reads the child's output to tell the message apart
-        // (an exit code alone cannot); the runner seam cannot see it, so
-        // there Ok(false) on a delete models the no-match exit and a real
-        // failure is Err. Locale note: on a non-English Windows the message
-        // differs and the delete fails as before (queued in PROPOSALS R7).
-        let run_delete = |args: &[String], dry_line: String| -> io::Result<bool> {
-            if let Some(runner) = &runner {
-                // R7 seam contract: the seam cannot carry netsh's stderr, so
-                // its Ok(_) on a delete means "rule gone" (Ok(false) = the
-                // no-match exit, tolerated below) and a real failure is Err.
-                return runner(&netsh, args).map(|_| true);
-            }
-            if dry_run {
+        // review-01 R7 + update-19 V1: the reconcile remove loops' delete of
+        // an ALREADY-GONE rule (user/GPO removed it) exits 1 — success for
+        // that delete, because its desired state is already reached. The
+        // decision is by EXIT CODES, never by message text: the old
+        // English-only "no rules match" grep failed open on a localized
+        // Windows (every tick errored, `current` never advanced, no new
+        // block was ever applied). After a non-zero delete, probe
+        // `show rule name=<n>`: it exits non-zero exactly when the rule is
+        // absent — locale-stable. Show failing = tolerate; show succeeding =
+        // the rule is still there = a real delete failure, which still
+        // aborts the plan (fail-closed, `current` stays behind, the next
+        // diff retries). The runner seam follows the SAME path (its bool is
+        // the child's exit status), so the seam tests exercise the probe.
+        let run_delete = |name: &str, args: &[String], dry_line: String| -> io::Result<bool> {
+            if runner.is_none() && dry_run {
                 println!("{dry_line}");
                 return Ok(true);
             }
-            let out = Command::new(&netsh).args(args).output()?;
-            if out.status.success() {
+            let run_netsh = |a: &[String]| -> io::Result<bool> {
+                if let Some(runner) = &runner {
+                    runner(&netsh, a)
+                } else {
+                    Ok(Command::new(&netsh).args(a).output()?.status.success())
+                }
+            };
+            if run_netsh(args)? {
                 return Ok(true);
             }
-            let no_match = |s: &str| s.to_lowercase().contains("no rules match");
-            Ok(no_match(&String::from_utf8_lossy(&out.stderr))
-                || no_match(&String::from_utf8_lossy(&out.stdout)))
+            let show_args = [
+                "advfirewall".to_string(),
+                "firewall".to_string(),
+                "show".to_string(),
+                "rule".to_string(),
+                format!("name={name}"),
+            ];
+            Ok(!run_netsh(&show_args)?)
         };
 
         for path in &remove {
             let name = format_rule_name(path);
-            // R7: a no-match delete is tolerated (rule verified gone, the
-            // diff entry leaves `current` below); a real failure aborts.
+            // R7/V1: a verified-gone rule's delete is tolerated (see
+            // run_delete); a real failure aborts.
             if !run_delete(
+                &name,
                 &path_delete_args(&name),
                 format!("netsh advfirewall firewall delete rule name=\"{name}\""),
             )? {
@@ -380,8 +388,9 @@ impl Enforcer for WindowsEnforcer {
         // variants), four adds per new port (out/in x TCP/UDP).
         for port in &plan.remove_ports {
             let name = format_port_rule_name(*port);
-            // R7: the same no-match tolerance as the path delete site.
+            // R7/V1: the same exit-code tolerance as the path delete site.
             if !run_delete(
+                &name,
                 &port_delete_args(*port),
                 format!("netsh advfirewall firewall delete rule name=\"{name}\""),
             )? {
@@ -898,7 +907,8 @@ mod tests {
         /// Stands in for netsh.exe with its REAL semantics: `add rule name=N`
         /// on an existing N adds a DUPLICATE (the defect R6 reports);
         /// `delete rule name=N` removes every N, or exits nonzero when none
-        /// match ("No rules match the specified criteria").
+        /// match ("No rules match the specified criteria"); `show rule name=N`
+        /// (update-19 V1) is read-only and exits 0 iff a rule named N exists.
         struct FakeNetsh {
             rules: Mutex<HashMap<String, usize>>,
         }
@@ -910,7 +920,7 @@ mod tests {
                 let mut name = None;
                 for a in args {
                     match a.as_str() {
-                        "add" | "delete" => verb = a,
+                        "add" | "delete" | "show" => verb = a,
                         "rule" => {}
                         other => {
                             if let Some(n) = other.strip_prefix("name=") {
@@ -924,6 +934,8 @@ mod tests {
                 if verb == "add" {
                     *rules.entry(name).or_insert(0) += 1;
                     Ok(true)
+                } else if verb == "show" {
+                    Ok(rules.contains_key(&name))
                 } else {
                     Ok(rules.remove(&name).is_some())
                 }
@@ -1235,6 +1247,162 @@ mod tests {
                 fake.count(&format_rule_name(APP)),
                 0,
                 "a real delete failure aborts before any add runs"
+            );
+        }
+
+        // update-19 V1: the already-gone decision must never depend on the
+        // message TEXT (the old English-only "no rules match" grep fails
+        // open on a localized Windows: every tick errors, `current` never
+        // advances, no new block is ever applied). The decision is by EXIT
+        // CODES: after a non-zero delete, probe `show rule name=<n>` — show
+        // failing = rule absent = tolerate, show succeeding = rule still
+        // there = real error. LocalizedNetsh models a Persian-language
+        // netsh: its delete ALWAYS exits 1 (message text invisible to the
+        // seam, as to production), and it logs every command so the tests
+        // can pin that the decision went through the probe.
+        struct LocalizedNetsh {
+            rules: Mutex<HashMap<String, usize>>,
+            seen: Mutex<Vec<String>>,
+        }
+
+        impl LocalizedNetsh {
+            fn run(&self, exe: &Path, args: &[String]) -> io::Result<bool> {
+                assert!(exe.ends_with("netsh.exe"), "unexpected exe {exe:?}");
+                let mut verb = "";
+                let mut name = None;
+                for a in args {
+                    match a.as_str() {
+                        "add" | "delete" | "show" => verb = a,
+                        "rule" => {}
+                        other => {
+                            if let Some(n) = other.strip_prefix("name=") {
+                                name = Some(n.to_string());
+                            }
+                        }
+                    }
+                }
+                let name = name.expect("netsh rule command carries name=");
+                self.seen.lock().unwrap().push(format!("{verb} {}", name));
+                let mut rules = self.rules.lock().unwrap();
+                match verb {
+                    "add" => {
+                        *rules.entry(name).or_insert(0) += 1;
+                        Ok(true)
+                    }
+                    "show" => Ok(rules.contains_key(&name)),
+                    // Localized delete: exit 1 no matter what, text unknown.
+                    _ => Ok(false),
+                }
+            }
+
+            fn count(&self, name: &str) -> usize {
+                self.rules.lock().unwrap().get(name).copied().unwrap_or(0)
+            }
+        }
+
+        fn localized_runner(fake: Arc<LocalizedNetsh>) -> NetshRunner {
+            Arc::new(move |exe: &Path, args: &[String]| fake.run(exe, args))
+        }
+
+        #[test]
+        fn test_windows_apply_localized_no_match_delete_probes_show_and_tolerates() {
+            // The user removed the rule behind the daemon's back; netsh is
+            // localized, so the delete exits 1 with an unreadable message.
+            // The show probe for the exact gone-rule name also exits nonzero
+            // (absent) -> tolerated, the rest of the plan still applies, and
+            // `current` advances.
+            let fake = Arc::new(LocalizedNetsh {
+                rules: Mutex::new(HashMap::new()),
+                seen: Mutex::new(Vec::new()),
+            });
+            let gone = r"C:\Apps\Old\gone.exe";
+            let mut enforcer = WindowsEnforcer {
+                current: Blocklist {
+                    paths: vec![gone.to_string()],
+                    local_ports: vec![],
+                },
+                runner: Some(localized_runner(Arc::clone(&fake))),
+            };
+            let wanted = Blocklist {
+                paths: vec![APP.to_string()],
+                local_ports: vec![],
+            };
+            let plan = enforcer.plan(&wanted);
+            assert_eq!(plan.remove, vec![gone.to_string()]);
+
+            enforcer
+                .apply(&plan)
+                .expect("a localized no-match delete must be tolerated");
+            assert_eq!(
+                fake.count(&format_rule_name(APP)),
+                1,
+                "the rest of the plan (the new block) is applied after the localized no-match delete"
+            );
+            assert!(
+                enforcer.plan(&wanted).remove.is_empty(),
+                "current must advance past a localized no-match delete"
+            );
+            // The decision went through the exit-code probe, not blind
+            // tolerance (pre-V1 the old code tolerated without probing).
+            assert!(
+                fake.seen
+                    .lock()
+                    .unwrap()
+                    .contains(&format!("show {}", format_rule_name(gone))),
+                "a failed delete must be followed by `show rule name=<n>` for the exact name, saw {:?}",
+                fake.seen.lock().unwrap()
+            );
+        }
+
+        #[test]
+        fn test_windows_apply_localized_delete_on_present_rule_aborts() {
+            // The rule is still there (seeded, as read back on startup); the
+            // localized delete fails for a REAL reason (access denied, in
+            // Persian). The show probe finds the rule -> real error, the
+            // apply aborts and nothing else runs.
+            let fake = Arc::new(LocalizedNetsh {
+                rules: Mutex::new(HashMap::from([(
+                    format_rule_name(r"C:\Apps\Old\stuck.exe"),
+                    1,
+                )])),
+                seen: Mutex::new(Vec::new()),
+            });
+            let stuck = r"C:\Apps\Old\stuck.exe";
+            let mut enforcer = WindowsEnforcer {
+                current: Blocklist {
+                    paths: vec![stuck.to_string()],
+                    local_ports: vec![],
+                },
+                runner: Some(localized_runner(Arc::clone(&fake))),
+            };
+            let wanted = Blocklist {
+                paths: vec![APP.to_string()],
+                local_ports: vec![],
+            };
+            let plan = enforcer.plan(&wanted);
+            assert_eq!(plan.remove, vec![stuck.to_string()]);
+
+            let err = enforcer
+                .apply(&plan)
+                .expect_err("a delete that left the rule in place is a real error");
+            assert!(
+                err.to_string().contains("Failed to delete firewall rule"),
+                "unexpected error: {err}"
+            );
+            assert_eq!(
+                fake.count(&format_rule_name(stuck)),
+                1,
+                "the present rule is untouched by the aborted apply"
+            );
+            assert!(
+                !fake
+                    .seen
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|cmd| cmd.starts_with("add ")),
+                "nothing is applied after a real delete failure, saw {:?}",
+                fake.seen.lock().unwrap()
             );
         }
     }
