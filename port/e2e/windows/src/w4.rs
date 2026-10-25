@@ -315,10 +315,12 @@ fn line_limit(r: &mut Report) {
         }
     }
     // Control: a 60000-byte line (valid JSON + trailing spaces) is accepted.
+    // The daemon may send unasked lines meanwhile (the active alert replayed
+    // after HelloAck, Snapshots): wait for the reply, skip those.
     let mut ok_line = br#"{"Hello":{"protocol_version":1}}"#.to_vec();
     ok_line.extend(std::iter::repeat(b' ').take(60000));
     let _ = c.send_raw(&ok_line);
-    match c.recv(Duration::from_secs(5)) {
+    match c.recv_reply(Duration::from_secs(5)) {
         Recv::Line(l) if l.contains("already handshaked") => r.pass("control-60k-line-accepted", "60000-byte line parsed (reply: already handshaked)"),
         other => return r.harness("control-60k-line-accepted", describe(&other)),
     }
@@ -326,8 +328,8 @@ fn line_limit(r: &mut Report) {
     let mut big = br#"{"Hello":{"protocol_version":1}}"#.to_vec();
     big.extend(std::iter::repeat(b' ').take(70000));
     let _ = c.send_raw(&big);
-    let first = c.recv(Duration::from_secs(5));
-    let second = if matches!(first, Recv::Line(_)) { c.recv(Duration::from_secs(5)) } else { Recv::Timeout };
+    let first = c.recv_reply(Duration::from_secs(5));
+    let second = if matches!(first, Recv::Line(_)) { c.recv_reply(Duration::from_secs(5)) } else { Recv::Timeout };
     let rejected = matches!(&first, Recv::Line(l) if l.contains("Error")) || matches!(first, Recv::Eof);
     if rejected {
         r.pass("line-over-64KiB-rejected", format!("first={} then={}", describe(&first), describe(&second)));

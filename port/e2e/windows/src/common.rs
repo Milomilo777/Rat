@@ -237,6 +237,33 @@ Write-Output 'END'
         .collect())
 }
 
+/// A program's block since A5: EXACTLY one enabled Block rule per direction
+/// (Outbound + Inbound), same display name, same program, and nothing else.
+/// `Err` says what differs.
+pub fn check_block_pair<'a>(
+    rules: impl IntoIterator<Item = &'a RatRule>,
+    program: &str,
+) -> Result<String, String> {
+    let rules: Vec<&RatRule> = rules.into_iter().collect();
+    if rules.len() != 2 {
+        return Err(format!("expected exactly 2 rules (Outbound + Inbound), got {}: {rules:?}", rules.len()));
+    }
+    let mut dirs: Vec<&str> = rules.iter().map(|r| r.direction.as_str()).collect();
+    dirs.sort();
+    if dirs != ["Inbound", "Outbound"] {
+        return Err(format!("expected one Outbound and one Inbound rule, got {dirs:?}: {rules:?}"));
+    }
+    if rules[0].name != rules[1].name {
+        return Err(format!("the two rules must share one name: {rules:?}"));
+    }
+    for r in &rules {
+        if r.action != "Block" || r.enabled != "True" || !same_path(&r.program, program) {
+            return Err(format!("rule is not an enabled Block for {program}: {r:?}"));
+        }
+    }
+    Ok(format!("{} Outbound + Inbound Block enabled", rules[0].name))
+}
+
 pub fn same_path(a: &str, b: &str) -> bool {
     let n = |s: &str| s.trim_start_matches(r"\\?\").to_lowercase().replace('/', "\\");
     n(a) == n(b)
@@ -325,4 +352,48 @@ pub fn wait_pipe(name: &str, present: bool, timeout: Duration) -> bool {
     wait_until(timeout, Duration::from_millis(500), || {
         pipe_listed(name) == Ok(present)
     })
+}
+
+#[cfg(test)]
+mod block_pair_tests {
+    use super::*;
+
+    const P: &str = r"C:\x\app.exe";
+
+    fn rule(name: &str, dir: &str) -> RatRule {
+        RatRule {
+            name: name.into(),
+            direction: dir.into(),
+            action: "Block".into(),
+            enabled: "True".into(),
+            program: P.into(),
+        }
+    }
+
+    #[test]
+    fn accepts_exactly_the_out_in_pair() {
+        let v = [rule("Rat:path:a", "Inbound"), rule("Rat:path:a", "Outbound")];
+        assert!(check_block_pair(&v, P).is_ok());
+    }
+
+    #[test]
+    fn rejects_everything_else() {
+        let ok = |d: &str| rule("Rat:path:a", d);
+        // one direction only (the pre-A5 shape), two of the same, three rules
+        assert!(check_block_pair(&[ok("Outbound")], P).is_err());
+        assert!(check_block_pair(&[ok("Outbound"), ok("Outbound")], P).is_err());
+        assert!(check_block_pair(&[ok("Outbound"), ok("Inbound"), ok("Inbound")], P).is_err());
+        // different names
+        assert!(check_block_pair(&[ok("Outbound"), rule("Rat:path:b", "Inbound")], P).is_err());
+        // disabled, allow, other program
+        let mut off = ok("Inbound");
+        off.enabled = "False".into();
+        assert!(check_block_pair(&[ok("Outbound"), off], P).is_err());
+        let mut allow = ok("Inbound");
+        allow.action = "Allow".into();
+        assert!(check_block_pair(&[ok("Outbound"), allow], P).is_err());
+        let mut other = ok("Inbound");
+        other.program = r"C:\y\other.exe".into();
+        assert!(check_block_pair(&[ok("Outbound"), other], P).is_err());
+    }
 }

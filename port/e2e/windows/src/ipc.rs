@@ -108,10 +108,64 @@ impl Ipc {
         }
     }
 
+    /// Next line that is a REPLY: lines the daemon broadcasts on its own
+    /// (Snapshot every tick, AlertRequest / AlertCleared, the active alert
+    /// replayed right after HelloAck, the firewall-off warning) are skipped.
+    /// The wait for the reply is bounded by `timeout` as a whole.
+    pub fn recv_reply(&mut self, timeout: Duration) -> Recv {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.recv(left) {
+                Recv::Line(l) if is_broadcast(&l) => continue,
+                other => return other,
+            }
+        }
+    }
+
     pub fn recv_msg(&mut self, timeout: Duration) -> Result<ServerMessage, Recv> {
         match self.recv(timeout) {
             Recv::Line(l) => ServerMessage::from_json_str(&l).map_err(|_| Recv::Line(l)),
             other => Err(other),
+        }
+    }
+}
+
+/// True for a line the daemon sends unasked. `Error` lines are replies,
+/// except the firewall-state warnings of the silent-disable watch.
+pub fn is_broadcast(line: &str) -> bool {
+    let l = line.trim_start();
+    if ["Snapshot", "AlertRequest", "AlertCleared", "Rules"]
+        .iter()
+        .any(|k| l.starts_with(&format!("{{\"{k}\":")))
+    {
+        return true;
+    }
+    l.starts_with("{\"Error\":") && (l.contains("Windows Firewall is ") || l.contains("check the Windows Firewall state"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_broadcast;
+
+    #[test]
+    fn unsolicited_lines_are_broadcasts_replies_are_not() {
+        for b in [
+            r#"{"Snapshot":{"connections":[]}}"#,
+            r#"{"AlertRequest":{"id":1,"alert":{}}}"#,
+            r#"{"AlertCleared":{"id":1}}"#,
+            r#"{"Rules":{"rules":[]}}"#,
+            r#"{"Error":{"message":"Windows Firewall is turned off for: Public."}}"#,
+            r#"{"Error":{"message":"Could not check the Windows Firewall state."}}"#,
+        ] {
+            assert!(is_broadcast(b), "{b}");
+        }
+        for reply in [
+            r#"{"HelloAck":{"protocol_version":1}}"#,
+            r#"{"Error":{"message":"already handshaked"}}"#,
+            r#"{"Error":{"message":"LinesCodec error"}}"#,
+        ] {
+            assert!(!is_broadcast(reply), "{reply}");
         }
     }
 }

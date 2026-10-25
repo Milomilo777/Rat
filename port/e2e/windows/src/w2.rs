@@ -85,10 +85,10 @@ pub fn run(r: &mut Report) {
         .iter()
         .filter(|x| x.name.starts_with("Rat:path:") && same_path(&x.program, &client_s))
         .collect();
-    if ours.len() == 1 && ours[0].action == "Block" && ours[0].direction == "Outbound" && ours[0].enabled == "True" {
-        r.pass("rule-created", format!("{} Outbound Block enabled", ours[0].name));
-    } else {
-        r.product("rule-created", format!("expected one enabled Outbound Block rule for {client_s}, got {rules:?}"));
+    // A5: one enabled Block rule per direction, same name, nothing else.
+    match check_block_pair(ours.iter().copied(), &client_s) {
+        Ok(what) => r.pass("rule-created", what),
+        Err(why) => r.product("rule-created", format!("{why}; all Rat rules: {rules:?}")),
     }
 
     let after = match rule_names() {

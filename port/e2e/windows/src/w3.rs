@@ -38,10 +38,12 @@ pub fn run(r: &mut Report) {
     }
 
     match rat_rules() {
-        Ok(v) if v.len() == 1 && same_path(&v[0].program, &a.to_string_lossy()) => {
-            r.pass("rule-only-for-A", format!("{} -> {}", v[0].name, v[0].program))
-        }
-        other => r.product("rule-only-for-A", format!("expected one rule for A, got {other:?}")),
+        // A5: the out + in pair for A and no other Rat rule
+        Ok(v) => match check_block_pair(&v, &a.to_string_lossy()) {
+            Ok(what) => r.pass("rule-only-for-A", format!("{what} -> {}", v[0].program)),
+            Err(why) => r.product("rule-only-for-A", why),
+        },
+        Err(x) => r.harness("rule-only-for-A", x),
     }
 
     match probe_until(&a, HTTPS_URL, false, 4) {
