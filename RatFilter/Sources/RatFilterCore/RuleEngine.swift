@@ -28,10 +28,11 @@ public final class RuleEngine: @unchecked Sendable {
     public func add(_ rule: Rule) { lock.withLock { set.rules.append(rule) } }
     public func remove(id: UUID) { lock.withLock { set.rules.removeAll { $0.id == id } } }
 
-    /// Rules that can apply right now: active profile, enabled group, enabled and approved rule.
+    /// Rules that can apply right now: active profile, enabled group. Rule-level `enabled` is
+    /// enforced by `Rule.matches`; `approved` is a review marker only and never gates matching.
     private func active(_ s: RuleSet) -> [Rule] {
         let disabled = Set(s.groups.filter { !$0.enabled }.map(\.id))
-        return s.rules.filter { ($0.profileID == nil || $0.profileID == s.activeProfileID) && !($0.groupID.map(disabled.contains) ?? false) && $0.enabled && $0.approved }
+        return s.rules.filter { ($0.profileID == nil || $0.profileID == s.activeProfileID) && !($0.groupID.map(disabled.contains) ?? false) }
     }
 
     /// The winning rule, if any. Specificity first, then deny over allow, then newest.

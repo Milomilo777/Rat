@@ -31,9 +31,11 @@ final class RuleEngineTests: XCTestCase {
         XCTAssertEqual(e.evaluate(conn("a.com")), .deny)
     }
 
-    func testDisabledAndUnapprovedRulesNeverMatch() {
+    /// Documented semantics (CLAUDE.md, Rule.approved doc): an enabled but unapproved rule still
+    /// matches (`approved` is a review marker only); a disabled rule never matches (`Rule.matches`).
+    func testUnapprovedStillMatchesButDisabledNeverDoes() {
         XCTAssertEqual(RuleEngine(rules: [Rule(verdict: .deny, enabled: false)]).evaluate(conn("a.com")), .ask)
-        XCTAssertEqual(RuleEngine(rules: [Rule(verdict: .deny, approved: false)]).evaluate(conn("a.com")), .ask)
+        XCTAssertEqual(RuleEngine(rules: [Rule(verdict: .deny, approved: false)]).evaluate(conn("a.com")), .deny)
     }
 
     func testStoreRoundTrip() throws {
@@ -162,12 +164,14 @@ final class RuleEngineTests: XCTestCase {
         XCTAssertEqual(try RuleStore(url: url).loadSet().unknownNetworkAction, .activate(s.profiles[1].id))
     }
 
-    /// QA R4: disabled and unapproved rules must never win the match.
-    func testQAR4DisabledAndUnapprovedRulesNeverMatch() {
+    /// QA R4, corrected to the documented semantics (supervisor update-16): a disabled rule never
+    /// wins the match; an enabled but unapproved rule still does (review marker only), so the
+    /// deny verdict comes from it.
+    func testQAR4DisabledNeverMatchesUnapprovedStillMatches() {
         let e = RuleEngine(rules: [
             Rule(verdict: .deny, remoteDomain: "example.com", enabled: false),
             Rule(verdict: .deny, remoteDomain: "example.com", approved: false)
         ])
-        XCTAssertEqual(e.evaluate(conn("example.com")), .ask)
+        XCTAssertEqual(e.evaluate(conn("example.com")), .deny)
     }
 }
