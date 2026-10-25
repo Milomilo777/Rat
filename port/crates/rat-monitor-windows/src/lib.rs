@@ -394,12 +394,19 @@ pub mod stats {
             dwRemotePort: row.dwRemotePort,
         }
     }
+
+    /// M3 (update-09): API-level conditions that disable estats for the
+    /// whole process (no admin rights / OS support); anything else is a
+    /// per-row error.
+    pub fn estats_error_is_global(e: &WIN32_ERROR) -> bool {
+        *e == windows::Win32::Foundation::ERROR_ACCESS_DENIED
+            || *e == windows::Win32::Foundation::ERROR_NOT_SUPPORTED
+    }
 }
 
 #[cfg(windows)]
 pub struct WindowsMonitor {
     estats_supported: bool,
-    estats_checked: bool,
 }
 
 #[cfg(windows)]
@@ -414,7 +421,6 @@ impl WindowsMonitor {
     pub fn new() -> Self {
         Self {
             estats_supported: true,
-            estats_checked: false,
         }
     }
 }
@@ -442,21 +448,20 @@ impl ConnectionSource for WindowsMonitor {
                 let mut bytes_in = None;
                 let mut bytes_out = None;
 
-                if self.estats_supported {
+                // M3 (update-09): LISTEN rows are never queried (estats is
+                // for live connections), and only API-level failures switch
+                // byte counting off globally - a row-level error (the row
+                // vanished between the table snapshot and the stats call)
+                // leaves that row at None without affecting the others.
+                if self.estats_supported && !is_listening_state(row.dwState) {
                     match stats::get_tcp_estats_v4(&row) {
                         Ok((bin, bout)) => {
-                            self.estats_checked = true;
                             bytes_in = Some(bin);
                             bytes_out = Some(bout);
                         }
                         Err(e) => {
-                            if !self.estats_checked {
-                                if e == windows::Win32::Foundation::ERROR_ACCESS_DENIED
-                                    || e == windows::Win32::Foundation::ERROR_NOT_SUPPORTED
-                                {
-                                    self.estats_supported = false;
-                                }
-                                self.estats_checked = true;
+                            if stats::estats_error_is_global(&e) {
+                                self.estats_supported = false;
                             }
                         }
                     }
@@ -502,21 +507,20 @@ impl ConnectionSource for WindowsMonitor {
                 let mut bytes_in = None;
                 let mut bytes_out = None;
 
-                if self.estats_supported {
+                // M3 (update-09): LISTEN rows are never queried (estats is
+                // for live connections), and only API-level failures switch
+                // byte counting off globally - a row-level error (the row
+                // vanished between the table snapshot and the stats call)
+                // leaves that row at None without affecting the others.
+                if self.estats_supported && !is_listening_state(row.dwState) {
                     match stats::get_tcp_estats_v6(&row) {
                         Ok((bin, bout)) => {
-                            self.estats_checked = true;
                             bytes_in = Some(bin);
                             bytes_out = Some(bout);
                         }
                         Err(e) => {
-                            if !self.estats_checked {
-                                if e == windows::Win32::Foundation::ERROR_ACCESS_DENIED
-                                    || e == windows::Win32::Foundation::ERROR_NOT_SUPPORTED
-                                {
-                                    self.estats_supported = false;
-                                }
-                                self.estats_checked = true;
+                            if stats::estats_error_is_global(&e) {
+                                self.estats_supported = false;
                             }
                         }
                     }
@@ -700,6 +704,16 @@ mod vpn_tests {
 mod edge_case_tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn test_estats_global_vs_row_errors() {
+        use windows::Win32::Foundation::WIN32_ERROR;
+        // M3 (update-09): only API-level conditions are global.
+        assert!(stats::estats_error_is_global(&WIN32_ERROR(5))); // ACCESS_DENIED
+        assert!(stats::estats_error_is_global(&WIN32_ERROR(50))); // NOT_SUPPORTED
+        assert!(!stats::estats_error_is_global(&WIN32_ERROR(1168))); // NOT_FOUND (row vanished)
+        assert!(!stats::estats_error_is_global(&WIN32_ERROR(87))); // INVALID_PARAMETER
+    }
 
     #[test]
     fn test_mib_tcp6_row_layouts_differ_and_copy_is_faithful() {
