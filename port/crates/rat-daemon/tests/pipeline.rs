@@ -1,8 +1,12 @@
 //! PROPOSALS #10 wiring tests: monitor -> ledger -> policy -> enforcer via
-//! run_pipeline, and the #8 cleanup obligations via run_components. The
-//! enforcer is a recorder so these run without netsh/nft/admin.
+//! run_pipeline, and the #8/e2e-01 restart obligations via run_components:
+//! startup RECONCILES (read existing rules, diff against the saved plan,
+//! never wipe-then-apply) before the IPC endpoint serves, a clean stop KEEPS
+//! the rules (macOS persistent-anchor parity), and rules persist to disk so a
+//! restart reloads the anchor. The enforcer is a recorder so these run
+//! without netsh/nft/admin.
 
-use rat_core::{Lifetime, Rule, Verdict};
+use rat_core::{Lifetime, Rule, RuleStore, Verdict};
 use rat_daemon::core::{Command, EnforceOutcome, EnforcementBackend};
 use rat_daemon::msg::ServerMessage;
 use rat_ledger::{AlertCenterConfig, Ledger, LedgerConfig, RuleEnginePolicy};
@@ -10,16 +14,17 @@ use rat_types::{Connection, ConnectionSource, ProcessInfo, Protocol};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 /// The recorder keeps ONE interleaved timeline so ordering claims
-/// (cleanup before the first apply) are actually testable.
+/// (reconcile before the first apply, nothing on stop) are testable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Event {
     Cleanup,
+    Adopt(rat_enforcer::Blocklist),
     Enforce(rat_enforcer::Blocklist),
 }
 
@@ -27,12 +32,35 @@ enum Event {
 struct RecorderBackend {
     events: Arc<Mutex<Vec<Event>>>,
     fail_enforce: Arc<AtomicBool>,
+    /// What `existing()` reports (the read-back of live firewall state);
+    /// None makes the read fail, exercising the tolerant path.
+    existing_state: Arc<Mutex<Option<rat_enforcer::Blocklist>>>,
+    /// When set, `existing()` blocks on this receiver first, so a test can
+    /// hold the startup reconcile and observe the endpoint is NOT serving.
+    existing_gate: Arc<Mutex<Option<std::sync::mpsc::Receiver<()>>>>,
 }
 
 impl EnforcementBackend for RecorderBackend {
     fn cleanup(&self) -> io::Result<()> {
         self.events.lock().unwrap().push(Event::Cleanup);
         Ok(())
+    }
+
+    fn existing(&self) -> io::Result<rat_enforcer::Blocklist> {
+        if let Some(rx) = self.existing_gate.lock().unwrap().take() {
+            // Blocks the reconcile (and with it the whole startup) until the
+            // test drops the sender. Err on a dropped sender = gate released.
+            let _ = rx.recv();
+        }
+        self.existing_state
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| io::Error::other("no existing state configured"))
+    }
+
+    fn adopt(&mut self, existing: rat_enforcer::Blocklist) {
+        self.events.lock().unwrap().push(Event::Adopt(existing));
     }
 
     fn enforce(&mut self, wanted: &rat_enforcer::Blocklist) -> io::Result<EnforceOutcome> {
@@ -58,7 +86,7 @@ impl RecorderBackend {
             .iter()
             .filter_map(|e| match e {
                 Event::Enforce(b) => Some(b.paths.clone()),
-                Event::Cleanup => None,
+                Event::Adopt(_) | Event::Cleanup => None,
             })
             .flatten()
             .collect()
@@ -76,12 +104,8 @@ impl RecorderBackend {
             .rev()
             .find_map(|e| match e {
                 Event::Enforce(b) => Some(b.clone()),
-                Event::Cleanup => None,
+                Event::Adopt(_) | Event::Cleanup => None,
             })
-    }
-
-    fn first_event(&self) -> Option<Event> {
-        self.events.lock().unwrap().first().cloned()
     }
 
     fn cleanup_count(&self) -> usize {
@@ -91,6 +115,10 @@ impl RecorderBackend {
             .iter()
             .filter(|e| matches!(e, Event::Cleanup))
             .count()
+    }
+
+    fn events_snapshot(&self) -> Vec<Event> {
+        self.events.lock().unwrap().clone()
     }
 }
 
@@ -156,6 +184,30 @@ fn test_app() -> &'static str {
     }
 }
 
+/// Two paths a previous daemon left rules for but the saved plan no longer
+/// wants — the stale half of the reconcile scenario.
+fn stale_apps() -> [&'static str; 2] {
+    if cfg!(windows) {
+        [r"C:\stale\one.exe", r"C:\stale\two.exe"]
+    } else {
+        ["/usr/bin/stale1", "/usr/bin/stale2"]
+    }
+}
+
+static SEQ: AtomicU32 = AtomicU32::new(0);
+
+fn temp_rules_path(tag: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "rat_daemon_test_{tag}_{}_{}.json",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::SeqCst)
+    ))
+}
+
+fn dummy_store() -> Arc<RuleStore> {
+    Arc::new(RuleStore::new(temp_rules_path("pipeline")))
+}
+
 async fn wait_for_snapshot(
     snapshot_rx: &mut tokio::sync::broadcast::Receiver<ServerMessage>,
     timeout: Duration,
@@ -185,10 +237,34 @@ async fn wait_until(timeout: Duration, mut pred: impl FnMut() -> bool) {
     }
 }
 
+/// Whether the IPC endpoint is accepting clients right now (sync: the
+/// underlying probe is a named-pipe CreateFile / socket-path existence check).
+fn endpoint_serving(endpoint: &str) -> bool {
+    #[cfg(windows)]
+    {
+        tokio::net::windows::named_pipe::ClientOptions::new()
+            .open(endpoint)
+            .is_ok()
+    }
+    #[cfg(unix)]
+    {
+        std::path::Path::new(endpoint).exists()
+    }
+}
+
+fn test_endpoint(tag: &str) -> String {
+    let name = format!("rat_test_{tag}_{}_{}", std::process::id(), line!());
+    if cfg!(windows) {
+        format!(r"\\.\pipe\{name}")
+    } else {
+        format!("/tmp/{name}.sock")
+    }
+}
+
 // PROPOSALS #10: SetRules must reach the rule engine and produce an
 // enforcement diff on the backend WITHOUT waiting for the next sample tick;
-// the ledger's plan (denied app + the denied socket's LOCAL port) is what
-// gets enforced (R4 / L2 wiring).
+// the ledger's plan (denied app + the denied socket's LOCAL port) unions with
+// the static anchor the saved rules demand (R4 / L2 wiring).
 #[tokio::test]
 async fn test_set_rules_enforces_denied_app_and_local_port() {
     let app = test_app();
@@ -208,6 +284,7 @@ async fn test_set_rules_enforces_denied_app_and_local_port() {
         policy,
         ledger,
         recorder.clone(),
+        dummy_store(),
         cmd_rx,
         snapshot_tx,
         shutdown_rx,
@@ -268,6 +345,7 @@ async fn test_alert_answer_creates_rule_and_enforces() {
         policy,
         ledger,
         recorder.clone(),
+        dummy_store(),
         cmd_rx,
         snapshot_tx,
         shutdown_rx,
@@ -334,6 +412,7 @@ async fn test_stale_alert_answer_is_ignored() {
         policy,
         ledger,
         recorder.clone(),
+        dummy_store(),
         cmd_rx,
         snapshot_tx,
         shutdown_rx,
@@ -365,20 +444,38 @@ async fn test_stale_alert_answer_is_ignored() {
         .unwrap();
 }
 
-// #8 obligations: cleanup() runs once at startup (before the first apply)
-// and once on clean shutdown. Runs through run_components with the real
-// IPC endpoint so the shell is covered too.
-#[tokio::test]
-async fn test_cleanup_runs_on_start_and_shutdown() {
-    let endpoint = format!("rat_test_cleanup_{}_{}", std::process::id(), line!());
-    let endpoint = if cfg!(windows) {
-        format!(r"\\.\pipe\{endpoint}")
-    } else {
-        format!("/tmp/{endpoint}.sock")
-    };
+// e2e-01/R2, the restart scenario (W4): the rules file holds ONE wanted deny
+// (W); the live firewall holds W + two stale rules from a predecessor. The
+// daemon must (1) read the existing rules back, (2) reconcile BEFORE the IPC
+// endpoint serves, (3) ask for exactly the wanted set — the diff keeps W and
+// removes only the stale ones, and (4) never wipe via cleanup(). Runs through
+// run_components with the real IPC endpoint so the shell is covered too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_startup_reconciles_before_serving_and_keeps_wanted() {
+    let wanted_app = test_app();
+    let [stale1, stale2] = stale_apps();
+
+    // A previous daemon saved one deny rule for `wanted_app`.
+    let rules_path = temp_rules_path("reconcile");
+    RuleStore::new(rules_path.clone())
+        .save(vec![deny_rule(wanted_app)])
+        .expect("seed rules file");
+
+    // ...and left W + two stale rules in the firewall.
+    let recorder = RecorderBackend::default();
+    *recorder.existing_state.lock().unwrap() = Some(rat_enforcer::Blocklist {
+        paths: vec![
+            wanted_app.to_string(),
+            stale1.to_string(),
+            stale2.to_string(),
+        ],
+        local_ports: vec![],
+    });
+    let (gate_tx, gate_rx) = std::sync::mpsc::channel::<()>();
+    *recorder.existing_gate.lock().unwrap() = Some(gate_rx);
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
-    let recorder = RecorderBackend::default();
+    let endpoint = test_endpoint("reconcile");
     let source = ScriptedSource { conns: vec![] };
 
     let ep = endpoint.clone();
@@ -386,18 +483,68 @@ async fn test_cleanup_runs_on_start_and_shutdown() {
         ep,
         source,
         recorder.clone(),
+        rules_path.clone(),
         shutdown_rx,
     ));
 
-    wait_until(Duration::from_secs(5), || recorder.cleanup_count() >= 1).await;
-    assert_eq!(
-        recorder.first_event(),
-        Some(Event::Cleanup),
-        "the startup cleanup must be the very first backend event"
+    // Phase 1 — the reconcile gate is held: no backend events yet and the
+    // endpoint must NOT be serving. multi_thread flavor: the blocked
+    // existing() sits on one worker while we probe from this one.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut observed_not_serving = false;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        assert!(
+            !endpoint_serving(&endpoint),
+            "IPC served before the startup reconcile completed (gate still held)"
+        );
+        observed_not_serving = true;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        observed_not_serving,
+        "probe never ran while the gate was held"
     );
     assert!(
-        !recorder.any_enforced_path(),
-        "startup cleanup must run BEFORE the first apply"
+        recorder.events_snapshot().is_empty(),
+        "no backend event may precede the reconcile (found {:?})",
+        recorder.events_snapshot()
+    );
+
+    // Phase 2 — release the gate: reconcile runs (read-back, adopt, enforce
+    // of the static anchor from the saved rules), THEN the endpoint serves.
+    drop(gate_tx);
+    wait_until(Duration::from_secs(10), || endpoint_serving(&endpoint)).await;
+
+    let events = recorder.events_snapshot();
+    assert_eq!(
+        events.first(),
+        Some(&Event::Adopt(rat_enforcer::Blocklist {
+            paths: vec![
+                wanted_app.to_string(),
+                stale1.to_string(),
+                stale2.to_string(),
+            ],
+            local_ports: vec![],
+        })),
+        "the reconcile must ADOPT the read-back state before anything else: {events:?}"
+    );
+    let first_enforce = events
+        .iter()
+        .find_map(|e| match e {
+            Event::Enforce(b) => Some(b.clone()),
+            Event::Adopt(_) | Event::Cleanup => None,
+        })
+        .expect("the reconcile enforce ran");
+    assert_eq!(
+        first_enforce.paths,
+        vec![wanted_app.to_string()],
+        "the wanted set is exactly the saved plan's anchor (stale rules are the DIFF's job, never re-added): {events:?}"
+    );
+    assert!(first_enforce.local_ports.is_empty());
+    assert!(
+        !events.iter().any(|e| matches!(e, Event::Cleanup)),
+        "startup must RECONCILE, never wipe via cleanup(): {events:?}"
     );
 
     let _ = shutdown_tx.send(());
@@ -406,7 +553,176 @@ async fn test_cleanup_runs_on_start_and_shutdown() {
         .expect("run_components must end on shutdown")
         .expect("pipeline task did not panic")
         .expect("clean shutdown is not an error");
-    assert_eq!(recorder.cleanup_count(), 2, "exactly one shutdown cleanup");
+    assert_eq!(
+        recorder.cleanup_count(),
+        0,
+        "a clean stop must keep the rules (persistent anchor, macOS parity)"
+    );
+}
+
+// e2e-01 item 2 decision (macOS parity, Enforcer.swift:144/:179): a clean
+// stop KEEPS the rules — the persistent anchor keeps blocking while the
+// daemon is down. Full removal is the uninstall path's job (`--cleanup`).
+#[tokio::test]
+async fn test_stop_keeps_rules_no_cleanup_on_shutdown() {
+    let rules_path = temp_rules_path("keep_on_stop");
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let recorder = RecorderBackend::default();
+    let source = ScriptedSource { conns: vec![] };
+
+    let endpoint = test_endpoint("keep_on_stop");
+    let task = tokio::spawn(rat_daemon::run_components(
+        endpoint,
+        source,
+        recorder.clone(),
+        rules_path,
+        shutdown_rx,
+    ));
+
+    // Daemon ran (an enforce round happened), then a clean stop.
+    wait_until(Duration::from_secs(5), || {
+        recorder
+            .events_snapshot()
+            .iter()
+            .any(|e| matches!(e, Event::Enforce(_)))
+    })
+    .await;
+
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("run_components must end on shutdown")
+        .expect("pipeline task did not panic")
+        .expect("clean shutdown is not an error");
+    assert_eq!(
+        recorder.cleanup_count(),
+        0,
+        "a clean stop must NOT remove rules (persistent anchor, macOS parity)"
+    );
+}
+
+// e2e-01 item 1's fake-enforcer rule: never real firewall changes in unit
+// tests. A rules file that is garbage must not keep the daemon from serving
+// (Swift "gracefully defaulted" parity), and a failed firewall read-back is
+// tolerated: reconcile proceeds from an empty view.
+#[tokio::test]
+async fn test_corrupt_rules_file_daemon_still_serves() {
+    let rules_path = temp_rules_path("corrupt");
+    std::fs::write(&rules_path, b"{not json at all").expect("seed corrupt file");
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let recorder = RecorderBackend::default();
+    let source = ScriptedSource { conns: vec![] };
+
+    let endpoint = test_endpoint("corrupt");
+    let task = tokio::spawn(rat_daemon::run_components(
+        endpoint.clone(),
+        source,
+        recorder.clone(),
+        rules_path,
+        shutdown_rx,
+    ));
+
+    wait_until(Duration::from_secs(10), || endpoint_serving(&endpoint)).await;
+
+    let events = recorder.events_snapshot();
+    assert!(
+        !events.iter().any(|e| matches!(e, Event::Adopt(_))),
+        "existing() failed (default recorder) — nothing to adopt: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, Event::Enforce(_))),
+        "the reconcile enforce still ran from the (empty) saved plan: {events:?}"
+    );
+
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("run_components must end on shutdown")
+        .expect("pipeline task did not panic")
+        .expect("clean shutdown is not an error");
+}
+
+// The R2 diff itself on the REAL windows backend: after adopting what the
+// firewall read-back reported, the plan must remove exactly the stale rules
+// and never the wanted one — reconcile, not wipe-then-apply.
+#[cfg(windows)]
+#[test]
+fn test_windows_adopt_then_plan_reconciles() {
+    use rat_enforcer::Enforcer;
+
+    let wanted = test_app();
+    let [stale1, stale2] = stale_apps();
+    let foreign = r"C:\foreign\tool.exe";
+
+    let mut backend = rat_daemon::core::WindowsBackend::new();
+    backend.adopt(rat_enforcer::Blocklist {
+        paths: vec![wanted.to_string(), stale1.to_string(), stale2.to_string()],
+        local_ports: vec![],
+    });
+
+    let plan = backend.enforcer.plan(&rat_enforcer::Blocklist {
+        paths: vec![wanted.to_string()],
+        local_ports: vec![],
+    });
+    assert!(plan.add.is_empty(), "nothing to add: W is already there");
+    assert_eq!(plan.remove, vec![stale1.to_string(), stale2.to_string()]);
+    assert!(
+        !plan.remove.contains(&wanted.to_string()),
+        "a wanted rule must NEVER be deleted by the reconcile diff"
+    );
+    assert!(
+        !plan.remove.contains(&foreign.to_string()),
+        "a foreign rule was never adopted, so it is never removed"
+    );
+}
+
+// SetRules must persist the rule set to the store (Swift RulesModel parity:
+// rules survive a restart) — save happens with the change, not on quit.
+#[tokio::test]
+async fn test_set_rules_persists_to_store() {
+    let app = test_app();
+    let store = dummy_store();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let (snapshot_tx, mut snapshot_rx) = tokio::sync::broadcast::channel(16);
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let recorder = RecorderBackend::default();
+
+    let policy = RuleEnginePolicy(rat_core::RuleEngine::new());
+    let ledger = Ledger::new(LedgerConfig { warmup_ms: 0 }, AlertCenterConfig::default());
+    let source = ScriptedSource { conns: vec![] };
+
+    let store_path = store.url.clone();
+    let task = tokio::spawn(rat_daemon::core::run_pipeline(
+        source,
+        policy,
+        ledger,
+        recorder.clone(),
+        store,
+        cmd_rx,
+        snapshot_tx,
+        shutdown_rx,
+    ));
+
+    wait_for_snapshot(&mut snapshot_rx, Duration::from_secs(5)).await;
+    cmd_tx
+        .send(Command::SetRules {
+            rules: vec![deny_rule(app)],
+        })
+        .expect("command channel open");
+    wait_until(Duration::from_secs(5), || recorder.any_enforced_path()).await;
+
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("pipeline must end on shutdown")
+        .unwrap();
+
+    let loaded = RuleStore::new(store_path).load().expect("rules were saved");
+    assert_eq!(loaded.len(), 1, "exactly the deny rule persists");
+    assert_eq!(loaded[0].process_path.as_deref(), Some(app));
+    assert_eq!(loaded[0].verdict, Verdict::Deny);
+    assert!(loaded[0].enabled && loaded[0].approved);
 }
 
 // PROPOSALS #10: a failing enforcement backend must not kill the pipeline —
@@ -428,6 +744,7 @@ async fn test_enforcement_failure_does_not_stop_the_pipeline() {
         policy,
         ledger,
         recorder.clone(),
+        dummy_store(),
         cmd_rx,
         snapshot_tx,
         shutdown_rx,

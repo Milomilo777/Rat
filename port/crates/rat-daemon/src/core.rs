@@ -41,10 +41,21 @@ pub struct EnforceOutcome {
 /// EnforcementPlan into effective firewall state. Object-safe on purpose so
 /// tests inject a recorder instead of netsh/nft.
 pub trait EnforcementBackend: Send {
-    /// #8 obligation (S8): remove every rule this daemon created. Called once
-    /// at startup before the first apply, once on clean shutdown, and by the
-    /// uninstall path (`rat-daemon --cleanup`).
+    /// #8 obligation (S8): remove every rule this daemon created. The
+    /// UNINSTALL path only (`rat-daemon --cleanup`): startup reconciles
+    /// instead (R2/e2e-01) and a clean stop keeps the rules (macOS
+    /// persistent-anchor parity).
     fn cleanup(&self) -> io::Result<()>;
+    /// Read back the rules this backend currently holds, so a restart can
+    /// RECONCILE against them instead of wiping (R2: read existing, diff
+    /// with the saved plan, remove extras, add missing — a wanted rule is
+    /// never deleted). Must return only this daemon's own prefixed rules;
+    /// foreign rules are never this backend's business.
+    fn existing(&self) -> io::Result<rat_enforcer::Blocklist>;
+    /// Adopt a read-back as the backend's notion of current state, seeding
+    /// the diff so the next `enforce` computes exactly remove-extras +
+    /// add-missing.
+    fn adopt(&mut self, existing: rat_enforcer::Blocklist);
     /// Make `wanted` effective. Implementations must be no-ops when the
     /// wanted state is already effective, and on failure must leave their
     /// notion of the current state behind so the next call retries the diff.
@@ -55,7 +66,7 @@ pub trait EnforcementBackend: Send {
 /// amended 2026-10-25, PROPOSALS #8). Local ports are the nft backend's axis.
 #[cfg(windows)]
 pub struct WindowsBackend {
-    enforcer: rat_enforcer::windows::WindowsEnforcer,
+    pub enforcer: rat_enforcer::windows::WindowsEnforcer,
 }
 
 #[cfg(windows)]
@@ -81,6 +92,37 @@ impl EnforcementBackend for WindowsBackend {
     fn cleanup(&self) -> io::Result<()> {
         use rat_enforcer::Enforcer;
         self.enforcer.cleanup()
+    }
+
+    fn existing(&self) -> io::Result<rat_enforcer::Blocklist> {
+        use std::process::Command;
+        // Read-only query; blocking is fine here because this runs once at
+        // startup, before the IPC server exists. Child timeouts are R16.
+        let out = Command::new(rat_enforcer::windows::powershell_path()?)
+            .args(["-NoProfile", "-Command", existing_rules_query()])
+            .output()?;
+        if !out.status.success() {
+            return Err(io::Error::other(format!(
+                "firewall read-back failed: {}",
+                out.status
+            )));
+        }
+        // One program path per line; anything non-empty counts. An empty
+        // answer (no Rat rules at all) is success, not an error.
+        let paths = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect();
+        Ok(rat_enforcer::Blocklist {
+            paths,
+            local_ports: Vec::new(),
+        })
+    }
+
+    fn adopt(&mut self, existing: rat_enforcer::Blocklist) {
+        self.enforcer.current = existing;
     }
 
     fn enforce(&mut self, wanted: &rat_enforcer::Blocklist) -> io::Result<EnforceOutcome> {
@@ -142,6 +184,20 @@ impl EnforcementBackend for LinuxBackend {
         self.enforcer.cleanup()
     }
 
+    fn existing(&self) -> io::Result<rat_enforcer::Blocklist> {
+        // The nft backend rebuilds the whole `inet rat` table per change
+        // (plan() emits the full ruleset, apply() replaces it), so there is
+        // no partial state to adopt: the first enforce after a restart
+        // wholesale replaces whatever a predecessor left — stale rules
+        // cannot survive it. Reconcile here is the rebuild itself.
+        Ok(rat_enforcer::Blocklist::default())
+    }
+
+    fn adopt(&mut self, _existing: rat_enforcer::Blocklist) {
+        // Nothing to seed: see existing() — the whole-table rebuild does not
+        // keep per-rule state.
+    }
+
     fn enforce(&mut self, wanted: &rat_enforcer::Blocklist) -> io::Result<EnforceOutcome> {
         use rat_enforcer::Enforcer;
 
@@ -167,6 +223,64 @@ fn to_blocklist(plan: &rat_ledger::EnforcementPlan) -> rat_enforcer::Blocklist {
             .cloned()
             .collect(),
         local_ports: plan.denied_local_ports.iter().copied().collect(),
+    }
+}
+
+/// The anchor the SAVED rules demand, independent of any live connection —
+/// macOS parity: the pf anchor holds one block per deny rule's program, so an
+/// idle app's block exists BEFORE its next connection attempt (RulesModel +
+/// Enforcer.swift). This is the "saved plan" the startup reconcile diffs
+/// against and the stable half of every enforce round. Only whole-program
+/// deny rules contribute: enabled (a disabled rule blocks nothing), approved
+/// (an unapproved import must not block, #11) and with a process path.
+pub fn static_blocklist(rules: &[rat_core::Rule]) -> rat_enforcer::Blocklist {
+    let mut paths: Vec<String> = rules
+        .iter()
+        .filter(|r| r.enabled && r.approved && r.verdict == rat_core::Verdict::Deny)
+        .filter_map(|r| r.process_path.clone())
+        .filter(|p| !p.is_empty() && p != UNKNOWN_APP)
+        .collect();
+    paths.sort();
+    paths.dedup();
+    rat_enforcer::Blocklist {
+        paths,
+        local_ports: Vec::new(),
+    }
+}
+
+/// The wanted state of an enforce round: the static anchor from the saved
+/// rules UNION the ledger's dynamic plan, deduplicated and sorted so an
+/// unchanged state stays a no-op diff.
+fn merge_blocklists(
+    anchor: rat_enforcer::Blocklist,
+    live: rat_enforcer::Blocklist,
+) -> rat_enforcer::Blocklist {
+    let mut paths = anchor.paths;
+    paths.extend(live.paths);
+    paths.sort();
+    paths.dedup();
+    let mut local_ports = anchor.local_ports;
+    local_ports.extend(live.local_ports);
+    local_ports.sort();
+    local_ports.dedup();
+    rat_enforcer::Blocklist { paths, local_ports }
+}
+
+/// The read-back query for [`EnforcementBackend::existing`] on Windows: the
+/// program paths behind every rule this daemon owns. Scoped to the daemon's
+/// own `Rat:path:` display-name prefix, so foreign rules can never enter the
+/// reconcile diff (e2e-01 item 3). Read-only.
+#[cfg(windows)]
+fn existing_rules_query() -> &'static str {
+    "Get-NetFirewallRule -DisplayName 'Rat:path:*' -ErrorAction SilentlyContinue | Get-NetFirewallApplicationFilter | Select-Object -ExpandProperty Program"
+}
+
+/// Best-effort persistence: the rule set survives a restart (Swift
+/// RulesModel parity). `save_set` keeps only Forever rules — UntilQuit
+/// session rules are supposed to die with the daemon.
+fn persist_rules(store: &rat_core::RuleStore, policy: &RuleEnginePolicy) {
+    if let Err(e) = store.save_set(&policy.0.rule_set()) {
+        eprintln!("rat-daemon: saving rules failed: {e}");
     }
 }
 
@@ -199,36 +313,44 @@ fn unix_now_ms() -> u64 {
 
 /// Apply an alert answer: take the current alert out of the queue and, when
 /// the answer needs a rule, add it to the engine (PROPOSALS #10; port of
-/// RulesModel.addRule(from:verdict:scope:lifetime:)).
+/// RulesModel.addRule(from:verdict:scope:lifetime:)). Returns whether a rule
+/// was created (the caller persists on change).
 fn answer_current_alert(
     ledger: &mut Ledger,
     policy: &RuleEnginePolicy,
     verdict: Verdict,
     scope: rat_ledger::AnswerScope,
     lifetime: Lifetime,
-) {
+) -> bool {
     let Some(answer) = ledger.alerts.answer_current(verdict, lifetime) else {
-        return;
+        return false;
     };
     // An alert answer is a direct user decision: the rule it creates is
     // approved (unlike rule-file imports, which arrive unapproved — #11).
-    if let Some(rule) =
-        rat_ledger::rule_from_answer(&answer.alert, verdict, scope, lifetime, false, None)
-    {
-        policy.0.add(rule);
+    match rat_ledger::rule_from_answer(&answer.alert, verdict, scope, lifetime, false, None) {
+        Some(rule) => {
+            policy.0.add(rule);
+            true
+        }
+        None => false,
     }
 }
 
 /// Runs the whole data path (PROPOSALS #10): monitor -> ledger -> policy ->
 /// enforcer, plus the alert fan-out to IPC clients. Re-judges the last
 /// sample after every command so SetRules/AlertAnswer take effect without
-/// waiting for the next tick. Exits when `shutdown` fires (best-effort
-/// `cleanup()` first) or when every command sender is gone.
+/// waiting for the next tick. Exits when `shutdown` fires (rules are KEPT —
+/// persistent anchor, the uninstall path removes them) or when every command
+/// sender is gone.
+// The five components + three channels are the pipeline's real shape; a
+// bundling struct would move, not remove, the coupling.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_pipeline(
     mut source: impl ConnectionSource + Send + 'static,
     policy: RuleEnginePolicy,
     mut ledger: Ledger,
     mut backend: impl EnforcementBackend,
+    store: std::sync::Arc<rat_core::RuleStore>,
     mut commands: mpsc::UnboundedReceiver<Command>,
     snapshot_tx: broadcast::Sender<ServerMessage>,
     mut shutdown: broadcast::Receiver<()>,
@@ -243,21 +365,25 @@ pub async fn run_pipeline(
     loop {
         tokio::select! {
             _ = shutdown.recv() => {
-                // #8 obligation: best-effort cleanup on clean shutdown so no
-                // netsh rule / nft table outlives the daemon by accident.
-                if let Err(e) = backend.cleanup() {
-                    eprintln!("rat-daemon: shutdown cleanup failed: {e}");
-                }
+                // e2e-01 stop decision (macOS parity): the rules SURVIVE a
+                // stop — the persistent anchor keeps blocking while the
+                // daemon is down (rat-enforcerd KeepAlive, Enforcer.swift:144;
+                // only Remove Helper clears them, :179). A wipe here would
+                // re-open the fail-open window R2 closes at startup. Full
+                // removal is the uninstall path (`rat-daemon --cleanup`).
                 break;
             }
             cmd = commands.recv() => {
                 match cmd {
                     Some(Command::SetRules { rules }) => {
                         policy.0.set_rules(rules);
+                        persist_rules(&store, &policy);
                     }
                     Some(Command::AlertAnswer { id, verdict, scope, lifetime }) => {
                         if current_alert_id == Some(id) {
-                            answer_current_alert(&mut ledger, &policy, verdict, scope, lifetime);
+                            if answer_current_alert(&mut ledger, &policy, verdict, scope, lifetime) {
+                                persist_rules(&store, &policy);
+                            }
                         } else {
                             eprintln!("rat-daemon: ignoring stale AlertAnswer id {id}");
                         }
@@ -304,6 +430,7 @@ pub async fn run_pipeline(
                 None,
             ) {
                 policy.0.add(rule);
+                persist_rules(&store, &policy);
             }
         }
 
@@ -326,9 +453,14 @@ pub async fn run_pipeline(
             }
         }
 
-        // Enforcement follows the ledger's plan: denied apps plus the LOCAL
-        // ports of denied sockets — never server addresses (R4).
-        let wanted = to_blocklist(ledger.enforcement());
+        // Enforcement = the static anchor the saved rules demand (a deny
+        // rule blocks its program whether or not a connection is live,
+        // macOS pf-anchor parity) UNION the ledger's plan: denied apps plus
+        // the LOCAL ports of denied sockets — never server addresses (R4).
+        let wanted = merge_blocklists(
+            static_blocklist(&policy.0.all_rules()),
+            to_blocklist(ledger.enforcement()),
+        );
         match backend.enforce(&wanted) {
             Ok(outcome) => {
                 if outcome.refused != last_refused {
@@ -346,5 +478,78 @@ pub async fn run_pipeline(
         let _ = snapshot_tx.send(ServerMessage::Snapshot {
             connections: last_conns.clone(),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rule(path: Option<&str>, verdict: Verdict, enabled: bool, approved: bool) -> rat_core::Rule {
+        rat_core::Rule {
+            id: uuid::Uuid::new_v4(),
+            verdict,
+            process_path: path.map(str::to_string),
+            signing_id: None,
+            team_id: None,
+            remote_domain: None,
+            remote_host: None,
+            remote_address: None,
+            ports: None,
+            proto: None,
+            enabled,
+            approved,
+            lifetime: Lifetime::Forever,
+            profile_id: None,
+            group_id: None,
+            created_at: chrono::Utc::now(),
+            note: None,
+        }
+    }
+
+    #[test]
+    fn static_blocklist_takes_only_enabled_approved_deny_program_rules() {
+        let rules = vec![
+            rule(Some("/bin/deny"), Verdict::Deny, true, true),
+            rule(Some("/bin/allow"), Verdict::Allow, true, true),
+            rule(Some("/bin/disabled"), Verdict::Deny, false, true),
+            rule(Some("/bin/unapproved"), Verdict::Deny, true, false),
+            rule(None, Verdict::Deny, true, true),
+            rule(Some("/bin/deny"), Verdict::Deny, true, true), // dedup
+        ];
+        assert_eq!(
+            static_blocklist(&rules).paths,
+            vec!["/bin/deny".to_string()]
+        );
+    }
+
+    #[test]
+    fn merge_unions_and_dedups() {
+        let merged = merge_blocklists(
+            rat_enforcer::Blocklist {
+                paths: vec!["/a".into(), "/b".into()],
+                local_ports: vec![1, 2],
+            },
+            rat_enforcer::Blocklist {
+                paths: vec!["/b".into(), "/c".into()],
+                local_ports: vec![2, 3],
+            },
+        );
+        assert_eq!(
+            merged.paths,
+            vec!["/a".to_string(), "/b".to_string(), "/c".to_string()]
+        );
+        assert_eq!(merged.local_ports, vec![1, 2, 3]);
+    }
+
+    // e2e-01 item 3: the read-back must target ONLY this daemon's own
+    // prefixed rules, and it is read-only.
+    #[cfg(windows)]
+    #[test]
+    fn existing_rules_query_scopes_to_rat_prefix_and_reads_only() {
+        let q = existing_rules_query();
+        assert!(q.contains("-DisplayName 'Rat:path:*'"));
+        assert!(!q.to_lowercase().contains("remove"));
+        assert!(!q.to_lowercase().contains("add"));
     }
 }
