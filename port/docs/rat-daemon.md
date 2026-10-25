@@ -17,15 +17,16 @@ The main components are:
   sample whenever a command arrives so SetRules/AlertAnswer take effect immediately.
 * `rat_daemon::core::Command`: what IPC clients may ask the pipeline to do (`SetRules`, `AlertAnswer`).
 * `rat_daemon::core::{EnforcementBackend, WindowsBackend, LinuxBackend}`: the enforcer seam — netsh advfirewall
-  per-program rules on Windows (ADR 0001 as amended), the whole `inet rat` nft table on Linux.
+  per-program rules plus per-port rules for the denied sockets' local ports (`Rat:port:<n>`, review-01 R5) on
+  Windows, the whole `inet rat` nft table on Linux.
 * `rat_daemon::ipc::start_ipc_server`: asynchronous IPC listener handling framed JSON lines.
 * `rat_daemon::run_components`: daemon shell — loads the saved rule set (`rat_core::RuleStore`, `RAT_RULES_FILE`
   or `%ProgramData%\rat\rules.json` / `/etc/rat/rules.json`), RECONCILES the firewall at startup (read back the
-  daemon's own `Rat:path:*` rules, adopt them as the diff baseline, enforce the saved plan's static anchor —
-  never wipe-then-apply, review-01 R2 / e2e-01) all BEFORE the IPC endpoint serves, then pipeline + IPC until
-  shutdown. A clean stop KEEPS the rules (macOS persistent-anchor parity, review-01 R3): enforcement stays
-  active while the daemon is down and the next startup reconciles. `run_daemon` is the production wiring;
-  `run_cleanup` backs the uninstall path (`rat-daemon --cleanup`), the ONLY full removal.
+  daemon's own `Rat:path:*` and `Rat:port:*` rules, adopt them as the diff baseline, enforce the saved plan's
+  static anchor — never wipe-then-apply, review-01 R2 / e2e-01) all BEFORE the IPC endpoint serves, then pipeline
+  + IPC until shutdown. A clean stop KEEPS the rules (macOS persistent-anchor parity, review-01 R3): enforcement
+  stays active while the daemon is down and the next startup reconciles. `run_daemon` is the production wiring;
+  `run_cleanup` backs the uninstall path (`rat-daemon --cleanup`), the ONLY full removal (both rule families).
 
 ## IPC protocol (v1)
 

@@ -63,7 +63,9 @@ pub trait EnforcementBackend: Send {
 }
 
 /// Windows backend: `netsh advfirewall` per-program rules (ADR 0001 as
-/// amended 2026-10-25, PROPOSALS #8). Local ports are the nft backend's axis.
+/// amended 2026-10-25, PROPOSALS #8) plus per-port rules for the denied
+/// sockets' local ports (review-01 R5 — the Windows mirror of the Linux
+/// backend's nft port set).
 #[cfg(windows)]
 pub struct WindowsBackend {
     pub enforcer: rat_enforcer::windows::WindowsEnforcer,
@@ -107,18 +109,9 @@ impl EnforcementBackend for WindowsBackend {
                 out.status
             )));
         }
-        // One program path per line; anything non-empty counts. An empty
-        // answer (no Rat rules at all) is success, not an error.
-        let paths = String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(str::to_string)
-            .collect();
-        Ok(rat_enforcer::Blocklist {
-            paths,
-            local_ports: Vec::new(),
-        })
+        // One program path / local port per line; anything non-empty counts.
+        // An empty answer (no Rat rules at all) is success, not an error.
+        Ok(parse_existing_output(&String::from_utf8_lossy(&out.stdout)))
     }
 
     fn adopt(&mut self, existing: rat_enforcer::Blocklist) {
@@ -128,13 +121,16 @@ impl EnforcementBackend for WindowsBackend {
     fn enforce(&mut self, wanted: &rat_enforcer::Blocklist) -> io::Result<EnforceOutcome> {
         use rat_enforcer::Enforcer;
 
-        let wanted = rat_enforcer::Blocklist {
-            paths: wanted.paths.clone(),
-            local_ports: Vec::new(),
-        };
-        let plan = self.enforcer.plan(&wanted);
+        // review-01 R5: the port axis reaches the plan (dropping it here made
+        // every refused shared host a silent no-op and ignored the ledger's
+        // denied_local_ports).
+        let plan = self.enforcer.plan(wanted);
         let refused = plan.refused.clone();
-        if plan.add.is_empty() && plan.remove.is_empty() {
+        if plan.add.is_empty()
+            && plan.remove.is_empty()
+            && plan.add_ports.is_empty()
+            && plan.remove_ports.is_empty()
+        {
             return Ok(EnforceOutcome {
                 applied: false,
                 refused,
@@ -143,7 +139,7 @@ impl EnforcementBackend for WindowsBackend {
         // S7: apply() honours RAT_DRY_RUN; on failure `current` stays behind
         // so the next tick retries the same diff instead of losing it.
         self.enforcer.apply(&plan)?;
-        self.enforcer.current = wanted;
+        self.enforcer.current = wanted.clone();
         Ok(EnforceOutcome {
             applied: true,
             refused,
@@ -267,12 +263,50 @@ fn merge_blocklists(
 }
 
 /// The read-back query for [`EnforcementBackend::existing`] on Windows: the
-/// program paths behind every rule this daemon owns. Scoped to the daemon's
-/// own `Rat:path:` display-name prefix, so foreign rules can never enter the
-/// reconcile diff (e2e-01 item 3). Read-only.
+/// program paths behind every `Rat:path:*` rule and the local ports behind
+/// every `Rat:port:*` rule this daemon owns (review-01 R5: the port axis is
+/// reconciled too). Scoped to the daemon's own prefixes, so foreign rules can
+/// never enter the reconcile diff (e2e-01 item 3). Read-only. The marker
+/// separates the two sections for [`parse_existing_output`].
 #[cfg(windows)]
 fn existing_rules_query() -> &'static str {
-    "Get-NetFirewallRule -DisplayName 'Rat:path:*' -ErrorAction SilentlyContinue | Get-NetFirewallApplicationFilter | Select-Object -ExpandProperty Program"
+    "Get-NetFirewallRule -DisplayName 'Rat:path:*' -ErrorAction SilentlyContinue | Get-NetFirewallApplicationFilter | Select-Object -ExpandProperty Program; Write-Output '---RATPORTS---'; Get-NetFirewallRule -DisplayName 'Rat:port:*' -ErrorAction SilentlyContinue | Get-NetFirewallPortFilter | Select-Object -ExpandProperty LocalPort"
+}
+
+#[cfg(windows)]
+const PORTS_MARKER: &str = "---RATPORTS---";
+
+/// Splits the read-back output into paths (before the marker) and local
+/// ports (after it). A `Rat:port:*` port exists as FOUR netsh rules (out/in x
+/// TCP/UDP), so the same LocalPort arrives once per rule — dedup here keeps
+/// the reconcile diff from removing one port three times. Non-numeric port
+/// lines (Get-NetFirewallPortFilter can report "Any") are not ours to
+/// reconcile and are skipped.
+#[cfg(windows)]
+fn parse_existing_output(stdout: &str) -> rat_enforcer::Blocklist {
+    let mut paths = Vec::new();
+    let mut local_ports = Vec::new();
+    let mut in_ports = false;
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line == PORTS_MARKER {
+            in_ports = true;
+            continue;
+        }
+        if line.is_empty() {
+            continue;
+        }
+        if in_ports {
+            if let Ok(p) = line.parse::<u16>() {
+                local_ports.push(p);
+            }
+        } else {
+            paths.push(line.to_string());
+        }
+    }
+    local_ports.sort();
+    local_ports.dedup();
+    rat_enforcer::Blocklist { paths, local_ports }
 }
 
 /// Best-effort persistence: the rule set survives a restart (Swift
@@ -543,13 +577,30 @@ mod tests {
     }
 
     // e2e-01 item 3: the read-back must target ONLY this daemon's own
-    // prefixed rules, and it is read-only.
+    // prefixed rules, and it is read-only. review-01 R5: it covers both rule
+    // families (paths and ports).
     #[cfg(windows)]
     #[test]
     fn existing_rules_query_scopes_to_rat_prefix_and_reads_only() {
         let q = existing_rules_query();
         assert!(q.contains("-DisplayName 'Rat:path:*'"));
+        assert!(q.contains("-DisplayName 'Rat:port:*'"));
         assert!(!q.to_lowercase().contains("remove"));
         assert!(!q.to_lowercase().contains("add"));
+    }
+
+    // review-01 R5: the read-back parse separates the path and port sections,
+    // dedups the per-variant port lines (4 rules per port), and skips
+    // non-numeric lines.
+    #[cfg(windows)]
+    #[test]
+    fn parse_existing_output_splits_paths_and_ports() {
+        let out = "C:\\a\\app.exe\n\nC:\\b\\tool.exe\n---RATPORTS---\n5300\n5300\n5300\n5300\nAny\n4443\n";
+        let b = parse_existing_output(out);
+        assert_eq!(
+            b.paths,
+            vec![r"C:\a\app.exe".to_string(), r"C:\b\tool.exe".to_string()]
+        );
+        assert_eq!(b.local_ports, vec![4443, 5300]);
     }
 }

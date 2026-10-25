@@ -645,7 +645,9 @@ async fn test_corrupt_rules_file_daemon_still_serves() {
 
 // The R2 diff itself on the REAL windows backend: after adopting what the
 // firewall read-back reported, the plan must remove exactly the stale rules
-// and never the wanted one — reconcile, not wipe-then-apply.
+// and never the wanted one — reconcile, not wipe-then-apply. review-01 R5:
+// the port axis diffs the same way (stale port rule goes, wanted port is
+// added).
 #[cfg(windows)]
 #[test]
 fn test_windows_adopt_then_plan_reconciles() {
@@ -658,12 +660,12 @@ fn test_windows_adopt_then_plan_reconciles() {
     let mut backend = rat_daemon::core::WindowsBackend::new();
     backend.adopt(rat_enforcer::Blocklist {
         paths: vec![wanted.to_string(), stale1.to_string(), stale2.to_string()],
-        local_ports: vec![],
+        local_ports: vec![7777],
     });
 
     let plan = backend.enforcer.plan(&rat_enforcer::Blocklist {
         paths: vec![wanted.to_string()],
-        local_ports: vec![],
+        local_ports: vec![8888],
     });
     assert!(plan.add.is_empty(), "nothing to add: W is already there");
     assert_eq!(plan.remove, vec![stale1.to_string(), stale2.to_string()]);
@@ -674,6 +676,16 @@ fn test_windows_adopt_then_plan_reconciles() {
     assert!(
         !plan.remove.contains(&foreign.to_string()),
         "a foreign rule was never adopted, so it is never removed"
+    );
+    assert_eq!(
+        plan.add_ports,
+        vec![8888],
+        "the wanted port is added by the diff"
+    );
+    assert_eq!(
+        plan.remove_ports,
+        vec![7777],
+        "a stale port rule is removed by the diff"
     );
 }
 
@@ -806,6 +818,42 @@ fn test_windows_backend_refuses_shared_host_and_enforces_paths() {
     // Already-effective state is a no-op (no netsh churn per tick).
     let outcome = backend.enforce(&wanted).expect("dry-run enforce");
     assert!(!outcome.applied, "unchanged state must not re-apply");
+}
+
+// review-01 R5: the Windows backend must enforce the denied sockets' LOCAL
+// ports (the port axis, macOS Ledger.swift:330 parity) instead of silently
+// dropping them — and a refused shared host's denied socket port must still
+// land as a per-port rule ("block by port instead" must not be a no-op).
+#[cfg(windows)]
+#[test]
+fn test_windows_backend_enforces_denied_local_ports() {
+    use rat_enforcer::Blocklist;
+
+    std::env::set_var("RAT_DRY_RUN", "1");
+    let mut backend = rat_daemon::core::WindowsBackend::new();
+
+    let wanted = Blocklist {
+        paths: vec![],
+        local_ports: vec![5300],
+    };
+    let outcome = backend.enforce(&wanted).expect("dry-run enforce");
+    assert!(
+        outcome.applied,
+        "a denied local port must be enforced, not dropped: {outcome:?}"
+    );
+
+    let outcome = backend.enforce(&wanted).expect("dry-run enforce");
+    assert!(!outcome.applied, "unchanged port set must not re-apply");
+
+    // A port that dropped out (socket closed, PROPOSALS #3) is part of the
+    // next diff, like on the Linux backend.
+    let outcome = backend
+        .enforce(&Blocklist {
+            paths: vec![],
+            local_ports: vec![],
+        })
+        .expect("dry-run enforce");
+    assert!(outcome.applied, "port removal re-applies the ruleset");
 }
 
 #[cfg(not(windows))]
