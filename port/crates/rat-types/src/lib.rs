@@ -5,7 +5,11 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Protocol {
+    // Aliases accept Swift's lowercase raw values ("tcp"/"udp") on decode;
+    // the serialized spelling stays unchanged.
+    #[serde(alias = "tcp")]
     Tcp,
+    #[serde(alias = "udp")]
     Udp,
 }
 

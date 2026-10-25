@@ -14,6 +14,16 @@ pub async fn start_ipc_server(
     use std::os::unix::fs::PermissionsExt;
     use tokio::net::UnixListener;
 
+    // PROPOSALS #9: if a live listener answers on this path, another daemon
+    // owns the socket — refuse to start instead of silently stealing it.
+    // Only a stale socket left by a crashed daemon gets removed below.
+    if tokio::net::UnixStream::connect(socket_path).await.is_ok() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            format!("another daemon is already listening on {socket_path}"),
+        ));
+    }
+
     let _ = std::fs::remove_file(socket_path);
     if let Some(parent) = std::path::Path::new(socket_path).parent() {
         std::fs::create_dir_all(parent)?;

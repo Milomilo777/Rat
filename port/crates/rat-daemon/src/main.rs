@@ -21,9 +21,8 @@ fn main() -> std::io::Result<()> {
             let _ = shutdown_tx.send(());
         });
 
-        rat_daemon::run_daemon(shutdown_rx).await;
-    });
-    Ok(())
+        rat_daemon::run_daemon(shutdown_rx).await
+    })
 }
 
 #[cfg(windows)]
@@ -45,7 +44,6 @@ fn run_console() -> std::io::Result<()> {
             let _ = tokio::signal::ctrl_c().await;
             let _ = shutdown_tx.send(());
         });
-        rat_daemon::run_daemon(shutdown_rx).await;
-    });
-    Ok(())
+        rat_daemon::run_daemon(shutdown_rx).await
+    })
 }

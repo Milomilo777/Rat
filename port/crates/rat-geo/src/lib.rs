@@ -138,7 +138,8 @@ impl TimeZoneLocator {
 
     #[cfg(target_os = "windows")]
     fn coordinates_windows() -> Option<(f64, f64, String)> {
-        // Need to read windows time zone and convert using cldr table
+        // Windows has no zone.tab; map the tzutil zone through CLDR and look
+        // it up in the vendored coordinate table instead.
         let output = std::process::Command::new("tzutil")
             .arg("/g")
             .output()
@@ -147,7 +148,26 @@ impl TimeZoneLocator {
         let tz_str = tz_str.trim();
         let iana = crate::windows_tz::map_windows_zone_to_iana(tz_str)?;
 
-        Self::lookup_in_zone_tab(iana, "/usr/share/zoneinfo/zone.tab")
+        let (lat, lon) = Self::zone_coordinates(iana)?;
+        Some((lat, lon, Self::city_from_zone_name(iana)))
+    }
+
+    /// Reference-city coordinates for an IANA zone from the vendored table
+    /// (PROPOSALS #6): no filesystem access, works on every OS.
+    pub fn zone_coordinates(zone_name: &str) -> Option<(f64, f64)> {
+        let coords = crate::zone_coords::ZONE_COORDS
+            .iter()
+            .find(|(z, _)| *z == zone_name)
+            .map(|(_, c)| *c)?;
+        Self::parse_iso6709(coords)
+    }
+
+    fn city_from_zone_name(zone_name: &str) -> String {
+        zone_name
+            .split('/')
+            .next_back()
+            .unwrap_or(zone_name)
+            .replace('_', " ")
     }
 
     pub fn lookup_in_zone_tab(zone_name: &str, zone_tab_path: &str) -> Option<(f64, f64, String)> {
@@ -160,12 +180,7 @@ impl TimeZoneLocator {
             if parts.len() >= 3 && parts[2] == zone_name {
                 let coords_str = parts[1];
                 let coords = Self::parse_iso6709(coords_str)?;
-                let city = zone_name
-                    .split('/')
-                    .next_back()
-                    .unwrap_or(zone_name)
-                    .replace('_', " ");
-                return Some((coords.0, coords.1, city));
+                return Some((coords.0, coords.1, Self::city_from_zone_name(zone_name)));
             }
         }
         None
@@ -211,6 +226,7 @@ impl TimeZoneLocator {
 }
 
 pub mod windows_tz;
+pub mod zone_coords;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NetworkOwner {

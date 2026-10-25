@@ -215,3 +215,167 @@ fn test_edge_cases_msg_roundtrip() {
     let deserialized: Message = Message::from_json_str(&serialized).unwrap();
     assert_eq!(snapshot, deserialized);
 }
+
+#[cfg(unix)]
+fn is_socket(p: &str) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    std::fs::metadata(p)
+        .map(|m| m.file_type().is_socket())
+        .unwrap_or(false)
+}
+
+// PROPOSALS #9: a second daemon must refuse to start while another daemon's
+// socket is live, instead of removing it and binding its own.
+#[cfg(unix)]
+#[tokio::test]
+async fn test_second_daemon_cannot_steal_live_socket() {
+    use std::time::{Duration, Instant};
+
+    let socket_path = format!("/tmp/rat_test_steal_{}.sock", std::process::id());
+    let _ = std::fs::remove_file(&socket_path);
+
+    let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let (snapshot_tx, snapshot_rx) = tokio::sync::broadcast::channel(16);
+
+    let sp = socket_path.clone();
+    let shutdown_rx_ipc = shutdown_tx.subscribe();
+    let ipc_task = tokio::spawn(async move {
+        rat_daemon::ipc::start_ipc_server(&sp, shutdown_rx_ipc, snapshot_rx).await
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !is_socket(&socket_path) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        is_socket(&socket_path),
+        "first daemon never bound its socket"
+    );
+
+    let second = tokio::time::timeout(
+        Duration::from_secs(10),
+        rat_daemon::ipc::start_ipc_server(
+            &socket_path,
+            shutdown_tx.subscribe(),
+            snapshot_tx.subscribe(),
+        ),
+    )
+    .await
+    .expect("second start_ipc_server did not return");
+    let err = second.expect_err("second daemon must be refused on a live socket");
+    assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
+
+    // the refused instance must not have removed the live daemon's socket
+    assert!(is_socket(&socket_path));
+
+    shutdown_tx.send(()).expect("shutdown send");
+    ipc_task
+        .await
+        .expect("ipc task join")
+        .expect("first daemon clean shutdown");
+    assert!(
+        !std::path::Path::new(&socket_path).exists(),
+        "socket must be cleaned up on shutdown"
+    );
+}
+
+// PROPOSALS #9: a socket file left behind by a crashed daemon is not live,
+// so a new daemon must still be able to reclaim it.
+#[cfg(unix)]
+#[tokio::test]
+async fn test_stale_socket_from_crashed_daemon_is_reclaimed() {
+    use std::time::{Duration, Instant};
+
+    let socket_path = format!("/tmp/rat_test_stale_{}.sock", std::process::id());
+    std::fs::write(&socket_path, b"leftover from a crashed daemon").unwrap();
+
+    let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let (_, snapshot_rx) = tokio::sync::broadcast::channel(16);
+
+    let sp = socket_path.clone();
+    let shutdown_rx_ipc = shutdown_tx.subscribe();
+    let ipc_task = tokio::spawn(async move {
+        rat_daemon::ipc::start_ipc_server(&sp, shutdown_rx_ipc, snapshot_rx).await
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !is_socket(&socket_path) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        is_socket(&socket_path),
+        "stale file should have been replaced by a bound socket"
+    );
+
+    shutdown_tx.send(()).expect("shutdown send");
+    ipc_task
+        .await
+        .expect("ipc task join")
+        .expect("daemon must reclaim a stale socket");
+    assert!(
+        !std::path::Path::new(&socket_path).exists(),
+        "socket must be cleaned up on shutdown"
+    );
+}
+
+// PROPOSALS #9, named-pipe side: first_pipe_instance(true) must make a second
+// daemon fail while the first one owns the pipe.
+#[cfg(windows)]
+#[tokio::test]
+async fn test_second_daemon_cannot_steal_live_pipe() {
+    use std::time::Duration;
+    use tokio::net::windows::named_pipe::ClientOptions;
+
+    let pipe_name = format!(r"\\.\pipe\rat_test_steal_{}", std::process::id());
+
+    let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let (snapshot_tx, snapshot_rx) = tokio::sync::broadcast::channel(16);
+
+    let pn = pipe_name.clone();
+    let shutdown_rx_ipc = shutdown_tx.subscribe();
+    let ipc_task = tokio::spawn(async move {
+        rat_daemon::ipc::start_ipc_server(&pn, shutdown_rx_ipc, snapshot_rx).await
+    });
+
+    // Wait until the first daemon has a live pipe instance, then let it
+    // recreate its next instance; otherwise the "second" daemon would race
+    // the first into creating the pipe at all.
+    let mut ready = false;
+    for _ in 0..100 {
+        match ClientOptions::new().open(&pipe_name) {
+            Ok(client) => {
+                drop(client);
+                ready = true;
+                break;
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+    assert!(ready, "first daemon never created its pipe");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let second = tokio::time::timeout(
+        Duration::from_secs(5),
+        rat_daemon::ipc::start_ipc_server(
+            &pipe_name,
+            shutdown_tx.subscribe(),
+            snapshot_tx.subscribe(),
+        ),
+    )
+    .await
+    .expect("second start_ipc_server did not return");
+    let err = second.expect_err("second daemon must be refused while the pipe is live");
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+
+    // the live daemon must still accept a client afterwards
+    let client = ClientOptions::new()
+        .open(&pipe_name)
+        .expect("first daemon still owns the pipe");
+    drop(client);
+
+    shutdown_tx.send(()).expect("shutdown send");
+    ipc_task
+        .await
+        .expect("ipc task join")
+        .expect("first daemon clean shutdown");
+}
