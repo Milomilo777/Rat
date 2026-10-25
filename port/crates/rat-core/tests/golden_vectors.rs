@@ -3,8 +3,9 @@
 //! qa-core-swift lane). Proves two things at once: rat-core decodes
 //! Swift's rules.json encoding (camelCase keys with `ID` spellings,
 //! ClosedRange port arrays, keyed unknownNetworkAction, lowercase protos),
-//! and the engine reproduces Swift's verdicts — including the
-//! enabled && approved semantics fixed on both sides (PROPOSALS #11).
+//! and the engine reproduces Swift's verdicts. Matching semantics follow
+//! the documented upstream design: `enabled` gates matching, `approved`
+//! is a review marker only (supervisor update-16; PROPOSALS #11).
 
 use rat_core::{AppConnection, AppIdentity, RuleEngine, RuleSet, RuleStore, Verdict};
 use serde::Deserialize;

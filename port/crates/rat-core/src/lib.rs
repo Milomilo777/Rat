@@ -685,9 +685,9 @@ impl RuleEngine {
             .filter(|r| {
                 (r.profile_id.is_none() || r.profile_id == Some(snapshot.active_profile_id))
                     && !(r.group_id.is_some_and(|gid| disabled_groups.contains(&gid)))
-                    && r.enabled
-                    && r.approved
             })
+            // `enabled` gates matching (enforced again in Rule::matches); `approved` is a review
+            // marker only and never gates matching - supervisor update-16, upstream CLAUDE.md.
             .filter(|r| r.matches(c))
             .max_by(|a, b| {
                 if a.specificity() != b.specificity() {
@@ -934,8 +934,11 @@ mod tests {
         assert_eq!(e.evaluate(&conn("a.com", 443)), Verdict::Deny);
     }
 
+    /// Documented semantics (CLAUDE.md, the `approved` field doc): `approved` is a review marker
+    /// only - an enabled but unapproved rule still matches; `enabled` gates matching
+    /// (`Rule::matches`). Supervisor update-16.
     #[test]
-    fn test_disabled_and_unapproved_rules_never_match() {
+    fn test_unapproved_still_matches_but_disabled_never_does() {
         let mut r1 = new_rule();
         r1.verdict = Verdict::Deny;
         r1.enabled = false;
@@ -951,7 +954,7 @@ mod tests {
 
         assert_eq!(
             RuleEngine::with_rules(vec![r2], Verdict::Ask).evaluate(&conn("a.com", 443)),
-            Verdict::Ask
+            Verdict::Deny
         );
     }
 
