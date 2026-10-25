@@ -46,7 +46,7 @@ async fn spawn_server_with_commands(
     String,
     tokio::sync::broadcast::Sender<ServerMessage>,
     tokio::sync::broadcast::Sender<()>,
-    tokio::sync::mpsc::UnboundedReceiver<rat_daemon::core::Command>,
+    tokio::sync::mpsc::Receiver<rat_daemon::core::Command>,
 ) {
     #[cfg(unix)]
     let endpoint = format!("/tmp/rat_it_{test}_{}.sock", std::process::id());
@@ -55,7 +55,7 @@ async fn spawn_server_with_commands(
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
     let (snapshot_tx, snapshot_rx) = tokio::sync::broadcast::channel(16);
-    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY);
 
     let ep = endpoint.clone();
     tokio::spawn(async move {
@@ -424,7 +424,7 @@ async fn run_snapshot_pipeline(endpoint: &str) {
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
     let (snapshot_tx, snapshot_rx) = tokio::sync::broadcast::channel(16);
-    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY);
 
     let source = MockSource;
     let policy = rat_ledger::RuleEnginePolicy(rat_core::RuleEngine::new());
@@ -596,7 +596,7 @@ async fn test_second_daemon_cannot_steal_live_socket() {
 
     let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel(1);
     let (snapshot_tx, snapshot_rx) = tokio::sync::broadcast::channel(16);
-    let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let cmd_tx = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY).0;
 
     let sp = socket_path.clone();
     let shutdown_rx_ipc = shutdown_tx.subscribe();
@@ -619,7 +619,7 @@ async fn test_second_daemon_cannot_steal_live_socket() {
             &socket_path,
             shutdown_tx.subscribe(),
             snapshot_tx.subscribe(),
-            tokio::sync::mpsc::unbounded_channel().0,
+            tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY).0,
         ),
     )
     .await
@@ -662,7 +662,7 @@ async fn test_stale_socket_from_crashed_daemon_is_reclaimed() {
             &sp,
             shutdown_rx_ipc,
             snapshot_rx,
-            tokio::sync::mpsc::unbounded_channel().0,
+            tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY).0,
         )
         .await
     });
@@ -698,7 +698,7 @@ async fn test_second_daemon_cannot_steal_live_pipe() {
 
     let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel(1);
     let (snapshot_tx, snapshot_rx) = tokio::sync::broadcast::channel(16);
-    let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let cmd_tx = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY).0;
 
     let pn = pipe_name.clone();
     let shutdown_rx_ipc = shutdown_tx.subscribe();
@@ -729,7 +729,7 @@ async fn test_second_daemon_cannot_steal_live_pipe() {
             &pipe_name,
             shutdown_tx.subscribe(),
             snapshot_tx.subscribe(),
-            tokio::sync::mpsc::unbounded_channel().0,
+            tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY).0,
         ),
     )
     .await
@@ -773,7 +773,7 @@ async fn test_oversized_client_line_is_rejected_and_closed() {
             &sp,
             shutdown_rx_ipc,
             snapshot_rx,
-            tokio::sync::mpsc::unbounded_channel().0,
+            tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY).0,
         )
         .await
     });
@@ -832,7 +832,7 @@ async fn test_oversized_client_line_is_rejected_and_closed() {
             &pn,
             shutdown_rx_ipc,
             snapshot_rx,
-            tokio::sync::mpsc::unbounded_channel().0,
+            tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY).0,
         )
         .await
     });
@@ -901,7 +901,7 @@ async fn test_fifth_concurrent_client_is_refused() {
             &sp,
             shutdown_rx_ipc,
             snapshot_rx,
-            tokio::sync::mpsc::unbounded_channel().0,
+            tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY).0,
         )
         .await
     });
@@ -960,7 +960,7 @@ async fn test_fifth_concurrent_client_is_refused() {
             &pn,
             shutdown_rx_ipc,
             snapshot_rx,
-            tokio::sync::mpsc::unbounded_channel().0,
+            tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY).0,
         )
         .await
     });
@@ -1028,7 +1028,7 @@ async fn test_socket_and_directory_permissions() {
             &sp,
             shutdown_rx_ipc,
             snapshot_rx,
-            tokio::sync::mpsc::unbounded_channel().0,
+            tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY).0,
         )
         .await
     });
@@ -1060,4 +1060,45 @@ async fn test_socket_and_directory_permissions() {
 
     shutdown_tx.send(()).unwrap();
     ipc_task.await.unwrap().unwrap();
+}
+
+// A client that floods SetRules must get a clear Error reply once the
+// daemon's command queue is full — never a hang, never a silent unbounded
+// backlog. The test holds the queue's receiver unconsumed, so the queue
+// provably fills no matter how fast the daemon would drain it.
+#[tokio::test]
+async fn test_set_rules_flood_gets_error_reply_not_a_hang() {
+    let (endpoint, _snapshot_tx, shutdown_tx, _cmd_rx) = spawn_server_with_commands("flood").await;
+    let (r, w) = tokio::io::split(connect_ep(&endpoint).await);
+    let mut reader = FramedRead::new(r, LinesCodec::new());
+    let mut writer = FramedWrite::new(w, LinesCodec::new());
+
+    send_client(
+        &mut writer,
+        &ClientMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    )
+    .await;
+    assert!(matches!(
+        read_server(&mut reader, READ_TIMEOUT).await,
+        Some(ServerMessage::HelloAck { .. })
+    ));
+
+    // Well past any sane queue bound.
+    for _ in 0..64 {
+        send_client(&mut writer, &ClientMessage::SetRules { rules: vec![] }).await;
+    }
+
+    let reply = read_server(&mut reader, READ_TIMEOUT)
+        .await
+        .expect("a full command queue must produce an error reply, not silence");
+    match reply {
+        ServerMessage::Error { message } => assert!(
+            message.contains("command queue full"),
+            "the error must name the full queue: {message}"
+        ),
+        other => panic!("expected Error, got {other:?}"),
+    }
+    let _ = shutdown_tx.send(());
 }

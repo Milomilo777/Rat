@@ -426,9 +426,12 @@ fn answer_current_alert(
 /// Runs the whole data path: monitor -> ledger -> policy ->
 /// enforcer, plus the alert fan-out to IPC clients. Re-judges the last
 /// sample after every command so SetRules/AlertAnswer take effect without
-/// waiting for the next tick. Exits when `shutdown` fires (rules are KEPT —
-/// persistent anchor, the uninstall path removes them) or when every command
-/// sender is gone.
+/// waiting for the next tick. Commands arrive on a BOUNDED queue (back
+/// pressure): each poll drains everything already queued into ONE round,
+/// coalescing runs of `SetRules` to the newest list — a burst costs one
+/// enforce, and a flooding client is rejected at the IPC layer, not here.
+/// Exits when `shutdown` fires (rules are KEPT — persistent anchor, the
+/// uninstall path removes them) or when every command sender is gone.
 // The five components + three channels are the pipeline's real shape; a
 // bundling struct would move, not remove, the coupling.
 #[allow(clippy::too_many_arguments)]
@@ -438,7 +441,7 @@ pub async fn run_pipeline(
     mut ledger: Ledger,
     mut backend: impl EnforcementBackend,
     store: impl Into<Option<std::sync::Arc<rat_core::RuleStore>>>,
-    mut commands: mpsc::UnboundedReceiver<Command>,
+    mut commands: mpsc::Receiver<Command>,
     snapshot_tx: broadcast::Sender<ServerMessage>,
     mut shutdown: broadcast::Receiver<()>,
 ) {
@@ -464,26 +467,54 @@ pub async fn run_pipeline(
             }
             cmd = commands.recv() => {
                 match cmd {
-                    Some(Command::SetRules { rules }) => {
-                        policy.0.set_rules(rules);
-                        persist_rules(&store, &policy);
-                    }
-                    Some(Command::AlertAnswer { id, verdict, scope, lifetime }) => {
-                        if current_alert_id == Some(id) {
-                            if answer_current_alert(&mut ledger, &policy, verdict, scope, lifetime) {
-                                persist_rules(&store, &policy);
+                    Some(command) => {
+                        // Drain everything already queued in this one arm so
+                        // a whole burst costs ONE enforce round below. Runs
+                        // of SetRules coalesce to the NEWEST list (the
+                        // intermediate lists are stale before they could
+                        // ever run); a non-SetRules command keeps its order —
+                        // it is handled after the SetRules in front of it
+                        // was applied, and it stops the drain, so SetRules
+                        // behind it batch with the next round.
+                        let mut pending = Some(command);
+                        while let Some(cmd) = pending.take() {
+                            match cmd {
+                                Command::SetRules { rules } => {
+                                    let mut newest = rules;
+                                    loop {
+                                        match commands.try_recv() {
+                                            // A newer list supersedes every
+                                            // queued older one.
+                                            Ok(Command::SetRules { rules }) => newest = rules,
+                                            Ok(other) => {
+                                                pending = Some(other);
+                                                break;
+                                            }
+                                            Err(_) => break,
+                                        }
+                                    }
+                                    policy.0.set_rules(newest);
+                                    persist_rules(&store, &policy);
+                                }
+                                Command::AlertAnswer { id, verdict, scope, lifetime } => {
+                                    if current_alert_id == Some(id) {
+                                        if answer_current_alert(&mut ledger, &policy, verdict, scope, lifetime) {
+                                            persist_rules(&store, &policy);
+                                        }
+                                    } else {
+                                        eprintln!("rat-daemon: ignoring stale AlertAnswer id {id}");
+                                    }
+                                }
+                                Command::GetRules => {
+                                    // Answered from the live engine, never from the
+                                    // rules file (which may be untrusted and unread).
+                                    // A broadcast with no receiver is not an error.
+                                    let _ = snapshot_tx.send(ServerMessage::Rules {
+                                        rules: policy.0.rule_set().rules,
+                                    });
+                                }
                             }
-                        } else {
-                            eprintln!("rat-daemon: ignoring stale AlertAnswer id {id}");
                         }
-                    }
-                    Some(Command::GetRules) => {
-                        // Answered from the live engine, never from the
-                        // rules file (which may be untrusted and unread).
-                        // A broadcast with no receiver is not an error.
-                        let _ = snapshot_tx.send(ServerMessage::Rules {
-                            rules: policy.0.rule_set().rules,
-                        });
                     }
                     // Every IPC command sender is gone (server ended): wind down.
                     None => break,

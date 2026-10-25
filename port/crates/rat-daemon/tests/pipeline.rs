@@ -271,7 +271,7 @@ async fn test_set_rules_enforces_denied_app_and_local_port() {
     let app = test_app();
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
     let (snapshot_tx, mut snapshot_rx) = tokio::sync::broadcast::channel(16);
-    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY);
     let recorder = RecorderBackend::default();
 
     let policy = RuleEnginePolicy(rat_core::RuleEngine::new());
@@ -302,6 +302,7 @@ async fn test_set_rules_enforces_denied_app_and_local_port() {
         .send(Command::SetRules {
             rules: vec![deny_rule(app)],
         })
+        .await
         .expect("command channel open");
 
     wait_until(Duration::from_secs(5), || {
@@ -332,7 +333,7 @@ async fn test_alert_answer_creates_rule_and_enforces() {
     let app = test_app();
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
     let (snapshot_tx, mut snapshot_rx) = tokio::sync::broadcast::channel(16);
-    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY);
     let recorder = RecorderBackend::default();
 
     let policy = RuleEnginePolicy(rat_core::RuleEngine::new());
@@ -374,6 +375,7 @@ async fn test_alert_answer_creates_rule_and_enforces() {
             scope: rat_ledger::AnswerScope::Any,
             lifetime: Lifetime::Forever,
         })
+        .await
         .expect("command channel open");
 
     wait_until(Duration::from_secs(5), || {
@@ -399,7 +401,7 @@ async fn test_stale_alert_answer_is_ignored() {
     let app = test_app();
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
     let (snapshot_tx, mut snapshot_rx) = tokio::sync::broadcast::channel(16);
-    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY);
     let recorder = RecorderBackend::default();
 
     let policy = RuleEnginePolicy(rat_core::RuleEngine::new());
@@ -428,6 +430,7 @@ async fn test_stale_alert_answer_is_ignored() {
             scope: rat_ledger::AnswerScope::Any,
             lifetime: Lifetime::Forever,
         })
+        .await
         .expect("command channel open");
 
     // Give the pipeline a moment to process the (ignored) answer, then assert
@@ -781,7 +784,7 @@ async fn test_set_rules_persists_to_store() {
     let store = dummy_store();
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
     let (snapshot_tx, mut snapshot_rx) = tokio::sync::broadcast::channel(16);
-    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY);
     let recorder = RecorderBackend::default();
 
     let policy = RuleEnginePolicy(rat_core::RuleEngine::new());
@@ -805,6 +808,7 @@ async fn test_set_rules_persists_to_store() {
         .send(Command::SetRules {
             rules: vec![deny_rule(app)],
         })
+        .await
         .expect("command channel open");
     wait_until(Duration::from_secs(5), || recorder.any_enforced_path()).await;
 
@@ -827,7 +831,7 @@ async fn test_set_rules_persists_to_store() {
 async fn test_enforcement_failure_does_not_stop_the_pipeline() {
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
     let (snapshot_tx, mut snapshot_rx) = tokio::sync::broadcast::channel(16);
-    let (_cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (_cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY);
     let recorder = RecorderBackend::default();
     recorder.fail_enforce.store(true, Ordering::SeqCst);
 
@@ -1037,7 +1041,7 @@ async fn test_get_rules_answers_the_current_in_memory_set() {
     let app = test_app();
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
     let (snapshot_tx, mut rx) = tokio::sync::broadcast::channel(64);
-    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY);
 
     let policy = RuleEnginePolicy(rat_core::RuleEngine::new());
     let ledger = Ledger::new(LedgerConfig { warmup_ms: 0 }, AlertCenterConfig::default());
@@ -1052,7 +1056,7 @@ async fn test_get_rules_answers_the_current_in_memory_set() {
         shutdown_rx,
     ));
 
-    cmd_tx.send(Command::GetRules).unwrap();
+    cmd_tx.send(Command::GetRules).await.unwrap();
     let first = wait_for_msg(&mut rx, |m| match m {
         ServerMessage::Rules { rules } => Some(rules),
         _ => None,
@@ -1065,8 +1069,9 @@ async fn test_get_rules_answers_the_current_in_memory_set() {
         .send(Command::SetRules {
             rules: vec![rule.clone()],
         })
+        .await
         .unwrap();
-    cmd_tx.send(Command::GetRules).unwrap();
+    cmd_tx.send(Command::GetRules).await.unwrap();
     let second = wait_for_msg(&mut rx, |m| match m {
         ServerMessage::Rules { rules } => Some(rules),
         _ => None,
@@ -1088,7 +1093,7 @@ async fn test_alert_cleared_is_sent_after_the_answer() {
     let app = test_app();
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
     let (snapshot_tx, mut rx) = tokio::sync::broadcast::channel(64);
-    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY);
 
     let policy = RuleEnginePolicy(rat_core::RuleEngine::new());
     let ledger = Ledger::new(LedgerConfig { warmup_ms: 0 }, AlertCenterConfig::default());
@@ -1117,6 +1122,7 @@ async fn test_alert_cleared_is_sent_after_the_answer() {
             scope: rat_ledger::AnswerScope::Any,
             lifetime: Lifetime::Forever,
         })
+        .await
         .unwrap();
     let cleared = wait_for_msg(&mut rx, |m| match m {
         ServerMessage::AlertCleared { id } => Some(id),
@@ -1124,6 +1130,83 @@ async fn test_alert_cleared_is_sent_after_the_answer() {
     })
     .await;
     assert_eq!(cleared, id);
+
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("pipeline must end on shutdown")
+        .unwrap();
+}
+
+// A burst of SetRules already queued when the pipeline first polls the
+// command channel must coalesce to the NEWEST list: the intermediate lists
+// are stale before they could ever run, so only the newest one may reach
+// the backend (each SetRules would otherwise cost a full enforce round).
+// The burst is queued BEFORE the pipeline task exists, so its first poll
+// provably sees all three commands at once - deterministic, no blocking.
+#[tokio::test]
+async fn test_set_rules_burst_coalesces_to_newest_list() {
+    let (a, b, c) = ("/burst/a", "/burst/b", "/burst/c");
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let (snapshot_tx, _snapshot_rx) = tokio::sync::broadcast::channel(16);
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY);
+    let recorder = RecorderBackend::default();
+
+    cmd_tx
+        .send(Command::SetRules {
+            rules: vec![deny_rule(a)],
+        })
+        .await
+        .expect("command channel open");
+    cmd_tx
+        .send(Command::SetRules {
+            rules: vec![deny_rule(b)],
+        })
+        .await
+        .expect("command channel open");
+    cmd_tx
+        .send(Command::SetRules {
+            rules: vec![deny_rule(c)],
+        })
+        .await
+        .expect("command channel open");
+
+    let policy = RuleEnginePolicy(rat_core::RuleEngine::new());
+    let ledger = Ledger::new(LedgerConfig { warmup_ms: 0 }, AlertCenterConfig::default());
+    let task = tokio::spawn(rat_daemon::core::run_pipeline(
+        ScriptedSource { conns: vec![] },
+        policy,
+        ledger,
+        recorder.clone(),
+        dummy_store(),
+        cmd_rx,
+        snapshot_tx,
+        shutdown_rx,
+    ));
+
+    // On BOTH the old and the fixed pipeline the newest list ends up
+    // enforced; the assertion below is what tells them apart.
+    wait_until(Duration::from_secs(5), || {
+        recorder
+            .last_enforced()
+            .is_some_and(|e| e.paths == vec![c.to_string()])
+    })
+    .await;
+
+    let enforced: Vec<Vec<String>> = recorder
+        .events_snapshot()
+        .iter()
+        .filter_map(|e| match e {
+            Event::Enforce(b) => Some(b.paths.clone()),
+            Event::Adopt(_) | Event::Cleanup => None,
+        })
+        .collect();
+    assert!(
+        enforced
+            .iter()
+            .all(|p| p.is_empty() || p == &vec![c.to_string()]),
+        "intermediate rule lists must never be enforced, saw {enforced:?}"
+    );
 
     let _ = shutdown_tx.send(());
     tokio::time::timeout(Duration::from_secs(5), task)

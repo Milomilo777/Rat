@@ -100,7 +100,7 @@ pub async fn start_ipc_server(
     socket_path: &str,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
     snapshot_rx: tokio::sync::broadcast::Receiver<ServerMessage>,
-    commands: tokio::sync::mpsc::UnboundedSender<Command>,
+    commands: tokio::sync::mpsc::Sender<Command>,
 ) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     use tokio::net::UnixListener;
@@ -514,7 +514,7 @@ pub async fn start_ipc_server(
     pipe_name: &str,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
     snapshot_rx: tokio::sync::broadcast::Receiver<ServerMessage>,
-    commands: tokio::sync::mpsc::UnboundedSender<Command>,
+    commands: tokio::sync::mpsc::Sender<Command>,
 ) -> std::io::Result<()> {
     use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 
@@ -608,6 +608,12 @@ const MAX_CLIENT_LINE: usize = 64 * 1024;
 const MAX_SERVER_LINE: usize = 10 * 1024 * 1024;
 const MAX_CONCURRENT_CLIENTS: usize = 4;
 
+/// The bound of the pipeline's command queue (back pressure): a client
+/// that floods faster than the daemon enforces gets an explicit Error
+/// reply once this many commands are pending, instead of piling every
+/// message — each `SetRules` a full enforce — onto an unbounded backlog.
+pub const COMMAND_QUEUE_CAPACITY: usize = 16;
+
 /// a client has this long to complete the Hello handshake
 /// before the slot is given up (4 bounded slots: unauthenticated clients
 /// cannot pin the daemon forever).
@@ -628,10 +634,35 @@ where
     writer.send(line).await
 }
 
+/// Forward one client command onto the pipeline's BOUNDED queue. A full
+/// queue answers the client with an explicit Error — it may slow down and
+/// retry — instead of the silent unbounded backlog a fire-and-forget send
+/// would build; a closed queue means the pipeline is already gone
+/// (shutdown), and the command dies with the connection.
+async fn forward_command<W>(
+    commands: &tokio::sync::mpsc::Sender<Command>,
+    writer: &mut tokio_util::codec::FramedWrite<W, tokio_util::codec::LinesCodec>,
+    cmd: Command,
+) where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) = commands.try_send(cmd) {
+        let _ = send_server(
+            writer,
+            ServerMessage::Error {
+                message: format!(
+                    "daemon busy: command queue full ({COMMAND_QUEUE_CAPACITY} commands pending); slow down and retry"
+                ),
+            },
+        )
+        .await;
+    }
+}
+
 async fn handle_connection<S>(
     stream: S,
     mut snapshot_rx: tokio::sync::broadcast::Receiver<ServerMessage>,
-    commands: tokio::sync::mpsc::UnboundedSender<Command>,
+    commands: tokio::sync::mpsc::Sender<Command>,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
@@ -735,18 +766,24 @@ async fn handle_connection<S>(
                             Ok(ClientMessage::SetRules { rules }) => {
                                 // forwarded to the pipeline,
                                 // which owns the rule engine and enforcer.
-                                let _ = commands.send(Command::SetRules { rules });
+                                forward_command(&commands, &mut writer, Command::SetRules { rules })
+                                    .await;
                             }
                             Ok(ClientMessage::GetRules) => {
-                                let _ = commands.send(Command::GetRules);
+                                forward_command(&commands, &mut writer, Command::GetRules).await;
                             }
                             Ok(ClientMessage::AlertAnswer { id, verdict, scope, lifetime }) => {
-                                let _ = commands.send(Command::AlertAnswer {
-                                    id,
-                                    verdict,
-                                    scope,
-                                    lifetime,
-                                });
+                                forward_command(
+                                    &commands,
+                                    &mut writer,
+                                    Command::AlertAnswer {
+                                        id,
+                                        verdict,
+                                        scope,
+                                        lifetime,
+                                    },
+                                )
+                                .await;
                             }
                             Ok(ClientMessage::Hello { .. }) => {
                                 // The handshake already succeeded once; a

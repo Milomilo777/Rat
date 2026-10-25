@@ -102,7 +102,10 @@ pub async fn run_components_trusted(
     }
 
     let (snapshot_tx, snapshot_rx) = tokio::sync::broadcast::channel(16);
-    let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
+    // BOUNDED on purpose (back pressure): a flooding client is told the
+    // queue is full instead of building an unbounded backlog, and the
+    // pipeline coalesces queued SetRules to the newest list.
+    let (command_tx, command_rx) = tokio::sync::mpsc::channel(crate::ipc::COMMAND_QUEUE_CAPACITY);
 
     let ledger = Ledger::new(LedgerConfig::default(), AlertCenterConfig::default());
 
