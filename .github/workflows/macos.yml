@@ -30,6 +30,10 @@ jobs:
           shellcheck --severity=warning scripts/*.sh App/Resources/*.sh
       - name: App tests (xcodegen + xcodebuild)
         if: always()
+        # The runners use UTC, which has no zone.tab entry, so GeoService.localPoint() (the Mac's position from its
+        # time zone) is nil there and testGeoServiceOfflineLookup fails on unchanged main too; give it a real zone.
+        env:
+          TZ: Europe/Berlin
         # SnapshotTests compare pixels with goldens recorded on a 1x display; GitHub's macOS runners render at
         # 2x, so those three tests fail on unchanged main too. They are skipped here, not in local runs.
         run: |
