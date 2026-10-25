@@ -409,7 +409,7 @@ const PORTS_MARKER: &str = "---RATPORTS---";
 /// from removing one entry several times. Non-numeric port
 /// lines (Get-NetFirewallPortFilter can report "Any") are not ours to
 /// reconcile and are skipped.
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn parse_existing_output(stdout: &str) -> rat_enforcer::Blocklist {
     parse_existing_directions(stdout).0
 }
@@ -914,7 +914,10 @@ mod tests {
 
     /// a backend whose netsh is a recorder (never the real one)
     #[cfg(windows)]
-    fn recording_backend() -> (WindowsBackend, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    fn recording_backend() -> (
+        WindowsBackend,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
         let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let l = std::sync::Arc::clone(&log);
         let mut backend = WindowsBackend::new();
@@ -949,7 +952,8 @@ mod tests {
         assert!(out.applied, "the missing inbound rule must be applied");
         let cmds = log.lock().unwrap().clone();
         assert!(
-            cmds.iter().any(|c| c.contains("dir=in") && c.contains("add")),
+            cmds.iter()
+                .any(|c| c.contains("dir=in") && c.contains("add")),
             "{cmds:?}"
         );
         // and only once: the next round is a no-op
