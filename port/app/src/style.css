@@ -195,9 +195,31 @@ body {
     font-size: 1.1rem;
 }
 
-select, button {
+select, button, input {
     font-family: inherit;
 }
+
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.group-head { background: var(--bg-color); cursor: default; border-bottom: 1px solid var(--border-color); font-weight: bold; }
+.sidebar li.group-item { padding-inline-start: 20px; }
+
+.world-map { background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 4px; }
+.actions-row { margin-top: 20px; }
+.table-wrap { overflow-x: auto; }
+
+.toolbar { display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.toolbar select { padding: 5px; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); }
+
+.btn-primary { padding: 8px 16px; background: var(--btn-bg); color: var(--btn-text); border: none; border-radius: 4px; cursor: pointer; }
+.btn-small { padding: 5px 10px; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); border-radius: 4px; cursor: pointer; }
+
+.banner { padding: 10px 20px; border-bottom: 1px solid var(--border-color); background: var(--panel-bg); color: var(--text-color); border-inline-start: 6px solid var(--accent-color); }
+.banner-not_running, .banner-access_denied, .banner-protocol_mismatch, .banner-failed { border-inline-start-color: var(--text-red); }
+
+.rule-form { display: grid; grid-template-columns: max-content 1fr; gap: 8px 12px; align-items: center; margin-top: 20px; }
+.rule-form input, .rule-form select { padding: 6px; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); border-radius: 4px; }
+.rule-form button { grid-column: 2; justify-self: start; }
 
 @media (prefers-reduced-motion: reduce) {
   *, ::before, ::after {

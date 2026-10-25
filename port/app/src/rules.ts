@@ -1,7 +1,7 @@
 export interface Rule {
   id: string;
   app: string;
-  action: 'allow' | 'deny';
+  action: 'allow' | 'deny' | 'ask';
   remote: string;
 }
 
