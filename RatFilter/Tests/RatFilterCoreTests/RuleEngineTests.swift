@@ -31,7 +31,9 @@ final class RuleEngineTests: XCTestCase {
         XCTAssertEqual(e.evaluate(conn("a.com")), .deny)
     }
 
-    func testDisabledIgnoredButUnapprovedStillActive() {
+    /// Documented semantics (CLAUDE.md, Rule.approved doc): an enabled but unapproved rule still
+    /// matches (`approved` is a review marker only); a disabled rule never matches (`Rule.matches`).
+    func testUnapprovedStillMatchesButDisabledNeverDoes() {
         XCTAssertEqual(RuleEngine(rules: [Rule(verdict: .deny, enabled: false)]).evaluate(conn("a.com")), .ask)
         XCTAssertEqual(RuleEngine(rules: [Rule(verdict: .deny, approved: false)]).evaluate(conn("a.com")), .deny)
     }
@@ -162,9 +164,7 @@ final class RuleEngineTests: XCTestCase {
         XCTAssertEqual(try RuleStore(url: url).loadSet().unknownNetworkAction, .activate(s.profiles[1].id))
     }
 
-    // MARK: QA Acceptance Tests (R1, R2, R3, R5, R6) — from the qa-core-swift lane.
-    // R4 (disabled/unapproved never match) lives on zcode/swift-qa with the
-    // RuleEngine.active() fix it belongs to; these five hold against v1.2.0 semantics.
+    // MARK: QA Acceptance Tests (R1-R6) — from the qa-core-swift lane; R4 is at the end.
 
     func testQAR1RulePrecedenceHigherSpecificityWins() {
         let e = RuleEngine(rules: [
@@ -259,5 +259,17 @@ final class RuleEngineTests: XCTestCase {
         // Assert rules are preserved
         XCTAssertEqual(s.rules.count, 1)
         XCTAssertEqual(s.rules.first?.remoteDomain, "migrated.com")
+    }
+
+    /// QA R4, documented semantics: a disabled rule never matches; an enabled but unapproved rule
+    /// still does (`approved` is a review marker only).
+    func testQAR4DisabledNeverMatchesUnapprovedStillMatches() {
+        let e = RuleEngine(rules: [
+            Rule(verdict: .deny, remoteDomain: "example.com", enabled: false),
+            Rule(verdict: .allow, remoteDomain: "example.com", approved: false)
+        ])
+        XCTAssertEqual(e.evaluate(conn("example.com")), .allow)
+        let onlyDisabled = RuleEngine(rules: [Rule(verdict: .deny, remoteDomain: "example.com", enabled: false)])
+        XCTAssertNotEqual(onlyDisabled.evaluate(conn("example.com")), .deny)
     }
 }

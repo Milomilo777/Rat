@@ -1,0 +1,40 @@
+name: macOS
+
+on:
+  push:
+    branches: [main, 'v1/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+      - name: RatFilter swift test
+        working-directory: RatFilter
+        run: swift test
+      - name: Shellcheck scripts
+        if: always()
+        run: |
+          brew list shellcheck >/dev/null 2>&1 || brew install shellcheck
+          shellcheck --severity=warning scripts/*.sh App/Resources/*.sh
+      - name: App tests (xcodegen + xcodebuild)
+        if: always()
+        # SnapshotTests compare pixels with goldens recorded on a 1x display; GitHub's macOS runners render at
+        # 2x, so those three tests fail on unchanged main too. They are skipped here, not in local runs.
+        run: |
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          xcodegen generate
+          set -o pipefail
+          xcodebuild -project Rat.xcodeproj -scheme Rat -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO \
+            -skip-testing:RatTests/SnapshotTests test 2>&1 | tail -80
