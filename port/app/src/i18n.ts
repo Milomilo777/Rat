@@ -37,7 +37,7 @@ export const messages = {
     scope: "Scope:",
     any_connection: "Any connection",
     this_domain: "This domain",
-    this_ip: "This IP address",
+    this_ip: "This host / IP address",
     this_port: "This IP and port",
     timeout: "Timeout:",
     forever: "Forever",
@@ -47,7 +47,25 @@ export const messages = {
     btn_deny: "Deny",
     in: "in",
     out: "out",
-    unknown: "unknown"
+    unknown: "unknown",
+    ask: "ASK",
+    status_connecting: "Connecting to the Rat service...",
+    status_not_running: "The Rat service is not running. Start the Rat service; this window reconnects by itself.",
+    status_access_denied: "Access denied. Run Rat as administrator (Windows) or add your user to the rat group (Linux).",
+    status_protocol_mismatch: "The Rat service uses a different protocol version. Update Rat and the service together.",
+    status_failed: "Cannot talk to the Rat service.",
+    status_demo: "Demo mode: this is fake data, not your real connections.",
+    no_connections: "No connections yet.",
+    no_rules: "No rules yet.",
+    listening: "Listening",
+    add_rule: "Add Rule",
+    rule_app_path: "Program path",
+    rule_remote_hint: "Remote (empty = any, IP or domain)",
+    delete_rule: "Delete",
+    once: "Once",
+    alert_none: "No connection is waiting for an answer.",
+    alert_answer_failed: "Could not send the answer:",
+    rule_failed: "Rule change failed:"
   }
 };
 
@@ -112,7 +130,8 @@ export function t(key: keyof typeof messages.en, args?: Record<string, string>):
     let str = (catalogs as any)[currentLocale]?.[key] || catalogs.en[key] || key;
     if (args) {
         for (const [k, v] of Object.entries(args)) {
-            str = str.replace(`{${k}}`, v);
+            // Function replacer: a value like "$&" must stay literal text.
+            str = str.replace(`{${k}}`, () => v);
         }
     }
     return str;

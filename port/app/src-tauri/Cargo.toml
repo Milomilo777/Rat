@@ -3,8 +3,9 @@
 [package]
 name = "app"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Rat desktop app: live connections, rules and connection alerts"
+authors = ["Rat contributors"]
+license = "MIT"
 edition = "2021"
 
 [build-dependencies]
@@ -13,5 +14,17 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 rat-types = { path = "../../crates/rat-types" }
+rat-core = { path = "../../crates/rat-core" }
+rat-ledger = { path = "../../crates/rat-ledger" }
+# Message types (ClientMessage / ServerMessage), PROTOCOL_VERSION, the pipe
+# name and the rules file location come from the daemon crate itself, so the
+# client can never drift from the wire format.
+rat-daemon = { path = "../../crates/rat-daemon" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tokio = { version = "1", features = ["rt", "net", "io-util", "time", "sync"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+futures = "0.3"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "time", "io-util", "sync", "test-util"] }
