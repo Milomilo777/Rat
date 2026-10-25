@@ -14,7 +14,13 @@ pub struct Blocklist {
 pub trait Enforcer {
     type Plan;
     fn plan(&self, wanted: &Blocklist) -> Self::Plan;
-    fn apply(&self, plan: &Self::Plan) -> io::Result<()>;
+    /// review-01 R6: apply() OWNS the enforcer's notion of the current
+    /// state. A Windows implementation advances `current` to the plan's
+    /// outcome on success (so re-planning an unchanged wanted state is an
+    /// empty diff) and leaves it behind on failure (the next diff retries);
+    /// its add path must be idempotent, because netsh duplicates a rule when
+    /// the name already exists.
+    fn apply(&mut self, plan: &Self::Plan) -> io::Result<()>;
     /// S8 (update-08): remove every rule this enforcer created. Called on
     /// start and on clean shutdown (daemon wiring, PROPOSALS #10) so
     /// persistent rules do not survive crashes as duplicates; systemd's

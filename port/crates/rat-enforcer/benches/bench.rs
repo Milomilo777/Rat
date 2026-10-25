@@ -49,7 +49,10 @@ fn bench_windows_plan(c: &mut Criterion) {
         local_ports: vec![],
     };
 
-    let enforcer = WindowsEnforcer { current };
+    let enforcer = WindowsEnforcer {
+        current,
+        runner: None,
+    };
 
     c.bench_function("windows_plan_diff_2500", |b| {
         b.iter(|| enforcer.plan(black_box(&wanted)))

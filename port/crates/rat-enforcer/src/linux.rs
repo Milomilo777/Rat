@@ -78,7 +78,7 @@ impl Enforcer for LinuxEnforcer {
         Ok(())
     }
 
-    fn apply(&self, plan: &Self::Plan) -> io::Result<()> {
+    fn apply(&mut self, plan: &Self::Plan) -> io::Result<()> {
         let dry_run = crate::dry_run_enabled(env::var("RAT_DRY_RUN").ok().as_deref());
 
         if dry_run {

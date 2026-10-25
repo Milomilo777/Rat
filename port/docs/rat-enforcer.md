@@ -23,8 +23,10 @@ pub trait Enforcer {
     /// Generates a plan that represents the firewall state transitions without side effects.
     fn plan(&self, wanted: &Blocklist) -> Self::Plan;
 
-    /// Applies the generated plan to the system.
-    fn apply(&self, plan: &Self::Plan) -> io::Result<()>;
+    /// Applies the generated plan to the system. Owns the enforcer's view of
+    /// the current state: advances `current` to the applied outcome on
+    /// success, leaves it behind on failure (review-01 R6).
+    fn apply(&mut self, plan: &Self::Plan) -> io::Result<()>;
 }
 
 /// Validates that a path does not contain illegal characters used for command injection.
@@ -52,7 +54,7 @@ fn main() -> std::io::Result<()> {
     let enforcer = LinuxEnforcer;
 
     #[cfg(windows)]
-    let enforcer = WindowsEnforcer { current: Blocklist::default() };
+    let mut enforcer = WindowsEnforcer { current: Blocklist::default(), runner: None };
 
     let plan = enforcer.plan(&blocklist);
     enforcer.apply(&plan)?;
@@ -72,6 +74,8 @@ The Linux backend drops outgoing and incoming connections based on the active lo
 The Windows backend generates individual rules per application path using `netsh advfirewall`. It implements a diff mechanism to only add or remove rules that have changed.
 - **Requirements**: Needs Administrator privileges to run `netsh advfirewall`.
 - **Port rules** (review-01 R5): the denied sockets' LOCAL ports are enforced too — one rule per (direction, protocol) per port (`dir=out|in`, `protocol=TCP|UDP`, `localport=N`), named `Rat:port:<n>` so one delete removes all four variants. This mirrors the Linux backend's `rat_ports` set (sport out / dport in) and the macOS Ledger's local-port blocks (Ledger.swift:330-332); it is also what a refused shared service host's denied socket gets instead of a silent no-op ("block by port instead").
+- **Idempotent apply** (review-01 R6): netsh `add rule` DUPLICATES a rule whose display name already exists, so `apply` deletes any same-name rule before every add (path and port axis); the pre-add delete is best-effort ("no rules match" is netsh exit 1 and the normal first-add case). On success `apply` advances the enforcer's `current` to the applied state — using the validated names the rules were created under — so re-planning an unchanged wanted state is an empty diff and a stale diff (restart with a failed read-back, a canonicalized rename) re-applies without duplicating. On failure `current` stays behind so the next diff retries the same change.
+- **Test seam** (review-01 R6): `WindowsEnforcer.runner: Option<NetshRunner>` — when set, every `apply` command is routed through the injected executor instead of spawning netsh (the dry-run flag is not consulted; the seam owns execution). The crate's tests inject a fake that models netsh's real duplicate-on-add semantics to pin "apply twice -> live rule count == plan size".
 - **Limits**: Per-program rules do not follow Electron helpers or versioned install paths (review-01 product note); inbound blocks are by local port only.
 
 ### Safety Notes

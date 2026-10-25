@@ -3,8 +3,17 @@ use std::io;
 
 use crate::{Blocklist, Enforcer};
 
+/// review-01 R6 test seam: stands in for the spawned netsh child. When set,
+/// apply() routes EVERY command through it instead of spawning (and instead
+/// of the dry-run print) — the seam owns execution, so tests can model real
+/// netsh semantics. `Ok(true)` = exit success, `Ok(false)` = failure exit.
+pub type NetshRunner =
+    std::sync::Arc<dyn Fn(&std::path::Path, &[String]) -> io::Result<bool> + Send + Sync>;
+
 pub struct WindowsEnforcer {
     pub current: Blocklist,
+    /// None = production behavior (RAT_DRY_RUN prints, otherwise spawn).
+    pub runner: Option<NetshRunner>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +108,33 @@ pub fn format_port_rule_name(port: u16) -> String {
     format!("Rat:port:{}", port)
 }
 
+/// The netsh arguments for one per-program block rule (dir=out block on the
+/// validated program path). Shape pinned by tests; tests never run netsh.
+fn path_rule_args(name: &str, program: &str) -> Vec<String> {
+    vec![
+        "advfirewall".to_string(),
+        "firewall".to_string(),
+        "add".to_string(),
+        "rule".to_string(),
+        format!("name={name}"),
+        "dir=out".to_string(),
+        "action=block".to_string(),
+        format!("program={program}"),
+    ]
+}
+
+/// The netsh arguments to delete every rule carrying one display name (the
+/// reconcile remove loop, and — review-01 R6 — the pre-add dedupe).
+fn path_delete_args(name: &str) -> Vec<String> {
+    vec![
+        "advfirewall".to_string(),
+        "firewall".to_string(),
+        "delete".to_string(),
+        "rule".to_string(),
+        format!("name={name}"),
+    ]
+}
+
 /// The netsh arguments for one per-port block rule. `localport=` needs a
 /// concrete protocol (netsh rejects port parameters with protocol=any), and
 /// the Linux backend blocks both tcp and udp in both directions
@@ -174,13 +210,13 @@ impl Enforcer for WindowsEnforcer {
     }
 
     #[cfg(not(windows))]
-    fn apply(&self, _plan: &Self::Plan) -> io::Result<()> {
+    fn apply(&mut self, _plan: &Self::Plan) -> io::Result<()> {
         // Only for compiling tests on Linux
         Ok(())
     }
 
     #[cfg(windows)]
-    fn apply(&self, plan: &Self::Plan) -> io::Result<()> {
+    fn apply(&mut self, plan: &Self::Plan) -> io::Result<()> {
         use std::env;
         use std::process::Command;
 
@@ -205,94 +241,122 @@ impl Enforcer for WindowsEnforcer {
         }
 
         let dry_run = crate::dry_run_enabled(env::var("RAT_DRY_RUN").ok().as_deref());
+        let netsh = netsh_path()?;
+        let runner = self.runner.clone();
+        // One netsh invocation. An injected runner (tests) owns execution;
+        // otherwise RAT_DRY_RUN=1 prints the same command and succeeds, or
+        // the real child is spawned and its exit status decides.
+        let run = |args: &[String], dry_line: String| -> io::Result<bool> {
+            if let Some(runner) = &runner {
+                runner(&netsh, args)
+            } else if dry_run {
+                println!("{dry_line}");
+                Ok(true)
+            } else {
+                Ok(Command::new(&netsh).args(args).status()?.success())
+            }
+        };
 
         for path in &remove {
             let name = format_rule_name(path);
-            if dry_run {
-                println!("netsh advfirewall firewall delete rule name=\"{}\"", name);
-            } else {
-                let status = Command::new(netsh_path()?)
-                    .args([
-                        "advfirewall",
-                        "firewall",
-                        "delete",
-                        "rule",
-                        &format!("name={}", name),
-                    ])
-                    .status()?;
-                if !status.success() {
-                    return Err(io::Error::other("Failed to delete firewall rule"));
-                }
+            if !run(
+                &path_delete_args(&name),
+                format!("netsh advfirewall firewall delete rule name=\"{name}\""),
+            )? {
+                return Err(io::Error::other("Failed to delete firewall rule"));
             }
         }
 
         for path in &add {
             let name = format_rule_name(path);
-            if dry_run {
-                println!(
-                    "netsh advfirewall firewall add rule name=\"{}\" dir=out action=block program=\"{}\"",
-                    name, path
-                );
-            } else {
-                let args = vec![
-                    "advfirewall".to_string(),
-                    "firewall".to_string(),
-                    "add".to_string(),
-                    "rule".to_string(),
-                    format!("name={}", name),
-                    "dir=out".to_string(),
-                    "action=block".to_string(),
-                    format!("program={}", path),
-                ];
-
-                let status = Command::new(netsh_path()?).args(&args).status()?;
-
-                if !status.success() {
-                    return Err(io::Error::other("Failed to add firewall rule"));
-                }
+            // R6: netsh `add rule` DUPLICATES a rule whose name already
+            // exists, so delete any same-name rule first — a stale diff
+            // (restart with a failed read-back, a canonicalized rename)
+            // would otherwise pile up copies. Best-effort: "no rules match"
+            // is netsh exit 1 and the normal first-add case, while a real
+            // failure still surfaces at the checked add below, so this
+            // delete's status is ignored.
+            let _ = run(
+                &path_delete_args(&name),
+                format!("netsh advfirewall firewall delete rule name=\"{name}\""),
+            )?;
+            if !run(
+                &path_rule_args(&name, path),
+                format!(
+                    "netsh advfirewall firewall add rule name=\"{name}\" dir=out action=block program=\"{path}\""
+                ),
+            )? {
+                return Err(io::Error::other("Failed to add firewall rule"));
             }
         }
 
         // review-01 R5: the port axis. One delete per port (removes all four
         // variants), four adds per new port (out/in x TCP/UDP).
         for port in &plan.remove_ports {
-            if dry_run {
-                println!(
-                    "netsh advfirewall firewall delete rule name=\"{}\"",
-                    format_port_rule_name(*port)
-                );
-            } else {
-                let status = Command::new(netsh_path()?)
-                    .args(port_delete_args(*port))
-                    .status()?;
-                if !status.success() {
+            let name = format_port_rule_name(*port);
+            if !run(
+                &port_delete_args(*port),
+                format!("netsh advfirewall firewall delete rule name=\"{name}\""),
+            )? {
+                return Err(io::Error::other(format!(
+                    "Failed to delete firewall port rule {port}"
+                )));
+            }
+        }
+
+        for port in &plan.add_ports {
+            let name = format_port_rule_name(*port);
+            // R6: the same pre-add dedupe as the path axis; one delete
+            // removes all four variants of the port.
+            let _ = run(
+                &port_delete_args(*port),
+                format!("netsh advfirewall firewall delete rule name=\"{name}\""),
+            )?;
+            for (dir, proto) in [("out", "TCP"), ("out", "UDP"), ("in", "TCP"), ("in", "UDP")] {
+                let name = format_port_rule_name(*port);
+                if !run(
+                    &port_rule_args(*port, dir, proto),
+                    format!(
+                        "netsh advfirewall firewall add rule name=\"{name}\" dir={dir} action=block protocol={proto} localport={port}"
+                    ),
+                )? {
                     return Err(io::Error::other(format!(
-                        "Failed to delete firewall port rule {port}"
+                        "Failed to add firewall port rule {port} dir={dir} protocol={proto}"
                     )));
                 }
             }
         }
 
-        for port in &plan.add_ports {
-            for (dir, proto) in [("out", "TCP"), ("out", "UDP"), ("in", "TCP"), ("in", "UDP")] {
-                if dry_run {
-                    println!(
-                        "netsh advfirewall firewall add rule name=\"{}\" dir={dir} action=block protocol={proto} localport={port}",
-                        format_port_rule_name(*port)
-                    );
-                } else {
-                    let status = Command::new(netsh_path()?)
-                        .args(port_rule_args(*port, dir, proto))
-                        .status()?;
-                    if !status.success() {
-                        return Err(io::Error::other(format!(
-                            "Failed to add firewall port rule {port} dir={dir} protocol={proto}"
-                        )));
-                    }
-                }
-            }
-        }
-
+        // R6 part 1: apply() owns the crate's view of reality. Advance
+        // `current` to what the firewall now holds — the VALIDATED names the
+        // rules were actually created under, so a later read-back reconcile
+        // sees the same strings (raw-vs-validated normalization is R9). On
+        // any failure above, the early returns leave `current` behind so the
+        // next diff retries the same change; the pre-add deletes make that
+        // retry idempotent instead of duplicating.
+        let removed: HashSet<&String> = remove.iter().collect();
+        let mut paths: Vec<String> = self
+            .current
+            .paths
+            .iter()
+            .filter(|p| !removed.contains(*p))
+            .cloned()
+            .collect();
+        paths.extend(add.iter().cloned());
+        paths.sort();
+        paths.dedup();
+        let removed_ports: HashSet<u16> = plan.remove_ports.iter().copied().collect();
+        let mut local_ports: Vec<u16> = self
+            .current
+            .local_ports
+            .iter()
+            .copied()
+            .filter(|p| !removed_ports.contains(p))
+            .collect();
+        local_ports.extend(plan.add_ports.iter().copied());
+        local_ports.sort();
+        local_ports.dedup();
+        self.current = Blocklist { paths, local_ports };
         Ok(())
     }
 
@@ -343,6 +407,7 @@ mod tests {
         std::env::set_var("RAT_DRY_RUN", "1");
         let enforcer = WindowsEnforcer {
             current: Blocklist::default(),
+            runner: None,
         };
         enforcer.cleanup().expect("dry-run cleanup must succeed");
     }
@@ -372,7 +437,10 @@ mod tests {
             local_ports: vec![],
         };
 
-        let enforcer = WindowsEnforcer { current };
+        let enforcer = WindowsEnforcer {
+            current,
+            runner: None,
+        };
         let plan = enforcer.plan(&wanted);
 
         assert_eq!(plan.add.len(), 1);
@@ -399,6 +467,7 @@ mod tests {
         };
         let enforcer = WindowsEnforcer {
             current: Blocklist::default(),
+            runner: None,
         };
         let plan = enforcer.plan(&wanted);
         assert_eq!(plan.add, vec![r"C:\Apps\Denied\app.exe".to_string()]);
@@ -419,8 +488,9 @@ mod tests {
             remove_ports: vec![],
             refused: vec![],
         };
-        let enforcer = WindowsEnforcer {
+        let mut enforcer = WindowsEnforcer {
             current: Blocklist::default(),
+            runner: None,
         };
         let err = enforcer.apply(&plan).unwrap_err();
         assert!(
@@ -441,7 +511,10 @@ mod tests {
             paths: vec![],
             local_ports: vec![3, 2, 2],
         };
-        let enforcer = WindowsEnforcer { current };
+        let enforcer = WindowsEnforcer {
+            current,
+            runner: None,
+        };
         let plan = enforcer.plan(&wanted);
         assert_eq!(plan.add_ports, vec![3]);
         assert_eq!(plan.remove_ports, vec![1]);
@@ -461,6 +534,7 @@ mod tests {
         };
         let enforcer = WindowsEnforcer {
             current: Blocklist::default(),
+            runner: None,
         };
         let plan = enforcer.plan(&wanted);
         assert_eq!(plan.refused, vec![svchost.to_string()]);
@@ -512,7 +586,10 @@ mod tests {
             paths: vec!["C:\\Program Files\\App".to_string(), "C:\\应用".to_string()],
             local_ports: vec![],
         };
-        let enforcer = WindowsEnforcer { current };
+        let enforcer = WindowsEnforcer {
+            current,
+            runner: None,
+        };
         let plan = enforcer.plan(&wanted);
         assert_eq!(plan.add.len(), 1);
         if let Some(first_add) = plan.add.first() {
@@ -530,7 +607,10 @@ mod tests {
             paths: vec!["C:\\Program Files\\App\"; evil".to_string()],
             local_ports: vec![],
         };
-        let enforcer = WindowsEnforcer { current };
+        let mut enforcer = WindowsEnforcer {
+            current,
+            runner: None,
+        };
         let plan = enforcer.plan(&wanted);
         // Even in dry-run mode, apply must refuse paths that fail validate_path.
         assert!(enforcer.apply(&plan).is_err());
@@ -556,7 +636,10 @@ mod tests {
             local_ports: vec![],
         };
 
-        let enforcer = WindowsEnforcer { current };
+        let enforcer = WindowsEnforcer {
+            current,
+            runner: None,
+        };
 
         let start = Instant::now();
         let plan = enforcer.plan(&wanted);
@@ -589,7 +672,7 @@ mod tests {
                 local_ports: vec![],
             };
 
-            let enforcer = WindowsEnforcer { current };
+            let enforcer = WindowsEnforcer { current, runner: None };
             let _ = enforcer.plan(&wanted);
         }
 
@@ -601,7 +684,7 @@ mod tests {
                 paths: vec![],
                 local_ports: vec![],
             };
-            let enforcer = WindowsEnforcer { current };
+            let enforcer = WindowsEnforcer { current, runner: None };
 
             let wanted1 = Blocklist {
                 paths: wanted_paths.clone(),
@@ -625,6 +708,158 @@ mod tests {
             let name = format_rule_name(&path);
             assert!(name.starts_with("Rat:path:"));
             assert!(name.ends_with(&path));
+        }
+    }
+
+    // review-01 R6: apply() twice must leave the live rule count at the plan
+    // size. Real netsh cannot run in tests, so these inject a runner that
+    // models its actual duplicate-on-add semantics.
+    #[cfg(windows)]
+    mod apply_twice {
+        use super::*;
+        use std::collections::HashMap;
+        use std::path::Path;
+        use std::sync::{Arc, Mutex};
+
+        /// Stands in for netsh.exe with its REAL semantics: `add rule name=N`
+        /// on an existing N adds a DUPLICATE (the defect R6 reports);
+        /// `delete rule name=N` removes every N, or exits nonzero when none
+        /// match ("No rules match the specified criteria").
+        struct FakeNetsh {
+            rules: Mutex<HashMap<String, usize>>,
+        }
+
+        impl FakeNetsh {
+            fn run(&self, exe: &Path, args: &[String]) -> io::Result<bool> {
+                assert!(exe.ends_with("netsh.exe"), "unexpected exe {exe:?}");
+                let mut verb = "";
+                let mut name = None;
+                for a in args {
+                    match a.as_str() {
+                        "add" | "delete" => verb = a,
+                        "rule" => {}
+                        other => {
+                            if let Some(n) = other.strip_prefix("name=") {
+                                name = Some(n.to_string());
+                            }
+                        }
+                    }
+                }
+                let name = name.expect("netsh rule command carries name=");
+                let mut rules = self.rules.lock().unwrap();
+                if verb == "add" {
+                    *rules.entry(name).or_insert(0) += 1;
+                    Ok(true)
+                } else {
+                    Ok(rules.remove(&name).is_some())
+                }
+            }
+
+            fn count(&self, name: &str) -> usize {
+                self.rules.lock().unwrap().get(name).copied().unwrap_or(0)
+            }
+        }
+
+        fn runner(fake: Arc<FakeNetsh>) -> NetshRunner {
+            Arc::new(move |exe: &Path, args: &[String]| fake.run(exe, args))
+        }
+
+        fn wanted() -> Blocklist {
+            Blocklist {
+                paths: vec![r"C:\Apps\Denied\app.exe".to_string()],
+                local_ports: vec![5353],
+            }
+        }
+
+        const APP: &str = r"C:\Apps\Denied\app.exe";
+
+        #[test]
+        fn test_windows_apply_twice_live_count_equals_plan_size() {
+            // One plan's worth of firewall rules: 1 per-program rule + 4
+            // per-port variants (out/in x TCP/UDP, review-01 R5).
+            let fake = Arc::new(FakeNetsh {
+                rules: Mutex::new(HashMap::new()),
+            });
+            let mut enforcer = WindowsEnforcer {
+                current: Blocklist::default(),
+                runner: Some(runner(Arc::clone(&fake))),
+            };
+
+            let plan1 = enforcer.plan(&wanted());
+            enforcer.apply(&plan1).expect("first apply");
+            assert_eq!(
+                fake.count(&format_rule_name(APP)),
+                1,
+                "one live path rule after the first apply"
+            );
+            assert_eq!(
+                fake.count(&format_port_rule_name(5353)),
+                4,
+                "four live port rules after the first apply"
+            );
+
+            // R6 part 1: apply() must advance `current`, so planning the same
+            // wanted state again is empty — and the second apply cannot touch
+            // the firewall. (Pre-fix, `current` stayed empty and the plan was
+            // identical, so netsh added every rule a second time.)
+            let plan2 = enforcer.plan(&wanted());
+            assert!(
+                plan2.add.is_empty()
+                    && plan2.remove.is_empty()
+                    && plan2.add_ports.is_empty()
+                    && plan2.remove_ports.is_empty(),
+                "current must advance on apply, got {plan2:?}"
+            );
+            enforcer.apply(&plan2).expect("second apply");
+            assert_eq!(
+                fake.count(&format_rule_name(APP)),
+                1,
+                "apply twice -> live rule count == plan size (path)"
+            );
+            assert_eq!(
+                fake.count(&format_port_rule_name(5353)),
+                4,
+                "apply twice -> live rule count == plan size (port)"
+            );
+        }
+
+        #[test]
+        fn test_windows_apply_fresh_enforcer_never_duplicates() {
+            // R6 part 2: a NEW enforcer (restart; read-back failed so
+            // `current` is empty again) re-plans the same wanted state. netsh
+            // add duplicates on an existing name, so apply deletes any
+            // same-name rule before adding: the live count stays at the plan
+            // size even when the diff is stale.
+            let fake = Arc::new(FakeNetsh {
+                rules: Mutex::new(HashMap::new()),
+            });
+            let mut first = WindowsEnforcer {
+                current: Blocklist::default(),
+                runner: Some(runner(Arc::clone(&fake))),
+            };
+            let plan = first.plan(&wanted());
+            first.apply(&plan).expect("first enforcer apply");
+            assert_eq!(fake.count(&format_rule_name(APP)), 1);
+            assert_eq!(fake.count(&format_port_rule_name(5353)), 4);
+
+            let mut second = WindowsEnforcer {
+                current: Blocklist::default(),
+                runner: Some(runner(Arc::clone(&fake))),
+            };
+            let plan2 = second.plan(&wanted());
+            second.apply(&plan2).expect("second enforcer apply");
+            assert_eq!(
+                fake.count(&format_rule_name(APP)),
+                1,
+                "a stale diff re-apply must dedupe, not duplicate (path)"
+            );
+            assert_eq!(
+                fake.count(&format_port_rule_name(5353)),
+                4,
+                "a stale diff re-apply must dedupe, not duplicate (port)"
+            );
+            // The fresh enforcer now holds the state, too.
+            assert!(second.plan(&wanted()).add.is_empty());
         }
     }
 }

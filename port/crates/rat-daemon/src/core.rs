@@ -84,6 +84,7 @@ impl WindowsBackend {
         Self {
             enforcer: rat_enforcer::windows::WindowsEnforcer {
                 current: rat_enforcer::Blocklist::default(),
+                runner: None,
             },
         }
     }
@@ -136,10 +137,11 @@ impl EnforcementBackend for WindowsBackend {
                 refused,
             });
         }
-        // S7: apply() honours RAT_DRY_RUN; on failure `current` stays behind
-        // so the next tick retries the same diff instead of losing it.
+        // S7: apply() honours RAT_DRY_RUN. review-01 R6: apply() itself
+        // advances the enforcer's `current` to the applied state on success
+        // and leaves it behind on failure, so the next tick retries the same
+        // diff (the daemon no longer patches `current` by hand).
         self.enforcer.apply(&plan)?;
-        self.enforcer.current = wanted.clone();
         Ok(EnforceOutcome {
             applied: true,
             refused,

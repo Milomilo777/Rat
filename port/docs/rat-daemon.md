@@ -101,6 +101,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 * `RAT_DRY_RUN=1` keeps every enforcer call a printed no-op (S7).
 * A failed apply leaves the backend's applied state behind, so the next tick retries the same diff; the pipeline
   logs and continues (one read hiccup must not become an enforcement outage).
+* review-01 R6: the enforcer crate owns that `current` state — `Enforcer::apply` is `&mut self`, advances
+  `current` on success and leaves it behind on failure; the daemon no longer patches it by hand, and the
+  enforcer's delete-before-add makes a retried (or read-back-missed) re-apply idempotent instead of
+  duplicating netsh rules.
 
 ## Platform Notes
 * **Linux**:
