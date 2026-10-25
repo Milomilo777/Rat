@@ -1327,3 +1327,51 @@ async fn test_set_rules_burst_coalesces_to_newest_list() {
         .expect("pipeline must end on shutdown")
         .unwrap();
 }
+
+/// A source whose every sample fails (a monitor that cannot read the table).
+struct FailingSource;
+
+impl ConnectionSource for FailingSource {
+    fn sample(&mut self) -> io::Result<Vec<Connection>> {
+        Err(io::Error::other("injected sample failure"))
+    }
+}
+
+// B7: static rules need no connection sample, so they are enforced at
+// start-up even when the very first sample fails (pre-fix the failed sample
+// skipped the whole round and nothing was enforced until a sample worked).
+#[tokio::test]
+async fn test_static_rules_enforced_even_if_first_sample_fails() {
+    let app = test_app();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let (snapshot_tx, _snapshot_rx) = tokio::sync::broadcast::channel(16);
+    let (_cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY);
+    let recorder = RecorderBackend::default();
+
+    let engine = rat_core::RuleEngine::new();
+    engine.set_rules(vec![deny_rule(app)]);
+    let ledger = Ledger::new(LedgerConfig { warmup_ms: 0 }, AlertCenterConfig::default());
+    let task = tokio::spawn(rat_daemon::core::run_pipeline(
+        FailingSource,
+        RuleEnginePolicy(engine),
+        ledger,
+        recorder.clone(),
+        dummy_store(),
+        cmd_rx,
+        snapshot_tx,
+        shutdown_rx,
+    ));
+
+    wait_until(Duration::from_secs(5), || {
+        recorder
+            .last_enforced()
+            .is_some_and(|b| b.paths.iter().any(|p| p == app))
+    })
+    .await;
+
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("pipeline must end on shutdown")
+        .unwrap();
+}

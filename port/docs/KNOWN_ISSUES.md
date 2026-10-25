@@ -47,8 +47,6 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
 - **Slow clients (low).** A client that never reads its replies can hold one of the four client slots.
 - **Alerts (low).** A GUI that connects after an alert became active does not receive that alert; an alert that is
   re-queued with the same key may not be broadcast again.
-- **First tick (low).** If the first connection sample fails, static rules are enforced only after a later
-  successful sample or a GUI command.
 - **Read-back order (low).** Paths read back from existing firewall rules at startup are not sorted/deduplicated.
 - **Untested hardening.** Task-death exit + backoff and reply-then-close on oversized messages are implemented but
   have no test that fails when they are removed; the Unix peer check relies on platform tests.

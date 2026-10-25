@@ -464,6 +464,11 @@ pub async fn run_pipeline(
     let mut next_alert_id: u64 = 0;
     let mut current_alert_id: Option<u64> = None;
     let mut sent_alert_key: Option<String> = None;
+    // False until the first enforce round ran. A failed sample may skip a
+    // round only AFTER that: before it, the static anchor (rules that need
+    // no connection) must still be enforced on an empty sample.
+    let mut enforced_once = false;
+
     loop {
         tokio::select! {
             _ = shutdown.recv() => {
@@ -558,9 +563,13 @@ pub async fn run_pipeline(
                         // One failed sample skips the round; the monitor may
                         // recover (e.g. a transient table read) and the next
                         // tick retries. Killing the daemon for it would turn
-                        // a read hiccup into an enforcement outage.
+                        // a read hiccup into an enforcement outage. The
+                        // very first round is the exception: static rules
+                        // are enforced at start-up even without a sample.
                         eprintln!("rat-daemon: monitor sample failed: {e}");
-                        continue;
+                        if enforced_once {
+                            continue;
+                        }
                     }
                 }
             }
@@ -618,6 +627,7 @@ pub async fn run_pipeline(
         // rule blocks its program whether or not a connection is live,
         // macOS pf-anchor parity) UNION the ledger's plan: denied apps plus
         // the LOCAL ports of denied sockets — never server addresses.
+        enforced_once = true;
         let wanted = merge_blocklists(
             static_blocklist(&policy.0.rule_set()),
             to_blocklist(ledger.enforcement()),
