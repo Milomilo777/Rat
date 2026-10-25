@@ -8,7 +8,6 @@ use rat_types::Protocol;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
 use std::net::SocketAddr;
-use std::time::Duration;
 
 /// One queued connection prompt (AlertCenter.swift:8-21). The dedup key is
 /// `app|registrableDomain(host)` (:20).
@@ -39,13 +38,10 @@ pub struct AlertCenterConfig {
 
 impl Default for AlertCenterConfig {
     fn default() -> Self {
-        Self { timeout_ms: 0, timeout_verdict: Verdict::Allow }
-    }
-}
-
-impl AlertCenterConfig {
-    pub fn timeout(&self) -> Option<Duration> {
-        if self.timeout_ms == 0 { None } else { Some(Duration::from_millis(self.timeout_ms)) }
+        Self {
+            timeout_ms: 0,
+            timeout_verdict: Verdict::Allow,
+        }
     }
 }
 
@@ -68,38 +64,86 @@ pub struct AlertCenter {
 
 impl AlertCenter {
     pub fn new(config: AlertCenterConfig) -> Self {
-        Self { config, ..Default::default() }
+        Self {
+            config,
+            ..Default::default()
+        }
     }
 
     /// One alert per key until answered (AlertCenter.swift:44-49). Returns true when queued.
     pub fn report(&mut self, alert: Alert) -> bool {
-        todo!("R3 report dedup")
+        if !self.answered_or_queued.insert(alert.key()) {
+            return false;
+        }
+        self.queue.push_back(alert);
+        true
     }
 
-    /// Drops queued + current alerts the policy no longer considers unanswered (:52-66).
+    /// False when rules, a policy button or the mode already answer this alert
+    /// (Ledger.swift:109-113 wires this to the engine).
+    fn still_pending(policy: &dyn Policy, a: &Alert) -> bool {
+        policy.evaluate(&a.app, &a.remote, Some(&a.host)) == Verdict::Ask
+    }
+
+    /// Drops queued + current alerts the policy no longer considers unanswered
+    /// (AlertCenter.swift:52-66); a dropped key may prompt again later.
     pub fn revalidate(&mut self, policy: &dyn Policy) {
-        todo!("R3 revalidate")
+        let mut kept = VecDeque::new();
+        for a in std::mem::take(&mut self.queue) {
+            if Self::still_pending(policy, &a) {
+                kept.push_back(a);
+            } else {
+                self.answered_or_queued.remove(&a.key());
+            }
+        }
+        self.queue = kept;
+        if let Some(c) = self.current.take() {
+            if Self::still_pending(policy, &c) {
+                self.current = Some(c);
+            } else {
+                self.answered_or_queued.remove(&c.key());
+            }
+        }
     }
 
-    /// The alert being presented, if any (:42 pendingCount / current).
+    /// The alert being presented, if any.
     pub fn current(&self) -> Option<&Alert> {
         self.current.as_ref()
     }
 
     pub fn pending_count(&self) -> usize {
-        todo!("R3 pending count")
+        self.queue.len() + usize::from(self.current.is_some())
     }
 
     /// Answers the current alert; a `Once` answer forgets the key so the same
-    /// (app, host) may prompt again later (:73).
+    /// (app, host) may prompt again later (AlertCenter.swift:73).
     pub fn answer_current(&mut self, verdict: Verdict, lifetime: Lifetime) -> Option<Answer> {
-        todo!("R3 answer")
+        let alert = self.current.take()?;
+        if lifetime == Lifetime::Once {
+            self.answered_or_queued.remove(&alert.key());
+        }
+        Some(Answer {
+            alert,
+            verdict,
+            lifetime,
+        })
     }
 
-    /// Presents the next pending alert and resolves the current one when its
-    /// timeout expires with the configured default verdict (:79-102).
-    /// Returns the timeout answer when one fired.
+    /// Presents the next queued alert when idle, then resolves the current one
+    /// when its timeout expires with the configured default verdict
+    /// (AlertCenter.swift:79-102). Returns the timeout answer when one fired.
     pub fn tick(&mut self, now_ms: u64) -> Option<Answer> {
-        todo!("R5 timeout")
+        if self.current.is_none() {
+            if let Some(next) = self.queue.pop_front() {
+                self.current = Some(next);
+                self.current_since_ms = now_ms;
+            }
+        }
+        if let (Some(_), true) = (&self.current, self.config.timeout_ms > 0) {
+            if now_ms.saturating_sub(self.current_since_ms) >= self.config.timeout_ms {
+                return self.answer_current(self.config.timeout_verdict, Lifetime::Once);
+            }
+        }
+        None
     }
 }

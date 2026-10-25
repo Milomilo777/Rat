@@ -50,7 +50,11 @@ impl Policy for FakePolicy {
     fn evaluate(&self, app: &str, remote: &SocketAddr, host: Option<&str>) -> Verdict {
         let host_str = host.unwrap_or("");
         for (a, suffix, v) in &self.rules {
-            if a == app && (suffix.is_empty() || host_str.ends_with(suffix.as_str()) || remote.ip().to_string().ends_with(suffix.as_str())) {
+            if a == app
+                && (suffix.is_empty()
+                    || host_str.ends_with(suffix.as_str())
+                    || remote.ip().to_string().ends_with(suffix.as_str()))
+            {
                 return *v;
             }
         }
@@ -59,11 +63,17 @@ impl Policy for FakePolicy {
 }
 
 fn ask_policy() -> FakePolicy {
-    FakePolicy { rules: vec![], default: Verdict::Ask }
+    FakePolicy {
+        rules: vec![],
+        default: Verdict::Ask,
+    }
 }
 
 fn allow_policy() -> FakePolicy {
-    FakePolicy { rules: vec![], default: Verdict::Allow }
+    FakePolicy {
+        rules: vec![],
+        default: Verdict::Allow,
+    }
 }
 
 fn ledger_warm() -> Ledger {
@@ -95,14 +105,23 @@ fn test_r1_groups_pids_by_exe_path() {
     let apps: Vec<_> = l.apps().cloned().collect();
     assert_eq!(apps.len(), 2, "two executables -> two app entries");
     let curl = l.app("/usr/bin/curl").expect("curl entry");
-    assert_eq!(curl.pids, [10, 11].into_iter().collect(), "both pids under one exe path");
+    assert_eq!(
+        curl.pids,
+        [10, 11].into_iter().collect(),
+        "both pids under one exe path"
+    );
     assert!(l.app("/usr/bin/wget").is_some());
 }
 
 #[test]
 fn test_r1_listening_counted_per_app() {
     let mut l = ledger_warm();
-    let mut listener = conn(20, "/usr/bin/python", local_remote(8000), local_remote(8000));
+    let mut listener = conn(
+        20,
+        "/usr/bin/python",
+        local_remote(8000),
+        local_remote(8000),
+    );
     listener.listening = true;
     listener.remote = None;
     let out = conn(21, "/usr/bin/python", local_remote(51010), net_remote(443));
@@ -119,7 +138,10 @@ fn test_r1_missing_exe_groups_unknown() {
     c.process.exe = None;
     let p = allow_policy();
     l.ingest(&p, 1000, &[c], &no_details);
-    assert!(l.app("<unknown>").is_some(), "missing exe falls into the <unknown> group");
+    assert!(
+        l.app("<unknown>").is_some(),
+        "missing exe falls into the <unknown> group"
+    );
 }
 
 // ---------- R2: totals + rates, never negative ----------
@@ -127,7 +149,13 @@ fn test_r1_missing_exe_groups_unknown() {
 #[test]
 fn test_r2_totals_and_rates_accumulate() {
     let mut l = ledger_warm();
-    let c = |i, o| counters(conn(10, "/usr/bin/curl", local_remote(51000), net_remote(443)), i, o);
+    let c = |i, o| {
+        counters(
+            conn(10, "/usr/bin/curl", local_remote(51000), net_remote(443)),
+            i,
+            o,
+        )
+    };
     let p = allow_policy();
     l.ingest(&p, 1000, &[c(100, 50)], &no_details); // baseline only
     l.ingest(&p, 2000, &[c(300, 150)], &no_details); // +200/+100 over 1s
@@ -143,12 +171,21 @@ fn test_r2_totals_and_rates_accumulate() {
 #[test]
 fn test_r2_counter_reset_never_negative() {
     let mut l = ledger_warm();
-    let c = |i, o| counters(conn(10, "/usr/bin/curl", local_remote(51000), net_remote(443)), i, o);
+    let c = |i, o| {
+        counters(
+            conn(10, "/usr/bin/curl", local_remote(51000), net_remote(443)),
+            i,
+            o,
+        )
+    };
     let p = allow_policy();
     l.ingest(&p, 1000, &[c(500, 500)], &no_details);
     l.ingest(&p, 2000, &[c(100, 100)], &no_details); // reuse: counter went backwards
     let (rin, rout) = l.rates();
-    assert!(rin >= 0.0 && rout >= 0.0, "no negative rates after reset: {rin}/{rout}");
+    assert!(
+        rin >= 0.0 && rout >= 0.0,
+        "no negative rates after reset: {rin}/{rout}"
+    );
     let e = l.app("/usr/bin/curl").unwrap();
     assert_eq!(e.total_in, 0, "reset sample contributes nothing");
     l.ingest(&p, 3000, &[c(150, 150)], &no_details); // +50 from the new baseline
@@ -158,8 +195,30 @@ fn test_r2_counter_reset_never_negative() {
 #[test]
 fn test_r2_per_remote_totals() {
     let mut l = ledger_warm();
-    let a = |i| counters(conn(10, "/usr/bin/curl", local_remote(51000), addr([1, 1, 1, 1], 443)), i, i);
-    let b = |i| counters(conn(10, "/usr/bin/curl", local_remote(51001), addr([8, 8, 8, 8], 53)), i, i);
+    let a = |i| {
+        counters(
+            conn(
+                10,
+                "/usr/bin/curl",
+                local_remote(51000),
+                addr([1, 1, 1, 1], 443),
+            ),
+            i,
+            i,
+        )
+    };
+    let b = |i| {
+        counters(
+            conn(
+                10,
+                "/usr/bin/curl",
+                local_remote(51001),
+                addr([8, 8, 8, 8], 53),
+            ),
+            i,
+            i,
+        )
+    };
     let p = allow_policy();
     l.ingest(&p, 1000, &[a(0), b(0)], &no_details);
     l.ingest(&p, 2000, &[a(100), b(900)], &no_details);
@@ -175,14 +234,24 @@ fn test_r2_per_remote_totals() {
 #[test]
 fn test_r2_rates_ring_caps_at_14() {
     let mut l = ledger_warm();
-    let c = |i| counters(conn(10, "/usr/bin/curl", local_remote(51000), net_remote(443)), i, i);
+    let c = |i| {
+        counters(
+            conn(10, "/usr/bin/curl", local_remote(51000), net_remote(443)),
+            i,
+            i,
+        )
+    };
     let p = allow_policy();
     let mut t = 1000u64;
     for i in 0..16u64 {
         l.ingest(&p, t, &[c(i * 100)], &no_details);
         t += 1000;
     }
-    assert_eq!(l.app("/usr/bin/curl").unwrap().rates.len(), 14, "rate ring keeps the last 14 samples");
+    assert_eq!(
+        l.app("/usr/bin/curl").unwrap().rates.len(),
+        14,
+        "rate ring keeps the last 14 samples"
+    );
 }
 
 // ---------- R3: alert dedup / revalidation / once ----------
@@ -192,9 +261,13 @@ fn test_r3_one_alert_per_app_and_address() {
     let mut l = ledger_warm();
     let p = ask_policy();
     let c = conn(10, "/usr/bin/curl", local_remote(51000), net_remote(443));
-    l.ingest(&p, 1000, &[c.clone()], &no_details);
-    l.ingest(&p, 2500, &[c], &no_details);
-    assert_eq!(l.alerts.pending_count(), 1, "same (app, address) asks only once");
+    l.ingest(&p, 1000, std::slice::from_ref(&c), &no_details);
+    l.ingest(&p, 2500, std::slice::from_ref(&c), &no_details);
+    assert_eq!(
+        l.alerts.pending_count(),
+        1,
+        "same (app, address) asks only once"
+    );
 }
 
 #[test]
@@ -210,8 +283,14 @@ fn test_r3_registrable_domain_collapses_subdomains() {
         reported_ms: 0,
     };
     assert!(center.report(mk("a.example.com")));
-    assert!(!center.report(mk("b.example.com")), "same registrable domain deduped");
-    assert!(center.report(mk("other.org")), "different domain -> new alert");
+    assert!(
+        !center.report(mk("b.example.com")),
+        "same registrable domain deduped"
+    );
+    assert!(
+        center.report(mk("other.org")),
+        "different domain -> new alert"
+    );
     assert_eq!(center.pending_count(), 2);
 }
 
@@ -229,9 +308,16 @@ fn test_r3_revalidate_drops_answered_by_policy() {
     };
     center.report(a.clone());
     assert_eq!(center.pending_count(), 1);
-    let allow = FakePolicy { rules: vec![("/usr/bin/curl".into(), "example.com".into(), Verdict::Allow)], default: Verdict::Ask };
+    let allow = FakePolicy {
+        rules: vec![("/usr/bin/curl".into(), "example.com".into(), Verdict::Allow)],
+        default: Verdict::Ask,
+    };
     center.revalidate(&allow);
-    assert_eq!(center.pending_count(), 0, "app gained an allow rule -> prompt withdrawn");
+    assert_eq!(
+        center.pending_count(),
+        0,
+        "app gained an allow rule -> prompt withdrawn"
+    );
     // and it may ask again later
     assert!(center.report(a));
 }
@@ -251,22 +337,38 @@ fn test_r3_answer_once_forgets_the_key() {
     center.report(a.clone());
     center.tick(0);
     assert!(center.current().is_some());
-    let answer = center.answer_current(Verdict::Deny, Lifetime::Once).expect("answered");
+    let answer = center
+        .answer_current(Verdict::Deny, Lifetime::Once)
+        .expect("answered");
     assert_eq!(answer.verdict, Verdict::Deny);
     assert!(center.current().is_none());
-    assert!(center.report(a), "a once answer must not silence the next connection");
+    assert!(
+        center.report(a),
+        "a once answer must not silence the next connection"
+    );
 }
 
 #[test]
 fn test_r3_warmup_suppresses_alerts() {
-    let mut l = Ledger::new(LedgerConfig { warmup_ms: 12_000 }, AlertCenterConfig::default());
+    let mut l = Ledger::new(
+        LedgerConfig { warmup_ms: 12_000 },
+        AlertCenterConfig::default(),
+    );
     let p = ask_policy();
     let c = conn(10, "/usr/bin/curl", local_remote(51000), net_remote(443));
-    let s = l.ingest(&p, 1000, &[c.clone()], &no_details);
-    assert_eq!(l.alerts.pending_count(), 0, "sockets that existed at launch never prompt");
+    let s = l.ingest(&p, 1000, std::slice::from_ref(&c), &no_details);
+    assert_eq!(
+        l.alerts.pending_count(),
+        0,
+        "sockets that existed at launch never prompt"
+    );
     assert_eq!(s.unconfirmed, 1, "still counted as unconfirmed");
     l.ingest(&p, 20_000, &[c], &no_details);
-    assert_eq!(l.alerts.pending_count(), 1, "after warmup the ask is reported");
+    assert_eq!(
+        l.alerts.pending_count(),
+        1,
+        "after warmup the ask is reported"
+    );
 }
 
 // ---------- R4: derived enforcement ----------
@@ -274,19 +376,31 @@ fn test_r3_warmup_suppresses_alerts() {
 #[test]
 fn test_r4_denied_connection_puts_local_port_in_plan() {
     let mut l = ledger_warm();
-    let p = FakePolicy { rules: vec![("/usr/bin/curl".into(), "1.2.3.4".into(), Verdict::Deny)], default: Verdict::Allow };
+    let p = FakePolicy {
+        rules: vec![("/usr/bin/curl".into(), "1.2.3.4".into(), Verdict::Deny)],
+        default: Verdict::Allow,
+    };
     let c = conn(10, "/usr/bin/curl", local_remote(54321), net_remote(443));
     let s = l.ingest(&p, 1000, &[c], &no_details);
     assert_eq!(s.denied, 1);
     let plan = l.enforcement();
-    assert!(plan.denied_local_ports.contains(&54321), "local port of the denied socket");
-    assert!(plan.denied_apps.is_empty(), "one denied remote is not a whole-app deny");
+    assert!(
+        plan.denied_local_ports.contains(&54321),
+        "local port of the denied socket"
+    );
+    assert!(
+        plan.denied_apps.is_empty(),
+        "one denied remote is not a whole-app deny"
+    );
 }
 
 #[test]
 fn test_r4_whole_app_deny_by_probe() {
     let mut l = ledger_warm();
-    let p = FakePolicy { rules: vec![("/usr/bin/curl".into(), "".into(), Verdict::Deny)], default: Verdict::Allow };
+    let p = FakePolicy {
+        rules: vec![("/usr/bin/curl".into(), "".into(), Verdict::Deny)],
+        default: Verdict::Allow,
+    };
     let c = conn(10, "/usr/bin/curl", local_remote(51000), net_remote(443));
     l.ingest(&p, 1000, &[c], &no_details);
     assert!(l.enforcement().denied_apps.contains("/usr/bin/curl"));
@@ -295,30 +409,48 @@ fn test_r4_whole_app_deny_by_probe() {
 #[test]
 fn test_r4_rule_removed_shrinks_plan() {
     let mut l = ledger_warm();
-    let deny = FakePolicy { rules: vec![("/usr/bin/curl".into(), "1.2.3.4".into(), Verdict::Deny)], default: Verdict::Allow };
-    let allow = FakePolicy { rules: vec![("/usr/bin/curl".into(), "1.2.3.4".into(), Verdict::Allow)], default: Verdict::Allow };
+    let deny = FakePolicy {
+        rules: vec![("/usr/bin/curl".into(), "1.2.3.4".into(), Verdict::Deny)],
+        default: Verdict::Allow,
+    };
+    let allow = FakePolicy {
+        rules: vec![("/usr/bin/curl".into(), "1.2.3.4".into(), Verdict::Allow)],
+        default: Verdict::Allow,
+    };
     let c = conn(10, "/usr/bin/curl", local_remote(54321), net_remote(443));
-    l.ingest(&deny, 1000, &[c.clone()], &no_details);
+    l.ingest(&deny, 1000, std::slice::from_ref(&c), &no_details);
     assert!(!l.enforcement().denied_local_ports.is_empty());
     l.ingest(&allow, 2500, &[c], &no_details);
-    assert!(l.enforcement().denied_local_ports.is_empty(), "removing the rule shrinks the plan");
+    assert!(
+        l.enforcement().denied_local_ports.is_empty(),
+        "removing the rule shrinks the plan"
+    );
 }
 
 #[test]
 fn test_r4_port_zero_and_loopback_never_listed() {
     let mut l = ledger_warm();
-    let p = FakePolicy { rules: vec![("/usr/bin/curl".into(), "".into(), Verdict::Deny)], default: Verdict::Allow };
+    let p = FakePolicy {
+        rules: vec![("/usr/bin/curl".into(), "".into(), Verdict::Deny)],
+        default: Verdict::Allow,
+    };
     let wan = conn(10, "/usr/bin/curl", addr([0, 0, 0, 0], 0), net_remote(443)); // local port 0
     let loop_ = conn(10, "/usr/bin/curl", local_remote(51515), local_remote(8080)); // loopback remote
     l.ingest(&p, 1000, &[wan, loop_], &no_details);
-    assert!(l.enforcement().denied_local_ports.is_empty(), "port 0 and loopback remotes are never blocked");
+    assert!(
+        l.enforcement().denied_local_ports.is_empty(),
+        "port 0 and loopback remotes are never blocked"
+    );
 }
 
 // ---------- R5: timeout ----------
 
 #[test]
 fn test_r5_timeout_resolves_to_configured_default() {
-    let cfg = AlertCenterConfig { timeout_ms: 5000, timeout_verdict: Verdict::Deny };
+    let cfg = AlertCenterConfig {
+        timeout_ms: 5000,
+        timeout_verdict: Verdict::Deny,
+    };
     let mut center = AlertCenter::new(cfg);
     let a = Alert {
         app: "/usr/bin/curl".into(),
@@ -334,7 +466,11 @@ fn test_r5_timeout_resolves_to_configured_default() {
     assert!(center.current().is_some());
     let fired = center.tick(6000).expect("timeout answer");
     assert_eq!(fired.verdict, Verdict::Deny, "configured default verdict");
-    assert_eq!(fired.lifetime, Lifetime::Once, "timeout answers once (Swift .once)");
+    assert_eq!(
+        fired.lifetime,
+        Lifetime::Once,
+        "timeout answers once (Swift .once)"
+    );
     assert!(center.current().is_none());
     assert!(center.report(a), "once semantics: may ask again");
 }
@@ -364,7 +500,12 @@ fn test_r5_timeout_zero_never_fires() {
 #[test]
 fn test_r6_details_carried_on_remote_entries() {
     let mut l = ledger_warm();
-    let c = conn(10, "/Applications/Firefox.app", local_remote(51000), net_remote(443));
+    let c = conn(
+        10,
+        "/Applications/Firefox.app",
+        local_remote(51000),
+        net_remote(443),
+    );
     let details = |_: &Connection| ConnectionDetails {
         process: Some("plugin-container".into()),
         service_name: Some("HTTPS".into()),
@@ -377,9 +518,16 @@ fn test_r6_details_carried_on_remote_entries() {
     l.ingest(&p, 1000, &[c], &details);
     let e = l.app("/Applications/Firefox.app").unwrap();
     let r = e.remotes.first().expect("remote listed");
-    assert_eq!(r.details.process.as_deref(), Some("plugin-container"), "helper process behind the socket");
+    assert_eq!(
+        r.details.process.as_deref(),
+        Some("plugin-container"),
+        "helper process behind the socket"
+    );
     assert_eq!(r.details.service_name.as_deref(), Some("HTTPS"));
-    assert_eq!(r.details.network_owner.as_deref(), Some("AS13335 Cloudflare, Inc."));
+    assert_eq!(
+        r.details.network_owner.as_deref(),
+        Some("AS13335 Cloudflare, Inc.")
+    );
     assert_eq!(r.details.vpn_mark.as_deref(), Some("WireGuard"));
     assert_eq!(r.details.proxy_mark, None);
 }
