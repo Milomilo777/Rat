@@ -102,20 +102,67 @@ pub fn run_w4() {
 
     wait_for_service_state("RUNNING");
 
+    // Wait up to 15s for the pipe to exist
+    let start = Instant::now();
+    let mut pipe_found = false;
+    let mut matching_pipes = String::new();
+    while start.elapsed() < Duration::from_secs(15) {
+        let output = Command::new("powershell.exe")
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg("[System.IO.Directory]::GetFiles('\\\\.\\pipe\\') | Select-String 'rat'")
+            .output()
+            .unwrap();
+
+        matching_pipes = String::from_utf8_lossy(&output.stdout).to_string();
+        if matching_pipes.contains("rat") {
+            pipe_found = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+
+    if !pipe_found {
+        let out_qc = Command::new("sc.exe")
+            .arg("qc")
+            .arg("RatDaemon")
+            .output()
+            .unwrap();
+        let out_query = Command::new("sc.exe")
+            .arg("query")
+            .arg("RatDaemon")
+            .output()
+            .unwrap();
+        let out_events = Command::new("powershell.exe")
+            .arg("-Command")
+            .arg("Get-WinEvent -LogName System -MaxEvents 30 | Where-Object {$_.ProviderName -eq 'Service Control Manager'} | Select-Object -ExpandProperty Message")
+            .output()
+            .unwrap();
+        panic!(
+            "FAIL-PRODUCT: W4 Failed: Pipe \\\\.\\pipe\\rat does not exist while service is RUNNING. Matching pipes:\n{}\nsc qc output:\n{}\nsc query output:\n{}\nEvent logs:\n{}",
+            matching_pipes,
+            String::from_utf8_lossy(&out_qc.stdout),
+            String::from_utf8_lossy(&out_query.stdout),
+            String::from_utf8_lossy(&out_events.stdout)
+        );
+    }
+
+    println!("Found pipes matching 'rat':\n{}", matching_pipes);
+
     // Negative control: Check pipe existence with dummy pipe to ensure we can catch absence.
     let output = Command::new("powershell.exe")
         .arg("-Command")
-        .arg("if (Test-Path '\\\\.\\pipe\\rat_missing_dummy') { (Get-Acl -Path '\\\\.\\pipe\\rat_missing_dummy').AccessToString } else { throw 'nope' }")
+        .arg("$pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'rat_missing_dummy'); try { $pipe.Connect(500); $pipe.GetAccessControl().GetSecurityDescriptorSddlForm('Access') } catch { exit 1 }")
         .output().unwrap();
     assert!(
         !output.status.success(),
         "W4 Failed: Negative control for pipe existence failed."
     );
 
-    // Check pipe existence. If the pipe is absent, Get-Acl will error.
+    // Check pipe ACL.
     let output = Command::new("powershell.exe")
         .arg("-Command")
-        .arg("if (Test-Path '\\\\.\\pipe\\rat') { (Get-Acl -Path '\\\\.\\pipe\\rat').AccessToString } else { throw 'nope' }")
+        .arg("$pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'rat'); $pipe.Connect(2000); $pipe.GetAccessControl().GetSecurityDescriptorSddlForm('Access')")
         .output().unwrap();
 
     assert!(
@@ -126,15 +173,16 @@ pub fn run_w4() {
 
     let acl_str = String::from_utf8_lossy(&output.stdout);
     assert!(!acl_str.trim().is_empty(), "W4 Failed: Pipe ACL was empty");
-    println!("Pipe ACL:\n{}", acl_str);
+    println!("Pipe ACL SDDL:\n{}", acl_str);
 
+    // Expected SDDL: D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12019b;;;IU)
+    // Actually SDDL format output might just contain the strings. Let's just check for the IU (Interactive Users) block not having full control, etc.
+    // The instructions say: "compare with the expected SDDL D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12019b;;;IU)"
+    // Let's assert it exactly if possible, or check that it contains it.
     assert!(
-        !acl_str.contains("FILE_CREATE_PIPE_INSTANCE"),
-        "W4 Failed: Users have FILE_CREATE_PIPE_INSTANCE"
-    );
-    assert!(
-        !acl_str.contains("WRITE_DAC"),
-        "W4 Failed: Users have WRITE_DAC"
+        acl_str.contains("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12019b;;;IU)") || acl_str.contains("D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12019b;;;IU)"),
+        "W4 Failed: Pipe ACL SDDL did not match expected. Got: {}",
+        acl_str
     );
 
     let out = Command::new("net.exe")
@@ -197,6 +245,6 @@ pub fn run_w4() {
 
     assert!(
         rule_str.trim().is_empty(),
-        "W4 Failed: Stale rules remained after service restart"
+        "FAIL-PRODUCT: W4 Failed: Stale rules remained after service restart"
     );
 }

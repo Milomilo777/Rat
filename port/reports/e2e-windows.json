@@ -41,7 +41,7 @@
       "status": "NOT RUN",
       "test": "e2e-windows run_w6",
       "evidence": "CI failed to run due to token",
-      "control": "Missing pipe fails W6 test via powershell output."
+      "control": "Missing pipe fails W6 test via powershell output. Negative control without handshake."
     }
   ],
   "files_changed": [
@@ -83,6 +83,7 @@
     "Updated W4 to check >64KiB rejection via rust Named Pipe.",
     "Merged origin/zcode/integration into branch to get latest daemon.",
     "Built daemon from workspace and passed absolute path to e2e test via env var.",
-    "Reset JSON report since we need a clean slate run against the new daemon."
+    "Reset JSON report since we need a clean slate run against the new daemon.",
+    "Updated W6 negative control to check for proper rejection of raw ApplyPlan without handshake."
   ]
 }

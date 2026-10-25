@@ -25,3 +25,4 @@ None so far.
 - Updated W4 to check output/exit code of sc.exe and wait 30s.
 - Built daemon from workspace and passed absolute path to e2e test via env var.
 - Reset JSON report since we need a clean slate run against the new daemon.
+- Updated W6 negative control to check for proper rejection of raw ApplyPlan without handshake.
