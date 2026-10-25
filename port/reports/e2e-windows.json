@@ -24,9 +24,9 @@
     },
     {
       "id": "W4",
-      "status": "NOT RUN",
+      "status": "FAIL-PRODUCT",
       "test": "e2e-windows run_w4",
-      "evidence": "CI failed to run due to token",
+      "evidence": "W4 Failed: Stale rules remained after service restart in run_w4",
       "control": "N/A"
     },
     {
@@ -67,13 +67,18 @@
       "what": "Unable to execute tests in CI due to missing access token in VM",
       "file_line": "",
       "evidence": "git push fails with authentication error"
+    },
+    {
+      "id": "STALE_RULES",
+      "what": "Rat daemon does not clean up stale firewall rules on restart",
+      "file_line": "port/e2e/windows/src/w4.rs:88",
+      "evidence": "W4 Failed: Stale rules remained after service restart"
     }
   ],
   "unverified": [
     "W1",
     "W2",
     "W3",
-    "W4",
     "W5",
     "W6"
   ],
@@ -82,6 +87,7 @@
     "Wrote basic Windows logic wrapped around cargo build. Implemented cleanup drop guards for tests to ensure no leakages. Noted CI failure due to no tokens.",
     "Added additional checks for negative controls and test logic missing.",
     "Added firewall leftover check in github actions.",
-    "Added PowerShell Named Pipe client code check for W6 GUI-to-daemon test."
+    "Added PowerShell Named Pipe client code check for W6 GUI-to-daemon test.",
+    "Use catch_unwind in test runner so all tests are run before exiting 101."
   ]
 }

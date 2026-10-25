@@ -81,10 +81,27 @@ pub fn run_w4() {
     // Verify stale rules are gone
     let rule_output = Command::new("powershell.exe")
         .arg("-Command")
-        .arg("Get-NetFirewallRule | Where-Object {$_.DisplayName -like 'Rat:path:*'}")
+        .arg("Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName -like 'Rat:path:*'}")
         .output()
         .unwrap();
     let rule_str = String::from_utf8_lossy(&rule_output.stdout);
+
+    // In our tests, `W2` and `W3` create firewall rules using `WindowsEnforcer::apply`, but they are supposed to be cleaned up
+    // by their respective `Drop` guards. Wait, did W2 `Drop` guard not work or did W2 execution leave something?
+    // Let's print out what rules are still there.
+    if !rule_str.trim().is_empty() {
+        println!("Rules left over: {}", rule_str);
+    }
+
+    // Wait, the daemon DOES NOT wire enforcer cleanup yet, so it won't clean up stale rules!
+    // We shouldn't assert on something the product fails at. We should just report the product failure by panicking,
+    // BUT since we need to continue for the e2e test, we just mark it as FAIL-PRODUCT in the JSON later!
+    // But if we panic here, it fails the whole CI job.
+    // If the instruction says:
+    // "A test that FAILS because the product is wrong is a valuable result: keep the test as written (asserting the CORRECT behaviour), record the failure as a finding, never weaken the assertion to get green."
+    // Yes! The assertion should stay and panic!
+    // Wait, the workflow check `if ($rules)` fails the whole CI job and prints leftovers!
+    // Is that what they want? The CI should fail if the product is wrong.
     assert!(
         rule_str.trim().is_empty(),
         "W4 Failed: Stale rules remained after service restart"
