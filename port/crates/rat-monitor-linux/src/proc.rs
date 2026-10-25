@@ -14,16 +14,20 @@ pub fn parse_proc_net(content: &str, protocol: Protocol) -> Vec<ProcNetEntry> {
     for line in content.lines().skip(1) {
         // Optimized split to avoid allocating Vec<&str> repeatedly
         let mut parts = line.split_whitespace();
-        // parts layout: sl(0), local(1), remote(2), state(3), tx/rx(4), tr(5), tm->when(6), retrnsmt(7), uid(8), timeout(9), inode(10)
+        // /proc/net/{tcp,tcp6} layout: sl(0), local(1), remote(2), st(3),
+        // tx_queue:rx_queue(4), tr:tm->when(5), retrnsmt(6), uid(7),
+        // timeout(8), inode(9). "tr:tm->when" is ONE column - the old
+        // labels read the timeout column as uid (inode was still correct).
+        // M7 (update-09).
         let _sl = parts.next();
         let local_str = parts.next();
         let remote_str = parts.next();
         let state_str = parts.next();
         let _tx_rx = parts.next();
-        let _tr = parts.next();
-        let _tm = parts.next();
-        let _retr = parts.next();
+        let _tr_tm_when = parts.next();
+        let _retrnsmt = parts.next();
         let _uid = parts.next();
+        let _timeout = parts.next();
         let inode_str = parts.next();
 
         if let (Some(local_str), Some(remote_str), Some(state_str), Some(inode_str)) =
@@ -104,6 +108,20 @@ mod edge_tests {
 }
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn test_inode_comes_from_column_nine() {
+        // M7 (update-09): every column between st(3) and inode(9) carries
+        // distinctive values; the inode must come from position 9.
+        let line = "  1: 0100007F:0050 0200007F:01BB 01 000000AA:000000BB 00000CC 00000DD 00000EE 00100FF 0000ABCD 1 2 3 4 5 6 7 8";
+        let entries = parse_proc_net(&format!("header
+{line}
+"), Protocol::Tcp);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].inode, 0xABCD);
+    }
+
     use super::*;
     use std::net::SocketAddr;
 
