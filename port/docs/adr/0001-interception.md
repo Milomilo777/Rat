@@ -84,9 +84,8 @@ Rat is a reactive application firewall and network monitor on macOS. The goal is
 For Version 1, which mimics the macOS reactive approach:
 * **Windows:** Use **WFP from user mode** (similar to simplewall). It requires admin privileges but no kernel drivers, avoiding the EV certificate and attestation signing requirements. To align with Rat v1.2.0, WFP filters will be configured to target specific applications via `FWPM_CONDITION_ALE_APP_ID` (process path matching), which naturally isolates the block to the denied app without needing to enumerate and block its individual local ports.
   > **Amended 2026-10-25 (V1):** superseded by `netsh advfirewall` per-program rules — the shipped
-  > `rat-enforcer` backend. See "Amendment 2026-10-25 (integration decision, PROPOSALS #8)" at the
-  > end of this document.
-* **Linux:** Use **eBPF or netlink socket polling** for monitoring, and **iptables/nftables** rules for enforcement. To align with Rat v1.2.0, nftables rules can be updated dynamically to drop traffic originating from specific local ports or via cgroup matching (`meta cgroup` paths, not raw PIDs - netfilter cannot match PIDs, see review L1; per-PID attribution needs eBPF).
+  > `rat-enforcer` backend. See "Amendment 2026-10-25" at the end of this document.
+* **Linux:** Use **eBPF or netlink socket polling** for monitoring, and **iptables/nftables** rules for enforcement. To align with Rat v1.2.0, nftables rules can be updated dynamically to drop traffic originating from specific local ports or via cgroup matching (`meta cgroup` paths, not raw PIDs - netfilter cannot match PIDs; per-PID attribution needs eBPF).
 
 ### Version 2 (Pre-connection prompt)
 For Version 2, which requires holding connections:
@@ -106,7 +105,7 @@ To implement Version 1 enforcement on Windows using the Windows Filtering Platfo
 
 *   **Provider and Sublayer:** Create a dedicated WFP Provider and a high-weight custom Sublayer (e.g., `FWPM_SUBLAYER_WEIGHT_MAX`) so Rat's rules take precedence over standard filters.
     *   *Docs:* [Providers](https://learn.microsoft.com/en-us/windows/win32/fwp/providers), [Sublayers](https://learn.microsoft.com/en-us/windows/win32/fwp/sublayers)
-*   **Layers:** Hook into `FWPM_LAYER_ALE_AUTH_CONNECT_V4` and `FWPM_LAYER_ALE_AUTH_CONNECT_V6` to control outbound TCP connections, and `ALE layering note (corrected 2026-10-25 per external review W1: `FWPM_LAYER_ALE_AUTH_SEND_RECV_V4/V6` does not exist). Outbound UDP is authorized at `FWPM_LAYER_ALE_AUTH_CONNECT_V4`/`V6` (each connect/sendto to a new peer); inbound authorization uses `FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4`/`V6`.
+*   **Layers:** Hook into `FWPM_LAYER_ALE_AUTH_CONNECT_V4` and `FWPM_LAYER_ALE_AUTH_CONNECT_V6` to control outbound TCP connections, and `ALE layering note (corrected 2026-10-25: `FWPM_LAYER_ALE_AUTH_SEND_RECV_V4/V6` does not exist). Outbound UDP is authorized at `FWPM_LAYER_ALE_AUTH_CONNECT_V4`/`V6` (each connect/sendto to a new peer); inbound authorization uses `FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4`/`V6`.
     *   *Docs:* [ALE Layers](https://learn.microsoft.com/en-us/windows/win32/fwp/ale-layers)
 *   **App Identification / Process Blocking:** Use `FwpmGetAppIdFromFileName0` to derive the `FWP_BYTE_BLOB` for matching a process by its executable path. Use the `FWPM_CONDITION_ALE_APP_ID` filter condition to drop connections directly from the denied app, fulfilling the v1.2.0 requirement to isolate blocking per app without blocking remote addresses.
     *   *Docs:* [FwpmGetAppIdFromFileName0](https://learn.microsoft.com/en-us/windows/win32/api/fwpmu/nf-fwpmu-fwpmgetappidfromfilename0)
@@ -121,7 +120,7 @@ To implement Version 2 (and V1 enforcement) on Linux, the following setup is rec
 *   **Local Port Blocking (v1.2.0 compatibility):** For v1 (reactive), dynamically generate `nftables` rules that drop traffic matching `tcp sport { port1, port2 }` or `udp sport { port1, port2 }`, corresponding to the sockets held by denied apps.
     *   *Docs:* [nftables Match expression (sport)](https://wiki.nftables.org/wiki-nftables/index.php/Matching_transport_protocol)
 *   **Queue Target:** Use the `queue` statement to divert matching outbound traffic to userspace via `nfqueue`.
-    *   Example rule: `nft add rule inet filter output ct state new tcp dport { 80, 443 } queue num 1  # ct state new added per review L3: without it every packet of a flow is queued`
+    *   Example rule: `nft add rule inet filter output ct state new tcp dport { 80, 443 } queue num 1  # ct state new: without it every packet of a flow is queued`
     *   *Docs:* [nftables queueing to userspace](https://wiki.nftables.org/wiki-nftables/index.php/Queueing_to_userspace)
 *   **Userspace Handling:** A daemon binds to the netlink queue (e.g., queue number 1). It reads the packet, correlates it with a socket/process using Netlink/procfs, holds it while a user prompt is active (V2), and issues an `NF_ACCEPT` or `NF_DROP` verdict.
     *   *Docs:* [libnetfilter_queue](https://netfilter.org/projects/libnetfilter_queue/doxygen/html/)
@@ -156,14 +155,13 @@ A compile-only spike was created in `port/spikes/windows-wfp/`. It uses the `win
 * Utilizing a dynamic session (`FWPM_SESSION_FLAG_DYNAMIC`) is highly recommended for Rat's enforcement. It eliminates the need to manually clean up rules if Rat crashes, preventing the firewall from being left in a permanently broken state.
 * App-ID mapping via `FwpmGetAppIdFromFileName0` integrates perfectly into the V1 requirement of blocking by process path rather than remote IP.
 
-> **Note (integration audit, 2026-10-25):** this spike is COMPILE-ONLY. The research lane verified it
-> compiles for `x86_64-pc-windows-gnu` (port/reports/research-interception.md, R7: "compile-checked
-> only") and never executed it — it was written on Linux without admin. The run steps above are
-> prospective and the "Learnings" beyond verbosity are UNVERIFIED claims. `port/spikes/windows-wfp`
+> **Note (2026-10-25):** this spike is COMPILE-ONLY. It was checked to compile for
+> `x86_64-pc-windows-gnu` and was never executed - it was written on Linux without admin. The run steps
+> above are prospective and the "Learnings" beyond verbosity are UNVERIFIED claims. `port/spikes/windows-wfp`
 > pins `windows = 0.58.0`; the integrated workspace uses `windows 0.52.0` (rat-monitor-windows) and
 > `windows-sys 0.59` (rat-daemon).
 
-## Amendment 2026-10-25 (integration decision, PROPOSALS #8)
+## Amendment 2026-10-25
 
 **V1 Windows enforcement backend = `netsh advfirewall` per-program rules** — the backend `rat-enforcer`
 ships today (`port/crates/rat-enforcer/src/windows.rs`). The WFP user-mode decision above is superseded
@@ -174,33 +172,32 @@ with evidence:
    `com.apple/rat` lives in the system firewall across process deaths: `rat-enforcerd` is a LaunchDaemon
    with `KeepAlive=true` (App/Model/Enforcer.swift:144), the daemon only trusts the denied-ports file
    while it is fresh ("a crashed Rat must not leave ports blocked", :110-111), and the anchor is cleared
-   only on "Remove Helper" (`pfctl -a com.apple/rat -F all`, :179). Persistent netsh rules + the S8
-   `Enforcer::cleanup()` (windows.rs, `Rat:path:*` wildcard removal) reproduce this model exactly:
-   stale state survives a crash only until the daemon next starts. A dynamic WFP session would DIVERGE
+   only on "Remove Helper" (`pfctl -a com.apple/rat -F all`, :179). Persistent netsh rules + `Enforcer::cleanup()`
+   (windows.rs, `Rat:path:*` wildcard removal, run by `rat-daemon --cleanup`) reproduce this model: blocks
+   keep working while the daemon is down, and the next start reconciles the firewall with the saved rules. A dynamic WFP session would DIVERGE
    from macOS: any enforcer crash silently un-blocks everything (fail-open).
 2. **The V1 per-app requirement is already met without WFP.** `netsh advfirewall firewall add rule
    program="..."` scopes the block to the denied executable (the Windows analogue of `ALE_APP_ID`),
    so the v1.2.0 isolation property holds; per-program rules also have no recycled-local-port exposure
-   (PROPOSALS #3 is Linux-only). The crate is std-only ([dependencies] empty), hardened by update-08
-   S1-S10 (absolute-path resolution from %SystemRoot%, dry-run opt-out, refusal of whole-program
-   blocks of shared service hosts), and CI-green on both OS runners (ci-04/ci-05).
+   (recycled local ports are a Linux-only concern). The crate is std-only ([dependencies] empty), hardened
+   (absolute-path resolution from %SystemRoot%, dry-run opt-out, refusal of whole-program blocks of shared
+   service hosts), and exercised by real-OS end-to-end tests on GitHub Actions runners (Windows and Linux).
 3. **Cost/risk of a WFP port now is high and unverifiable here.** It means porting unexecuted unsafe
    FFI (FWP_VALUE0/FWP_CONDITION_VALUE0 unions, byte-blob lifetimes) into the enforcement path, adding
    a `windows`-crate dependency to a std-only crate (with the version-mix question noted above), and
-   it cannot be exercised on the integration host at all (adding filters requires admin; the local
-   Windows host has no admin per task hard rule 3; CI enforcer tests run with `RAT_DRY_RUN=1`,
-   windows.rs:236,307,345 — so neither backend's real apply is CI-verified today). netsh runtime
-   behavior, by contrast, is a documented Windows facility.
+   it can only be exercised with administrator rights (adding filters requires admin). The unit tests of the
+   enforcer run with `RAT_DRY_RUN=1`; the real `netsh` apply is covered by the end-to-end suite on a Windows
+   runner. netsh runtime behavior is a documented Windows facility.
 4. **V2 supersedes a user-mode WFP backend anyway.** Per the Decision Outcome above, Windows V2
    (pend connection) requires a WFP callout driver with EV signing and Microsoft attestation. A
    user-mode WFP V1 backend would be throwaway work at that point; netsh keeps V1 cheap and is
    cleanly replaced.
 
-Tradeoffs accepted, owned by the #10 daemon wiring: netsh rules persist across crashes, so the window
-until the next daemon start holds stale blocks — `cleanup()` MUST run at daemon startup before the
-first apply, best-effort on clean shutdown, and on the "Remove Helper" uninstall path (parity with
-`pfctl -F all`). The rule namespace stays `Rat:path:*`; whole-program blocks of shared service hosts
-stay refused (W2 guard, PROPOSALS #1). Per-service scoping (#1 residual) does not require WFP:
+Tradeoffs accepted: netsh rules persist across crashes and clean stops, so blocks stay in force until the
+daemon next starts. The daemon does not wipe the rules at startup (that would open a fail-open window); it
+reads back its own `Rat:*` rules and reconciles them with the saved rule set. Full removal is
+`rat-daemon --cleanup`, the uninstall path (parity with `pfctl -F all`). The rule namespace stays `Rat:path:*`; whole-program blocks of shared service hosts
+stay refused. Per-service scoping does not require WFP:
 `netsh advfirewall` supports `service=<short name>` compound rules — UNVERIFIED here, verify on an
 admin runner when wiring. If the stale-block window ever proves unacceptable, the WFP dynamic-session
 port remains the fallback and this amendment gets revisited.

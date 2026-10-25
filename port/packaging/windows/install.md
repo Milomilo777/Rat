@@ -37,8 +37,9 @@ The Windows end-to-end suite (`port/e2e/windows`) uses the same service name, `R
 
 - Rules: `C:\ProgramData\rat\rules.json`. The daemon creates the folder at start-up with a protected access list
   (SYSTEM and Administrators only). If the folder already exists and is not owned by SYSTEM or Administrators,
-  or is a junction, the daemon does not use it: it starts with no saved rules and rules are not saved.
-- IPC endpoint: the named pipe `\.\pipe\rat`. Only elevated administrators and SYSTEM may connect, so the desktop
+  or is a junction, the daemon does not use it: it starts with no saved rules and rules are not saved. If the
+  existing folder is owned by SYSTEM or Administrators, the daemon re-applies the same protected access list to it.
+- IPC endpoint: the named pipe `\\.\pipe\rat`. Only elevated administrators and SYSTEM may connect, so the desktop
   app must run elevated.
 - Firewall rules created by the daemon have display names starting with `Rat:path:` (per program) or
   `Rat:port:` (local port).

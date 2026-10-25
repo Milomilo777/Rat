@@ -50,6 +50,8 @@ sudo rm /etc/systemd/system/rat-daemon.service /usr/local/bin/rat-daemon
 sudo systemctl daemon-reload
 ```
 
-`rat-daemon --cleanup` removes the firewall table the daemon created. You can do the same by hand with
+Stopping or crashing the daemon does not remove the firewall table: the blocks stay in force (the unit has no
+`ExecStopPost`), and the next start reconciles them with the saved rules. `rat-daemon --cleanup` removes the
+firewall table the daemon created. You can do the same by hand with
 `sudo nft delete table inet rat`. The saved rules in `/etc/rat` are not removed; delete that directory yourself if
 you want them gone.

@@ -28,10 +28,6 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
   tick; a new allowed app that reuses the same ephemeral port can be blocked meanwhile (also seen on Linux, E2E L4).
 
 ## Daemon and IPC (`rat-daemon`)
-- **Rules directory (medium, Windows).** The daemon creates `C:\ProgramDataat` with a protected
-  SYSTEM + Administrators DACL. If a standard user creates the folder first, the daemon refuses to use it and
-  rule saving is disabled. An existing folder is checked by owner and reparse point only, not by its DACL or the
-  files inside it.
 - **IPC access (medium, Windows).** The named pipe admits only elevated administrators and SYSTEM, so the desktop
   app must run elevated.
 - **No installer or uninstaller (medium).** The service is installed by hand (see the install guides). Rules and
@@ -43,8 +39,6 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
 - **Pipe start-up (low).** If another process already owns `\\.\pipe\rat`, the daemon exits; there is no retry, and
   the GUI does not verify the server's identity.
 - **Slow clients (low).** A client that never reads its replies can hold one of the four client slots.
-- **Linux socket access (low).** Root, the daemon user and members of the `rat` group (`usermod -aG rat <user>`)
-  can connect; the group is checked per connection from the peer's process.
 - **Alerts (low).** A GUI that connects after an alert became active does not receive that alert; an alert that is
   re-queued with the same key may not be broadcast again.
 - **First tick (low).** If the first connection sample fails, static rules are enforced only after a later
@@ -54,7 +48,8 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
   have no test that fails when they are removed; the Unix peer check relies on platform tests.
 
 ## Monitoring (`rat-monitor-*`)
-- **Linux byte counters (medium).** Per-connection byte counts on Linux are incomplete (E2E L1, being fixed).
+- **Linux byte counters (low).** Per-connection byte counts on Linux come from the kernel's `sock_diag` and
+  cover TCP only; UDP connections show no byte counts.
 - **Linux blocks by local port (medium).** Linux enforcement works on local ports, not on programs, and reacts
   after each connection sample (every 1.5 s), so a new connection can get through briefly.
 - **Shared sockets and PID reuse (low).** A socket shared by several processes is attributed to the lowest PID;
@@ -68,6 +63,9 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
 - Debug builds open a console window next to the app (release builds do not).
 
 ## Testing
-- Real-OS end-to-end tests run in GitHub Actions. On Windows scenarios W1-W6 pass. On Linux scenarios L2-L6 pass;
-  L1 (per-connection byte counters) fails and is being fixed.
+- Real-OS end-to-end tests run in GitHub Actions: on Windows scenarios W1-W6 pass, on Linux scenarios L1-L6 pass,
+  and the macOS app tests pass.
 - There is no end-to-end test with a program path that contains spaces (for example `C:\Program Files\...`).
+- Re-applying the protected access list to an existing rules directory is not covered by an automated test.
+- A crash during a rules save can leave a stray, randomly named `.tmp` file next to `rules.json`; it is not
+  cleaned up automatically.
