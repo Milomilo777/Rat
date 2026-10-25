@@ -1,0 +1,82 @@
+name: Port E2E Linux
+
+on:
+  push:
+    branches: ['e2e/linux-v1']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Host facts
+        run: |
+          set -eux
+          uname -a
+          rustc --version
+          cargo --version
+          python3 --version
+          sudo nft --version
+          sudo nft list ruleset | head -50
+          systemctl --version | head -1
+
+      - name: Build daemon (release, from port/)
+        run: |
+          set -eux
+          cargo build --release --locked --manifest-path port/Cargo.toml -p rat-daemon
+          test -x port/target/release/rat-daemon
+
+      - name: Build test helpers
+        run: |
+          set -eux
+          cargo build --release --manifest-path port/e2e/linux/Cargo.toml
+          for b in test-client monitor-probe enforcer-ctl; do test -x "port/e2e/linux/target/release/$b"; done
+
+      - name: Run L1-L6
+        id: e2e
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/e2e-out"
+          set +e
+          sudo env E2E_OUT="$RUNNER_TEMP/e2e-out" \
+            E2E_BIN_DIR="$PWD/port/e2e/linux/target/release" \
+            E2E_DAEMON_BIN="$PWD/port/target/release/rat-daemon" \
+            python3 port/e2e/linux/e2e.py run
+          rc=$?
+          echo "e2e exit code: $rc"
+          exit $rc
+
+      - name: Journal of the daemon unit
+        if: always()
+        run: sudo journalctl -u rat-daemon --no-pager -o cat | tail -100 || true
+
+      - name: No rat leftovers on the host
+        if: always()
+        run: |
+          set -eu
+          if sudo nft list tables | grep -qw rat; then
+            echo "LEFTOVER: nft table rat still present"; sudo nft list ruleset; exit 1
+          fi
+          if systemctl list-unit-files | grep -q '^rat-daemon'; then
+            echo "LEFTOVER: rat-daemon unit still installed"; exit 1
+          fi
+          for u in ratout ratsup ratpri; do
+            if getent passwd "$u"; then echo "LEFTOVER: test user $u"; exit 1; fi
+          done
+          if ip netns list | grep -q ratsrv; then echo "LEFTOVER: netns"; exit 1; fi
+          echo "host clean"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-linux-results
+          path: ${{ runner.temp }}/e2e-out/
+          if-no-files-found: warn
