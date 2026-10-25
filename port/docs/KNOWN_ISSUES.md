@@ -11,8 +11,6 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
   block while netsh runs.
 - **Firewall tool time limit (low).** netsh, PowerShell and nft are killed after 30 seconds. On Windows the kill
   does not reach processes the tool itself started, and a failed netsh add or delete reports no tool output.
-- **Long paths (low).** Rule names embed the full path (`Rat:path:<path>`); very long paths may exceed netsh's
-  name limit.
 - **Ownership marker (low).** Cleanup removes every rule whose display name starts with `Rat:path:` /
   `Rat:port:`; rules are not tagged with a firewall group yet.
 - **Shared-host list (low).** Whole-program blocks are refused for a fixed list of Windows hosts that work for

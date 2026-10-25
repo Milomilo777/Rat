@@ -145,8 +145,92 @@ pub fn generate_windows_plan(current: &Blocklist, wanted: &Blocklist) -> Windows
     }
 }
 
+/// Longest rule display name this crate creates, in characters. Microsoft's
+/// docs for `INetFwRule::Name` state no length limit (checked 2026-10-26: only
+/// "required, no `|`, not `all`"); some Windows APIs cap display names at 255,
+/// and netsh's own limit is UNVERIFIED, so 200 is a conservative choice that
+/// also leaves room for a prefix.
+pub(crate) const RULE_NAME_MAX: usize = 200;
+
+/// SHA-256 as lower-case hex (FIPS 180-4). Stable short names for long paths
+/// need a hash that does not collide by accident; std has none.
+fn sha256_hex(data: &[u8]) -> String {
+    const K: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
+    ];
+    let mut h: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
+    ];
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&((data.len() as u64) * 8).to_be_bytes());
+    for start in (0..msg.len()).step_by(64) {
+        let block = &msg[start..start + 64];
+        let mut w = [0u32; 64];
+        for (i, slot) in w.iter_mut().take(16).enumerate() {
+            let o = 4 * i;
+            *slot = u32::from_be_bytes([block[o], block[o + 1], block[o + 2], block[o + 3]]);
+        }
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[i - 7])
+                .wrapping_add(s1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh] = h;
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ (!e & g);
+            let t1 = hh
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(K[i])
+                .wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let t2 = s0.wrapping_add(maj);
+            hh = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(t1);
+            d = c;
+            c = b;
+            b = a;
+            a = t1.wrapping_add(t2);
+        }
+        for (slot, v) in h.iter_mut().zip([a, b, c, d, e, f, g, hh]) {
+            *slot = slot.wrapping_add(v);
+        }
+    }
+    h.iter().map(|v| format!("{v:08x}")).collect()
+}
+
+/// The display name of a path's rules. `Rat:path:<path>` while that fits in
+/// [`RULE_NAME_MAX`]; otherwise `Rat:path:#<first 32 hex of SHA-256(path)>`
+/// (still matched by the `Rat:path:*` cleanup and read-back wildcards). The
+/// full path is never lost: it is the rules' `program=` field, which is what
+/// the start-up read-back returns, not the name.
 pub fn format_rule_name(path: &str) -> String {
-    format!("Rat:path:{}", path)
+    let full = format!("Rat:path:{}", path);
+    if full.chars().count() <= RULE_NAME_MAX {
+        return full;
+    }
+    format!("Rat:path:#{}", &sha256_hex(path.as_bytes())[..32])
 }
 
 /// per-port rules share one name per port so the delete path
@@ -1737,6 +1821,74 @@ mod tests {
             assert_eq!(plan.remove, vec![APP.to_string()]);
             e.apply(&plan).expect("remove");
             assert!(sim.rules_named(&format_rule_name(APP)).is_empty());
+            assert!(sim.rules.lock().unwrap().is_empty());
+        }
+
+        fn long_path(n: usize) -> String {
+            format!(r"C:\Apps\{}\app.exe", "d".repeat(n))
+        }
+
+        #[test]
+        fn test_windows_rule_name_short_path_keeps_the_readable_form() {
+            assert_eq!(format_rule_name(APP), format!("Rat:path:{APP}"));
+            // exactly at the limit is still the readable form
+            let prefix = "Rat:path:";
+            let fill = RULE_NAME_MAX - prefix.len() - r"C:\x.exe".len();
+            let p = format!(r"C:\{}x.exe", "a".repeat(fill));
+            assert_eq!(format_rule_name(&p).chars().count(), RULE_NAME_MAX);
+            assert_eq!(format_rule_name(&p), format!("{prefix}{p}"));
+        }
+
+        #[test]
+        fn test_windows_rule_name_long_path_gets_a_stable_short_name() {
+            let a = long_path(300);
+            let b = long_path(301);
+            let na = format_rule_name(&a);
+            assert!(na.starts_with("Rat:path:"), "keeps the family prefix: {na}");
+            assert!(na.chars().count() <= RULE_NAME_MAX, "{} chars", na.len());
+            assert!(!na.contains("dddd"), "the path is not in the name: {na}");
+            assert_eq!(na, format_rule_name(&a), "stable across calls");
+            assert_ne!(na, format_rule_name(&b), "different paths, different names");
+            // one char over the limit switches form
+            let prefix = "Rat:path:";
+            let fill = RULE_NAME_MAX - prefix.len() - r"C:\x.exe".len() + 1;
+            let over = format!(r"C:\{}x.exe", "a".repeat(fill));
+            assert!(format_rule_name(&over).chars().count() < over.len());
+            assert!(!format_rule_name(&over).contains("aaaa"));
+        }
+
+        #[test]
+        fn test_windows_sha256_matches_the_standard_vectors() {
+            assert_eq!(
+                sha256_hex(b"abc"),
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            );
+            assert_eq!(
+                sha256_hex(b""),
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            );
+            assert_eq!(
+                sha256_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+                "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+            );
+        }
+
+        #[test]
+        fn test_windows_long_path_rule_keeps_the_full_path_in_the_program_field() {
+            // The start-up read-back takes the path from the rule's program
+            // field (never from the name), so a hashed name loses nothing;
+            // delete by that same short name removes both directions.
+            let long = long_path(300);
+            let sim = Arc::new(Sim::default());
+            let mut e = enforcer_with(&sim);
+            let plan = e.plan(&paths(&[&long]));
+            e.apply(&plan).expect("apply");
+            let name = format_rule_name(&long);
+            let rules = sim.rules_named(&name);
+            assert_eq!(rules.len(), 2, "out + in under the short name");
+            assert!(rules.iter().all(|r| r.program == long));
+            let plan = e.plan(&Blocklist::default());
+            e.apply(&plan).expect("remove");
             assert!(sim.rules.lock().unwrap().is_empty());
         }
 

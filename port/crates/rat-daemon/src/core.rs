@@ -749,6 +749,21 @@ mod tests {
         assert!(!q.to_lowercase().contains("add"));
     }
 
+    // A long path's rule has a hashed display name (`Rat:path:#<hash>`), so
+    // the read-back must take the path from the program field, never parse
+    // it out of the name, and its wildcard must still match the hashed form.
+    #[cfg(windows)]
+    #[test]
+    fn existing_rules_query_reads_the_program_field_not_the_name() {
+        let q = existing_rules_query();
+        assert!(q.contains("Get-NetFirewallApplicationFilter"));
+        assert!(q.contains("Select-Object -ExpandProperty Program"));
+        assert!(
+            rat_enforcer::windows::format_rule_name(&format!(r"C:\{}\a.exe", "d".repeat(300)))
+                .starts_with("Rat:path:")
+        );
+    }
+
     // The read-back parse separates the path and port sections,
     // dedups the per-variant port lines (4 rules per port), and skips
     // non-numeric lines.
