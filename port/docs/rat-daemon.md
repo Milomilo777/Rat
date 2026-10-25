@@ -167,6 +167,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   backoff for `PIPE_RETRY_WINDOW`, 3 s, so a predecessor that is still shutting down can let go, then exits with an
   "owned by another process" error);
   concurrent clients are capped at 4; inbound lines cap at 64 KiB.
+* **Both**: the active alert (the last `AlertRequest` without its `AlertCleared`) is held by the IPC server and
+  sent to a client right after its handshake. The holder reads the broadcast from the start of the channel, so an
+  alert raised before the server started is kept; if it falls behind and drops messages, it forgets the held alert
+  (an `AlertCleared` may have been lost) rather than replaying a stale one.
 
 ## Known Limits
 * Reverse-DNS display names (`ConnectionDetails.host_name`), ASN `network_owner`, VPN/proxy marks and GeoIP

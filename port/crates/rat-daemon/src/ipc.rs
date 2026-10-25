@@ -136,7 +136,12 @@ pub async fn start_ipc_server_with_options(
 
     // bounded concurrent clients.
     let client_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CLIENTS));
-    let active_alert = track_active_alert(&snapshot_rx, &shutdown);
+    // The tracker takes the ORIGINAL receiver: it still holds what the
+    // pipeline broadcast before this server started (an early alert). Clients
+    // resubscribe from the copy.
+    let tracker_rx = snapshot_rx;
+    let snapshot_rx = tracker_rx.resubscribe();
+    let active_alert = track_active_alert(tracker_rx, &shutdown);
 
     // always tighten the socket to owner+group read/write.
     let mut perms = std::fs::metadata(socket_path)?.permissions();
@@ -529,7 +534,12 @@ pub async fn start_ipc_server_with_options(
 
     // bounded concurrent clients.
     let client_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CLIENTS));
-    let active_alert = track_active_alert(&snapshot_rx, &shutdown);
+    // The tracker takes the ORIGINAL receiver: it still holds what the
+    // pipeline broadcast before this server started (an early alert). Clients
+    // resubscribe from the copy.
+    let tracker_rx = snapshot_rx;
+    let snapshot_rx = tracker_rx.resubscribe();
+    let active_alert = track_active_alert(tracker_rx, &shutdown);
 
     let mut server_options = ServerOptions::new();
     let mut first = true;
@@ -726,11 +736,10 @@ async fn create_with_retry<T>(
 type ActiveAlert = std::sync::Arc<std::sync::Mutex<Option<ServerMessage>>>;
 
 fn track_active_alert(
-    snapshot_rx: &tokio::sync::broadcast::Receiver<ServerMessage>,
+    mut rx: tokio::sync::broadcast::Receiver<ServerMessage>,
     shutdown: &tokio::sync::broadcast::Receiver<()>,
 ) -> ActiveAlert {
     let state: ActiveAlert = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let mut rx = snapshot_rx.resubscribe();
     let mut stop = shutdown.resubscribe();
     let tracked = state.clone();
     tokio::spawn(async move {
@@ -748,7 +757,11 @@ fn track_active_alert(
                         *slot = None;
                     }
                 }
-                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Ok(_) => {}
+                // Messages were dropped, so an AlertCleared may be among
+                // them: a held alert may be stale and is dropped rather than
+                // replayed to every later client.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => *slot = None,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }

@@ -60,6 +60,21 @@ async fn spawn_server_with_write_timeout(
     tokio::sync::broadcast::Sender<()>,
     tokio::sync::mpsc::Receiver<rat_daemon::core::Command>,
 ) {
+    spawn_server_inner(test, write_timeout, Vec::new()).await
+}
+
+/// `prefill` is broadcast BEFORE the server starts (the pipeline runs before
+/// the IPC server does in the daemon).
+async fn spawn_server_inner(
+    test: &str,
+    write_timeout: Duration,
+    prefill: Vec<ServerMessage>,
+) -> (
+    String,
+    tokio::sync::broadcast::Sender<ServerMessage>,
+    tokio::sync::broadcast::Sender<()>,
+    tokio::sync::mpsc::Receiver<rat_daemon::core::Command>,
+) {
     #[cfg(unix)]
     let endpoint = format!("/tmp/rat_it_{test}_{}.sock", std::process::id());
     #[cfg(windows)]
@@ -68,6 +83,9 @@ async fn spawn_server_with_write_timeout(
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
     let (snapshot_tx, snapshot_rx) = tokio::sync::broadcast::channel(16);
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY);
+    for msg in prefill {
+        snapshot_tx.send(msg).expect("the receiver is alive");
+    }
 
     let ep = endpoint.clone();
     tokio::spawn(async move {
@@ -1428,6 +1446,68 @@ async fn test_late_client_receives_the_active_alert_after_the_handshake() {
         "no alert is active, so nothing may be sent after the handshake"
     );
 
+    let _ = shutdown_tx.send(());
+}
+
+// An alert raised before the IPC server started (the pipeline runs first)
+// is still handed to the first client that connects.
+#[tokio::test]
+async fn test_alert_raised_before_the_server_started_is_replayed() {
+    let (endpoint, _snapshot_tx, shutdown_tx, _cmd_rx) = spawn_server_inner(
+        "prealert",
+        rat_daemon::ipc::CLIENT_WRITE_TIMEOUT,
+        vec![ServerMessage::AlertRequest {
+            id: 3,
+            alert: Box::new(test_alert()),
+        }],
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (mut client, _writer) = handshaked_client(&endpoint).await;
+    match read_server(&mut client, READ_TIMEOUT).await {
+        Some(ServerMessage::AlertRequest { id: 3, .. }) => {}
+        other => panic!("an alert raised before the server started was lost: {other:?}"),
+    }
+    let _ = shutdown_tx.send(());
+}
+
+// A tracker that lags behind the broadcast may have missed the AlertCleared:
+// it must drop the held alert instead of replaying a stale one forever.
+#[tokio::test]
+async fn test_lagged_alert_tracker_drops_a_possibly_stale_alert() {
+    let (endpoint, snapshot_tx, shutdown_tx) = spawn_server("lagalert").await;
+    let (mut early, _early_writer) = handshaked_client(&endpoint).await;
+    snapshot_tx
+        .send(ServerMessage::AlertRequest {
+            id: 9,
+            alert: Box::new(test_alert()),
+        })
+        .expect("a handler is listening");
+    assert!(matches!(
+        read_server(&mut early, READ_TIMEOUT).await,
+        Some(ServerMessage::AlertRequest { id: 9, .. })
+    ));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    // The clear and more than the channel capacity (16) of snapshots go out
+    // without a yield: the tracker lags and never sees the AlertCleared.
+    snapshot_tx
+        .send(ServerMessage::AlertCleared { id: 9 })
+        .expect("a handler is listening");
+    for _ in 0..40 {
+        snapshot_tx
+            .send(ServerMessage::Snapshot {
+                connections: vec![],
+            })
+            .expect("a handler is listening");
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (mut late, _late_writer) = handshaked_client(&endpoint).await;
+    use futures::StreamExt;
+    let got = tokio::time::timeout(Duration::from_millis(500), late.next()).await;
+    assert!(
+        got.is_err(),
+        "a cleared alert was replayed after the tracker lagged: {got:?}"
+    );
     let _ = shutdown_tx.send(());
 }
 
