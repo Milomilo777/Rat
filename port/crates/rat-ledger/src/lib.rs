@@ -3,10 +3,12 @@
 //! Spec: ZCODE/specs/port-ledger.md.
 
 pub mod alerts;
+pub mod answers;
 pub mod ingest;
 pub mod shared;
 
 pub use alerts::{Alert, AlertCenter, AlertCenterConfig};
+pub use answers::{rule_from_answer, AnswerScope};
 pub use ingest::{
     AppEntry, ConnectionDetails, EnforcementPlan, IngestSummary, Ledger, LedgerConfig, RemoteEntry,
     RemoteKey,
