@@ -307,10 +307,15 @@ where
                                 // Ignore incoming messages for now, just handle them
                             }
                             Err(_) => {
-                                let err_msg = Message::Error { message: "Invalid JSON".to_string() };
+                                // S10 (update-08): reply once, then close —
+                                // a client that cannot produce a valid
+                                // message gets no second attempt.
+                                let err_msg =
+                                    Message::Error { message: "Invalid JSON".to_string() };
                                 if let Ok(err_ser) = err_msg.to_string() {
                                     let _ = writer.send(err_ser).await;
                                 }
+                                break;
                             }
                         }
                     }

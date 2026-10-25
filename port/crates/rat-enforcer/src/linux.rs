@@ -92,11 +92,15 @@ impl Enforcer for LinuxEnforcer {
                 .spawn()?;
 
             use std::io::Write;
+            // S10 (update-08): remember the write result but ALWAYS reap the
+            // child, so a failed write cannot leave a zombie behind.
+            let mut write_result = Ok(());
             if let Some(mut stdin) = child.stdin.take() {
-                stdin.write_all(plan.as_bytes())?;
+                write_result = stdin.write_all(plan.as_bytes());
             }
 
             let status = child.wait()?;
+            write_result?;
             if !status.success() {
                 return Err(io::Error::other("nftables command failed"));
             }
