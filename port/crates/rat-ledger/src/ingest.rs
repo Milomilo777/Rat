@@ -2,7 +2,7 @@
 //! the derived enforcement plan. Port of Ledger.swift's ingest/refreshEnforcement.
 
 use crate::alerts::{Alert, AlertCenter, AlertCenterConfig};
-use crate::Policy;
+use crate::{registrable_domain, Policy};
 use rat_core::Verdict;
 use rat_types::{Connection, Protocol};
 use serde::{Deserialize, Serialize};
@@ -33,6 +33,13 @@ pub struct ConnectionDetails {
     pub proxy_mark: Option<String>,
     /// The "system service" row equivalent: a socket held by a shared service host.
     pub shared_service: bool,
+    /// Reverse-DNS display name (Ledger.swift:322 `names.name(for:)`); filled by
+    /// the daemon's details closure once rat-names is wired.
+    #[serde(default)]
+    pub host_name: Option<String>,
+    /// GeoIP country of the remote (feeds the Summary's country list).
+    #[serde(default)]
+    pub country: Option<String>,
 }
 
 /// Identity of one remote as shown in the UI (dedup like Ledger.swift:320-321).
@@ -254,9 +261,13 @@ impl Ledger {
                     .and_then(|m| m.get(&key))
                     .copied()
                     .unwrap_or((0.0, 0.0));
+                let d = details(c);
+                // Display host: the name when one is known, else the address
+                // string (Ledger.swift:300,322).
+                let host = d.host_name.clone().unwrap_or_else(|| remote.to_string());
                 remotes.push(RemoteEntry {
-                    host: remote.to_string(),
-                    details: details(c),
+                    host,
+                    details: d,
                     total_in: d_in as u64,
                     total_out: d_out as u64,
                     rate_in: d_in / dt,
@@ -363,4 +374,63 @@ impl Ledger {
     pub fn enforcement(&self) -> &EnforcementPlan {
         &self.plan
     }
+
+    /// Summary: registrable domains by remote count (Ledger.swift:424-428).
+    /// Swift sorts by count only (ties come out in dictionary order); here ties
+    /// break by name ascending so the order is deterministic.
+    pub fn domains(&self) -> Vec<(String, usize)> {
+        let mut d: BTreeMap<String, usize> = BTreeMap::new();
+        for app in self.apps.values() {
+            for r in &app.remotes {
+                *d.entry(registrable_domain(&summary_host(&r.host)))
+                    .or_default() += 1;
+            }
+        }
+        sorted_by_count(d)
+    }
+
+    /// Summary: ASN network owners by remote count (Ledger.swift:431-435).
+    pub fn networks(&self) -> Vec<(String, usize)> {
+        let mut d: BTreeMap<String, usize> = BTreeMap::new();
+        for app in self.apps.values() {
+            for r in &app.remotes {
+                if let Some(owner) = &r.details.network_owner {
+                    *d.entry(owner.clone()).or_default() += 1;
+                }
+            }
+        }
+        sorted_by_count(d)
+    }
+
+    /// Summary: countries by remote count (Ledger.swift:437-441).
+    pub fn countries(&self) -> Vec<(String, usize)> {
+        let mut d: BTreeMap<String, usize> = BTreeMap::new();
+        for app in self.apps.values() {
+            for r in &app.remotes {
+                if let Some(country) = &r.details.country {
+                    *d.entry(country.clone()).or_default() += 1;
+                }
+            }
+        }
+        sorted_by_count(d)
+    }
+}
+
+/// The host part of a `RemoteEntry::host`: strip the `:port` (or `[v6]:port`)
+/// when the string is an address-with-port, keep names as they are.
+fn summary_host(host: &str) -> String {
+    if let Ok(sa) = host.parse::<SocketAddr>() {
+        return sa.ip().to_string();
+    }
+    host.strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .map(str::to_string)
+        .unwrap_or_else(|| host.to_string())
+}
+
+/// Count-descending, name-ascending order shared by the summary lists.
+fn sorted_by_count(d: BTreeMap<String, usize>) -> Vec<(String, usize)> {
+    let mut v: Vec<(String, usize)> = d.into_iter().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    v
 }

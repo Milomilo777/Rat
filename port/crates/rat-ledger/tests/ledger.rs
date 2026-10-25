@@ -514,6 +514,8 @@ fn test_r6_details_carried_on_remote_entries() {
         vpn_mark: Some("WireGuard".into()),
         proxy_mark: None,
         shared_service: false,
+        host_name: None,
+        country: None,
     };
     let p = allow_policy();
     l.ingest(&p, 1000, &[c], &details);
@@ -545,4 +547,124 @@ fn test_registrable_domain() {
     for (input, want) in m {
         assert_eq!(registrable_domain(input), want);
     }
+}
+
+// ---------- Summary aggregations (Ledger.swift:424-441) ----------
+
+/// Details that name the host, ASN owner and country per remote address.
+fn geo_details(c: &Connection) -> ConnectionDetails {
+    let mut d = ConnectionDetails::default();
+    match c.remote.map(|r| r.ip()) {
+        Some(ip) if ip == IpAddr::from([1, 1, 1, 1]) => {
+            d.host_name = Some("a.cdn.example.net".into());
+            d.network_owner = Some("Cloudflare".into());
+            d.country = Some("US".into());
+        }
+        Some(ip) if ip == IpAddr::from([1, 1, 1, 2]) => {
+            d.host_name = Some("b.cdn.example.net".into());
+            d.network_owner = Some("Cloudflare".into());
+            d.country = Some("US".into());
+        }
+        Some(ip) if ip == IpAddr::from([9, 9, 9, 9]) => {
+            d.network_owner = Some("Quad9".into());
+            d.country = Some("DE".into());
+        }
+        _ => {}
+    }
+    d
+}
+
+fn v6_remote(port: u16) -> SocketAddr {
+    use std::net::Ipv6Addr;
+    SocketAddr::new(
+        IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
+        port,
+    )
+}
+
+#[test]
+fn test_summary_domains_networks_countries() {
+    let mut l = ledger_warm();
+    let cs = vec![
+        conn(
+            1,
+            "/usr/bin/curl",
+            local_remote(51000),
+            addr([1, 1, 1, 1], 443),
+        ),
+        conn(
+            1,
+            "/usr/bin/curl",
+            local_remote(51001),
+            addr([1, 1, 1, 2], 443),
+        ),
+        conn(
+            1,
+            "/usr/bin/curl",
+            local_remote(51002),
+            addr([9, 9, 9, 9], 80),
+        ),
+        conn(
+            2,
+            "/usr/bin/wget",
+            local_remote(51003),
+            addr([2, 2, 2, 2], 443),
+        ),
+    ];
+    let p = allow_policy();
+    l.ingest(&p, 1000, &cs, &geo_details);
+
+    // host_name drives the display host (Ledger.swift:322).
+    let curl = l.app("/usr/bin/curl").unwrap();
+    assert_eq!(curl.remotes[0].host, "a.cdn.example.net");
+
+    // domains: two named remotes collapse to their registrable domain (the
+    // naive last-two-labels rule: "a.cdn.example.net" -> "example.net"); the
+    // nameless ones count per address; ties break by name ascending.
+    assert_eq!(
+        l.domains(),
+        vec![
+            ("example.net".to_string(), 2),
+            ("2.2.2.2".to_string(), 1),
+            ("9.9.9.9".to_string(), 1),
+        ]
+    );
+    assert_eq!(
+        l.networks(),
+        vec![("Cloudflare".to_string(), 2), ("Quad9".to_string(), 1),]
+    );
+    assert_eq!(
+        l.countries(),
+        vec![("US".to_string(), 2), ("DE".to_string(), 1)]
+    );
+}
+
+#[test]
+fn test_summary_domains_strip_port_and_brackets() {
+    let mut l = ledger_warm();
+    // No host_name: the display host is "[v6]:port" / "ip:port"; the summary
+    // must reduce it to the bare address before registrable_domain.
+    let cs = vec![
+        conn(1, "/usr/bin/curl", local_remote(51000), v6_remote(443)),
+        conn(
+            1,
+            "/usr/bin/curl",
+            local_remote(51001),
+            addr([9, 9, 9, 9], 80),
+        ),
+    ];
+    let p = allow_policy();
+    l.ingest(&p, 1000, &cs, &no_details);
+    let hosts: Vec<&str> = l
+        .app("/usr/bin/curl")
+        .unwrap()
+        .remotes
+        .iter()
+        .map(|r| r.host.as_str())
+        .collect();
+    assert_eq!(hosts, &["[2001:db8::1]:443", "9.9.9.9:80"]);
+    assert_eq!(
+        l.domains(),
+        vec![("2001:db8::1".to_string(), 1), ("9.9.9.9".to_string(), 1),]
+    );
 }
