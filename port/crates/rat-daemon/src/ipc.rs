@@ -96,11 +96,12 @@ fn peer_allowed(uid: u32, gid: u32, pid: Option<i32>) -> bool {
 }
 
 #[cfg(unix)]
-pub async fn start_ipc_server(
+pub async fn start_ipc_server_with_write_timeout(
     socket_path: &str,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
     snapshot_rx: tokio::sync::broadcast::Receiver<ServerMessage>,
     commands: tokio::sync::mpsc::Sender<Command>,
+    write_timeout: std::time::Duration,
 ) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     use tokio::net::UnixListener;
@@ -167,7 +168,7 @@ pub async fn start_ipc_server(
                         let cmd_tx = commands.clone();
                         tokio::spawn(async move {
                             let _permit = permit;
-                            handle_connection(stream, snap_rx, cmd_tx).await;
+                            handle_connection(stream, snap_rx, cmd_tx, write_timeout).await;
                         });
                     }
                     Err(_) => {
@@ -510,11 +511,12 @@ fn pipe_client_pid(server: &tokio::net::windows::named_pipe::NamedPipeServer) ->
 }
 
 #[cfg(windows)]
-pub async fn start_ipc_server(
+pub async fn start_ipc_server_with_write_timeout(
     pipe_name: &str,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
     snapshot_rx: tokio::sync::broadcast::Receiver<ServerMessage>,
     commands: tokio::sync::mpsc::Sender<Command>,
+    write_timeout: std::time::Duration,
 ) -> std::io::Result<()> {
     use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 
@@ -583,7 +585,7 @@ pub async fn start_ipc_server(
                         let cmd_tx = commands.clone();
                         tokio::spawn(async move {
                             let _permit = permit;
-                            handle_connection(server, snap_rx, cmd_tx).await;
+                            handle_connection(server, snap_rx, cmd_tx, write_timeout).await;
                         });
                     }
                     Err(_) => {
@@ -614,13 +616,44 @@ const MAX_CONCURRENT_CLIENTS: usize = 4;
 /// message — each `SetRules` a full enforce — onto an unbounded backlog.
 pub const COMMAND_QUEUE_CAPACITY: usize = 16;
 
+/// A client that does not accept a reply within this long is dropped, so a
+/// GUI that stopped reading cannot hold one of the four client slots for ever.
+pub const CLIENT_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Serve clients on `endpoint` (unix socket path / Windows pipe name) with the
+/// default per-client write timeout.
+pub async fn start_ipc_server(
+    endpoint: &str,
+    shutdown: tokio::sync::broadcast::Receiver<()>,
+    snapshot_rx: tokio::sync::broadcast::Receiver<ServerMessage>,
+    commands: tokio::sync::mpsc::Sender<Command>,
+) -> std::io::Result<()> {
+    start_ipc_server_with_write_timeout(
+        endpoint,
+        shutdown,
+        snapshot_rx,
+        commands,
+        CLIENT_WRITE_TIMEOUT,
+    )
+    .await
+}
+
 /// a client has this long to complete the Hello handshake
 /// before the slot is given up (4 bounded slots: unauthenticated clients
 /// cannot pin the daemon forever).
 const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// The server's write half of one client: framed lines plus the write
+/// timeout. A send that times out leaves a half-written line on the wire, so
+/// the writer is dead from then on and the connection must be closed.
+struct ClientWriter<W> {
+    inner: tokio_util::codec::FramedWrite<W, tokio_util::codec::LinesCodec>,
+    timeout: std::time::Duration,
+    dead: bool,
+}
+
 async fn send_server<W>(
-    writer: &mut tokio_util::codec::FramedWrite<W, tokio_util::codec::LinesCodec>,
+    writer: &mut ClientWriter<W>,
     msg: ServerMessage,
 ) -> Result<(), tokio_util::codec::LinesCodecError>
 where
@@ -631,7 +664,20 @@ where
     let Ok(line) = msg.to_string() else {
         return Ok(());
     };
-    writer.send(line).await
+    if writer.dead {
+        return Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into());
+    }
+    match tokio::time::timeout(writer.timeout, writer.inner.send(line)).await {
+        Ok(result) => result,
+        Err(_) => {
+            writer.dead = true;
+            eprintln!(
+                "rat-daemon: dropping an IPC client that did not read its replies for {:?}",
+                writer.timeout
+            );
+            Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into())
+        }
+    }
 }
 
 /// Forward one client command onto the pipeline's BOUNDED queue. A full
@@ -641,7 +687,7 @@ where
 /// (shutdown), and the command dies with the connection.
 async fn forward_command<W>(
     commands: &tokio::sync::mpsc::Sender<Command>,
-    writer: &mut tokio_util::codec::FramedWrite<W, tokio_util::codec::LinesCodec>,
+    writer: &mut ClientWriter<W>,
     cmd: Command,
 ) where
     W: tokio::io::AsyncWrite + Unpin,
@@ -663,6 +709,7 @@ async fn handle_connection<S>(
     stream: S,
     mut snapshot_rx: tokio::sync::broadcast::Receiver<ServerMessage>,
     commands: tokio::sync::mpsc::Sender<Command>,
+    write_timeout: std::time::Duration,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
@@ -671,10 +718,14 @@ async fn handle_connection<S>(
         read_half,
         tokio_util::codec::LinesCodec::new_with_max_length(MAX_CLIENT_LINE),
     );
-    let mut writer = tokio_util::codec::FramedWrite::new(
-        write_half,
-        tokio_util::codec::LinesCodec::new_with_max_length(MAX_SERVER_LINE),
-    );
+    let mut writer = ClientWriter {
+        inner: tokio_util::codec::FramedWrite::new(
+            write_half,
+            tokio_util::codec::LinesCodec::new_with_max_length(MAX_SERVER_LINE),
+        ),
+        timeout: write_timeout,
+        dead: false,
+    };
 
     // the FIRST client message must be Hello; nothing is sent
     // to the client before the handshake completes, and a version mismatch
@@ -825,6 +876,11 @@ async fn handle_connection<S>(
                     None => break,
                 }
             }
+        }
+        // A reply that timed out (arms above ignore send errors) ends the
+        // connection: the line on the wire is incomplete.
+        if writer.dead {
+            break;
         }
     }
 }

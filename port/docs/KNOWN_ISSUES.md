@@ -43,7 +43,6 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
   is dropped; the desktop app does not retry it yet.
 - **Pipe start-up (low).** If another process already owns `\\.\pipe\rat`, the daemon exits; there is no retry, and
   the GUI does not verify the server's identity.
-- **Slow clients (low).** A client that never reads its replies can hold one of the four client slots.
 - **Alerts (low).** A GUI that connects after an alert became active does not receive that alert; an alert that is
   re-queued with the same key may not be broadcast again.
 - **First tick (low).** If the first connection sample fails, static rules are enforced only after a later

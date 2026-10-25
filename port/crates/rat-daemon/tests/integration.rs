@@ -48,6 +48,18 @@ async fn spawn_server_with_commands(
     tokio::sync::broadcast::Sender<()>,
     tokio::sync::mpsc::Receiver<rat_daemon::core::Command>,
 ) {
+    spawn_server_with_write_timeout(test, rat_daemon::ipc::CLIENT_WRITE_TIMEOUT).await
+}
+
+async fn spawn_server_with_write_timeout(
+    test: &str,
+    write_timeout: Duration,
+) -> (
+    String,
+    tokio::sync::broadcast::Sender<ServerMessage>,
+    tokio::sync::broadcast::Sender<()>,
+    tokio::sync::mpsc::Receiver<rat_daemon::core::Command>,
+) {
     #[cfg(unix)]
     let endpoint = format!("/tmp/rat_it_{test}_{}.sock", std::process::id());
     #[cfg(windows)]
@@ -59,7 +71,14 @@ async fn spawn_server_with_commands(
 
     let ep = endpoint.clone();
     tokio::spawn(async move {
-        let _ = rat_daemon::ipc::start_ipc_server(&ep, shutdown_rx, snapshot_rx, cmd_tx).await;
+        let _ = rat_daemon::ipc::start_ipc_server_with_write_timeout(
+            &ep,
+            shutdown_rx,
+            snapshot_rx,
+            cmd_tx,
+            write_timeout,
+        )
+        .await;
     });
 
     #[cfg(unix)]
@@ -1100,5 +1119,81 @@ async fn test_set_rules_flood_gets_error_reply_not_a_hang() {
         ),
         other => panic!("expected Error, got {other:?}"),
     }
+    let _ = shutdown_tx.send(());
+}
+
+// A client that stops reading its replies must not hold one of the four
+// client slots for ever: the server gives each write a timeout, drops the
+// client (with a log line) and the slot comes back. Four clients handshake and
+// then never read; a flood of large broadcasts blocks every handler's write;
+// after the (shortened) timeout a fifth client must get its handshake, and the
+// stalled clients must see their connection end.
+#[tokio::test]
+async fn test_client_that_never_reads_is_dropped_and_frees_its_slot() {
+    use futures::StreamExt;
+
+    let (endpoint, snapshot_tx, shutdown_tx, _cmd_rx) =
+        spawn_server_with_write_timeout("neverreads", Duration::from_millis(500)).await;
+
+    let mut stalled = Vec::new();
+    for _ in 0..4 {
+        let stream = connect_ep(&endpoint).await;
+        let (r, w) = tokio::io::split(stream);
+        let mut reader = FramedRead::new(r, LinesCodec::new());
+        let mut writer = FramedWrite::new(w, LinesCodec::new());
+        send_client(
+            &mut writer,
+            &ClientMessage::Hello {
+                protocol_version: PROTOCOL_VERSION,
+            },
+        )
+        .await;
+        match read_server(&mut reader, READ_TIMEOUT).await {
+            Some(ServerMessage::HelloAck { .. }) => {}
+            other => panic!("expected HelloAck, got {other:?}"),
+        }
+        stalled.push((reader, writer));
+    }
+
+    // 3 MiB per message: far beyond any socket / pipe buffer, so the write of
+    // the first one cannot finish while nobody reads.
+    for _ in 0..4 {
+        let _ = snapshot_tx.send(ServerMessage::Error {
+            message: "x".repeat(3 * 1024 * 1024),
+        });
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // The slots are free again: a fifth client gets its handshake.
+    let stream = connect_ep(&endpoint).await;
+    let (r, w) = tokio::io::split(stream);
+    let mut reader = FramedRead::new(r, LinesCodec::new());
+    let mut writer = FramedWrite::new(w, LinesCodec::new());
+    send_client(
+        &mut writer,
+        &ClientMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    )
+    .await;
+    match read_server(&mut reader, READ_TIMEOUT).await {
+        Some(ServerMessage::HelloAck { .. }) => {}
+        other => panic!("a fifth client must get a slot once stalled ones are dropped: {other:?}"),
+    }
+
+    // And a stalled client's connection really ended (EOF or error after the
+    // data that was already in flight).
+    let (first_reader, _first_writer) = &mut stalled[0];
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match first_reader.next().await {
+                Some(Ok(_)) => continue,
+                _ => return,
+            }
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "the stalled client was never disconnected");
+
     let _ = shutdown_tx.send(());
 }

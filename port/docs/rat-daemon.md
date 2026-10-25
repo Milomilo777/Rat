@@ -31,7 +31,7 @@ The main components are:
 
 Line-delimited JSON. **The FIRST client message must be `Hello`**; the server answers
 `HelloAck` (version matched) or `Error` + close (mismatch), and pushes NO server messages before the handshake
-completed. A client that does not handshake within 10 s is dropped. Bump `PROTOCOL_VERSION` on breaking changes.
+completed. A client that does not handshake within 10 s is dropped; so is a client that does not accept a reply within 10 s (`CLIENT_WRITE_TIMEOUT`; a log line is written and the slot is freed). Bump `PROTOCOL_VERSION` on breaking changes.
 
 Client -> server:
 ```json
