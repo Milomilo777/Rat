@@ -134,7 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   written back to the store (`save_set` keeps Forever rules only — UntilQuit session rules die with the daemon),
   reloaded at the next startup, and its static anchor is reconciled into the firewall before the IPC serves.
   The GUI no longer has to re-send the rules at startup (it still may: SetRules is authoritative when it does).
-  Note: the store's parent directory (`%ProgramData%\rat` / `/etc/rat`) must exist — the installer creates it;
+  Note: the store's parent directory (`%ProgramData%\rat` / `/etc/rat`) is created by the daemon on Windows (protected DACL); on Linux create `/etc/rat` first (see the Linux install guide);
   a failed save is logged and retried on the next change, never fatal.
 * IPC drops clients that lag too much instead of buffering infinitely.
 * Malformed JSON messages are rejected with an `Error` response but won't cause the server to crash.

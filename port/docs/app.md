@@ -31,11 +31,14 @@ match source.get_connections() {
 ```
 
 ## Platform Notes
-- **Windows**: The interception architecture relies on the Windows Filtering Platform (WFP), necessitating that the daemon component run with Administrative privileges to register the provider and sublayer. The Tauri UI app runs in user-mode but may require UAC elevation if it needs to adjust the firewall rules directly.
-- **Linux**: Interception relies on `nftables` and `nfqueue`. The daemon component requires root/`CAP_NET_ADMIN` to manipulate the netfilter queues. The Tauri UI app runs unprivileged.
-- **macOS**: The codebase explicitly skips the macOS port for this specific crate, deferring to the native Little Snitch-modeled Swift implementation.
-- Both supported ports utilize a backend-agnostic stateless pf anchor (or WFP/nftables equivalent) allowing the root daemon to enforce rules by terminating localized ports without tracking remote IP addresses.
+- **Windows**: The daemon runs as a `LocalSystem` service and enforces blocks with Windows Defender Firewall
+  (`netsh advfirewall` rules: per-program rules for apps and local-port rules). The Tauri UI app runs in user mode;
+  the daemon's named pipe admits only elevated administrators and SYSTEM.
+- **Linux**: The daemon runs as root and enforces blocks with `nftables` (table `inet rat`, port sets for the local
+  ports of denied programs). The Tauri UI app runs unprivileged and reaches the daemon through the Unix socket
+  `/run/rat/rat.sock` (members of the `rat` group).
+- **macOS**: The codebase explicitly skips the macOS port for this specific crate, deferring to the native Swift implementation.
 
 ## Known Limits
-- The current WFP and nftables configurations are not actively integrated; the Tauri app only displays demo data.
+- The Tauri app is not yet connected to the daemon in every build and may show demo data; see the status in `port/README.md`.
 - The `DataSource` implementation can fail dynamically (e.g. if the daemon pipe crashes or IPC is lost). The `unwrap` instances on invalid data have been replaced with `Result<T, String>` to bubble up parsing and connectivity errors to the frontend safely instead of panicking.
