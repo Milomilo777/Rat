@@ -1,0 +1,21 @@
+[package]
+name = "e2e-windows"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+rat-types = { path = "../../crates/rat-types" }
+rat-core = { path = "../../crates/rat-core" }
+rat-monitor-windows = { path = "../../crates/rat-monitor-windows" }
+rat-enforcer = { path = "../../crates/rat-enforcer" }
+rat-daemon = { path = "../../crates/rat-daemon" }
+reqwest = { version = "0.11", features = ["blocking"] }
+tokio = { version = "1", features = ["full"] }
+windows = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Services",
+    "Win32_NetworkManagement_WindowsFilteringPlatform",
+] }

@@ -1,0 +1,87 @@
+{
+  "lane": "e2e-windows",
+  "requirements": [
+    {
+      "id": "W1",
+      "status": "NOT RUN",
+      "test": "e2e-windows run_w1",
+      "evidence": "CI failed to run due to token",
+      "control": "Added negative control to run monitor on un-monitored app or missing"
+    },
+    {
+      "id": "W2",
+      "status": "NOT RUN",
+      "test": "e2e-windows run_w2",
+      "evidence": "CI failed to run due to token",
+      "control": "RAT_DRY_RUN check included in run_w2"
+    },
+    {
+      "id": "W3",
+      "status": "NOT RUN",
+      "test": "e2e-windows run_w3",
+      "evidence": "CI failed to run due to token",
+      "control": "N/A"
+    },
+    {
+      "id": "W4",
+      "status": "NOT RUN",
+      "test": "e2e-windows run_w4",
+      "evidence": "CI failed to run due to token",
+      "control": "N/A"
+    },
+    {
+      "id": "W5",
+      "status": "NOT RUN",
+      "test": "e2e-windows run_w5",
+      "evidence": "CI failed to run due to token",
+      "control": "N/A"
+    },
+    {
+      "id": "W6",
+      "status": "NOT RUN",
+      "test": "e2e-windows run_w6",
+      "evidence": "CI failed to run due to token",
+      "control": "N/A"
+    }
+  ],
+  "files_changed": [
+    ".github/workflows/port-e2e-windows.yml",
+    "port/e2e/windows/.gitignore",
+    "port/e2e/windows/Cargo.lock",
+    "port/e2e/windows/Cargo.toml",
+    "port/e2e/windows/src/main.rs",
+    "port/e2e/windows/src/w1.rs",
+    "port/e2e/windows/src/w2.rs",
+    "port/e2e/windows/src/w3.rs",
+    "port/e2e/windows/src/w4.rs",
+    "port/e2e/windows/src/w5.rs",
+    "port/e2e/windows/src/w6.rs",
+    "port/reports/e2e-windows.json",
+    "port/reports/e2e-windows.log",
+    "port/reports/e2e-windows.md"
+  ],
+  "ci_runs": [],
+  "findings": [
+    {
+      "id": "CI_TOKEN_MISSING",
+      "what": "Unable to execute tests in CI due to missing access token in VM",
+      "file_line": "",
+      "evidence": "git push fails with authentication error"
+    }
+  ],
+  "unverified": [
+    "W1",
+    "W2",
+    "W3",
+    "W4",
+    "W5",
+    "W6"
+  ],
+  "decisions": [
+    "Created standalone workspace for Windows E2E in port/e2e/windows",
+    "Wrote basic Windows logic wrapped around cargo build. Implemented cleanup drop guards for tests to ensure no leakages. Noted CI failure due to no tokens.",
+    "Added additional checks for negative controls and test logic missing.",
+    "Added firewall leftover check in github actions.",
+    "Added PowerShell Named Pipe client code check for W6 GUI-to-daemon test."
+  ]
+}
