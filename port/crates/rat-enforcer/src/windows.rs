@@ -6,7 +6,11 @@ use crate::{Blocklist, Enforcer};
 /// review-01 R6 test seam: stands in for the spawned netsh child. When set,
 /// apply() routes EVERY command through it instead of spawning (and instead
 /// of the dry-run print) — the seam owns execution, so tests can model real
-/// netsh semantics. `Ok(true)` = exit success, `Ok(false)` = failure exit.
+/// netsh semantics. `Ok(true)` = exit success, `Ok(false)` = failure exit —
+/// except on `delete rule` commands, where (review-01 R7) `Ok(false)`
+/// models netsh's no-match exit ("No rules match the specified criteria"),
+/// which the reconcile remove loops tolerate; a real delete failure is
+/// `Err` there.
 pub type NetshRunner =
     std::sync::Arc<dyn Fn(&std::path::Path, &[String]) -> io::Result<bool> + Send + Sync>;
 
@@ -256,10 +260,42 @@ impl Enforcer for WindowsEnforcer {
                 Ok(Command::new(&netsh).args(args).status()?.success())
             }
         };
+        // review-01 R7: the reconcile remove loops' delete of an
+        // ALREADY-GONE rule (user/GPO removed it) is netsh exit 1 with "No
+        // rules match the specified criteria" — success for that delete,
+        // because its desired state is already reached. Only that exit is
+        // tolerated: any other delete failure still aborts the plan
+        // (fail-closed, `current` stays behind, the next diff retries).
+        // Production reads the child's output to tell the message apart
+        // (an exit code alone cannot); the runner seam cannot see it, so
+        // there Ok(false) on a delete models the no-match exit and a real
+        // failure is Err. Locale note: on a non-English Windows the message
+        // differs and the delete fails as before (queued in PROPOSALS R7).
+        let run_delete = |args: &[String], dry_line: String| -> io::Result<bool> {
+            if let Some(runner) = &runner {
+                // R7 seam contract: the seam cannot carry netsh's stderr, so
+                // its Ok(_) on a delete means "rule gone" (Ok(false) = the
+                // no-match exit, tolerated below) and a real failure is Err.
+                return runner(&netsh, args).map(|_| true);
+            }
+            if dry_run {
+                println!("{dry_line}");
+                return Ok(true);
+            }
+            let out = Command::new(&netsh).args(args).output()?;
+            if out.status.success() {
+                return Ok(true);
+            }
+            let no_match = |s: &str| s.to_lowercase().contains("no rules match");
+            Ok(no_match(&String::from_utf8_lossy(&out.stderr))
+                || no_match(&String::from_utf8_lossy(&out.stdout)))
+        };
 
         for path in &remove {
             let name = format_rule_name(path);
-            if !run(
+            // R7: a no-match delete is tolerated (rule verified gone, the
+            // diff entry leaves `current` below); a real failure aborts.
+            if !run_delete(
                 &path_delete_args(&name),
                 format!("netsh advfirewall firewall delete rule name=\"{name}\""),
             )? {
@@ -294,7 +330,8 @@ impl Enforcer for WindowsEnforcer {
         // variants), four adds per new port (out/in x TCP/UDP).
         for port in &plan.remove_ports {
             let name = format_port_rule_name(*port);
-            if !run(
+            // R7: the same no-match tolerance as the path delete site.
+            if !run_delete(
                 &port_delete_args(*port),
                 format!("netsh advfirewall firewall delete rule name=\"{name}\""),
             )? {
@@ -860,6 +897,122 @@ mod tests {
             );
             // The fresh enforcer now holds the state, too.
             assert!(second.plan(&wanted()).add.is_empty());
+        }
+
+        // review-01 R7: `delete rule name=N` on an ALREADY-GONE rule (the
+        // user or GPO removed it behind the daemon's back) exits 1 with "No
+        // rules match the specified criteria". That is success for a
+        // reconcile delete — the rule's desired state is already reached —
+        // and the rest of the plan must still be applied. Both delete sites
+        // (path and port, the R5 axis) get their own test.
+        #[test]
+        fn test_windows_apply_survives_pre_deleted_path_rule() {
+            let fake = Arc::new(FakeNetsh {
+                rules: Mutex::new(HashMap::new()),
+            });
+            let gone = r"C:\Apps\Old\gone.exe";
+            let mut enforcer = WindowsEnforcer {
+                current: Blocklist {
+                    paths: vec![gone.to_string()],
+                    local_ports: vec![],
+                },
+                runner: Some(runner(Arc::clone(&fake))),
+            };
+            let wanted = Blocklist {
+                paths: vec![APP.to_string()],
+                local_ports: vec![],
+            };
+            let plan = enforcer.plan(&wanted);
+            assert_eq!(plan.remove, vec![gone.to_string()]);
+
+            enforcer
+                .apply(&plan)
+                .expect("a no-match delete must not abort the plan");
+            assert_eq!(
+                fake.count(&format_rule_name(APP)),
+                1,
+                "the rest of the plan (the new block) is applied after the no-match delete"
+            );
+            // The verified-gone rule leaves `current` too, so the next diff
+            // does not retry the delete forever.
+            assert!(
+                enforcer.plan(&wanted).remove.is_empty(),
+                "current must advance past a no-match delete"
+            );
+        }
+
+        #[test]
+        fn test_windows_apply_survives_pre_deleted_port_rule() {
+            // R5 note on R7: the per-port delete site has the same
+            // !success() -> Err pattern and the same tolerance.
+            let fake = Arc::new(FakeNetsh {
+                rules: Mutex::new(HashMap::new()),
+            });
+            let mut enforcer = WindowsEnforcer {
+                current: Blocklist {
+                    paths: vec![],
+                    local_ports: vec![5353],
+                },
+                runner: Some(runner(Arc::clone(&fake))),
+            };
+            let wanted = Blocklist {
+                paths: vec![],
+                local_ports: vec![5300],
+            };
+            let plan = enforcer.plan(&wanted);
+            assert_eq!(plan.remove_ports, vec![5353]);
+
+            enforcer
+                .apply(&plan)
+                .expect("a no-match port delete must not abort the plan");
+            assert_eq!(
+                fake.count(&format_port_rule_name(5300)),
+                4,
+                "the rest of the plan (the new port) is applied after the no-match delete"
+            );
+            assert!(
+                enforcer.plan(&wanted).remove_ports.is_empty(),
+                "current must advance past a no-match port delete"
+            );
+        }
+
+        #[test]
+        fn test_windows_apply_real_delete_failure_still_aborts() {
+            // R7's tolerance is only for the no-match exit: a real delete
+            // failure (seam Err) still fails the apply, so `current` stays
+            // behind and the next diff retries — nothing else is applied.
+            let fake = Arc::new(FakeNetsh {
+                rules: Mutex::new(HashMap::new()),
+            });
+            let shared = Arc::clone(&fake);
+            let mut enforcer = WindowsEnforcer {
+                current: Blocklist {
+                    paths: vec![r"C:\Apps\Old\stuck.exe".to_string()],
+                    local_ports: vec![],
+                },
+                runner: Some(Arc::new(move |exe: &Path, args: &[String]| {
+                    if args.iter().any(|a| a == "delete") {
+                        return Err(io::Error::other("access denied"));
+                    }
+                    shared.run(exe, args)
+                })),
+            };
+            let wanted = Blocklist {
+                paths: vec![APP.to_string()],
+                local_ports: vec![],
+            };
+            let plan = enforcer.plan(&wanted);
+
+            let err = enforcer.apply(&plan).unwrap_err();
+            assert!(
+                err.to_string().contains("access denied"),
+                "unexpected error: {err}"
+            );
+            assert_eq!(
+                fake.count(&format_rule_name(APP)),
+                0,
+                "a real delete failure aborts before any add runs"
+            );
         }
     }
 }
