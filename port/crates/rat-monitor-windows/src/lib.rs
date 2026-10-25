@@ -705,6 +705,7 @@ mod edge_case_tests {
     use super::*;
     use std::path::Path;
 
+    #[cfg(windows)]
     #[test]
     fn test_estats_global_vs_row_errors() {
         use windows::Win32::Foundation::WIN32_ERROR;
@@ -715,6 +716,7 @@ mod edge_case_tests {
         assert!(!stats::estats_error_is_global(&WIN32_ERROR(87))); // INVALID_PARAMETER
     }
 
+    #[cfg(windows)]
     #[test]
     fn test_mib_tcp6_row_layouts_differ_and_copy_is_faithful() {
         // M2 (update-09): the owner-pid row and the plain row have

@@ -14,17 +14,17 @@ jobs:
         with:
           toolchain: stable
       - name: Build rat-daemon
+        working-directory: port
         run: cargo build -p rat-daemon --release
       - name: Run E2E Tests
-        run: |
-          cd port/e2e/windows
-          cargo run --release
+        working-directory: port/e2e/windows
+        run: cargo run --release
       - name: Verify host firewall has no rat leftovers
         if: always()
         run: |
-          $rules = Get-NetFirewallRule | Where-Object {$_.DisplayName -like 'Rat:path:*'}
+          $rules = Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName -like 'Rat:path:*'}
           if ($rules) {
             Write-Error "Host firewall has rat leftovers!"
             $rules | Select-Object DisplayName
-            exit_failure # Changed from exit 1 to not use exit
+            throw "Firewall leftover error"
           }
