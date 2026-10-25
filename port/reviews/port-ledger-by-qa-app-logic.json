@@ -1,0 +1,27 @@
+{
+  "lane": "qa-app-logic",
+  "step": 6,
+  "requirements": [],
+  "files_changed": [
+    "port/reviews/port-ledger-by-qa-app-logic.md",
+    "port/reviews/port-ledger-by-qa-app-logic.json"
+  ],
+  "existing_tests_modified": [],
+  "commands": [
+    {
+      "cmd": "git fetch origin",
+      "exit_code": 0
+    },
+    {
+      "cmd": "git branch -r",
+      "exit_code": 0
+    }
+  ],
+  "unverified": [],
+  "decisions": [
+    {
+      "what": "Report branch not found",
+      "why": "No remote branch exists that corresponds to `port-ledger` and contains `port/reports/port-ledger.json` or `docs/qa/port-ledger.json`. Recorded the exact commands and output as instructed."
+    }
+  ]
+}
