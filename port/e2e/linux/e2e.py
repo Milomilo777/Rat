@@ -450,6 +450,8 @@ class Daemon:
         if self.installed:
             sh(["systemctl", "stop", "rat-daemon"], check=False, timeout=40)
             sh(["systemctl", "reset-failed", "rat-daemon"], check=False, quiet=True)
+            # Blocks deliberately survive a stop (fail closed), so uninstall runs the documented cleanup.
+            sh(["/usr/local/bin/rat-daemon", "--cleanup"], check=False, timeout=40)
             shutil.rmtree("/etc/systemd/system/rat-daemon.service.d", ignore_errors=True)
             for f in ("/etc/systemd/system/rat-daemon.service", "/usr/local/bin/rat-daemon"):
                 if os.path.exists(f):
