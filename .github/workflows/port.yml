@@ -87,6 +87,18 @@ jobs:
         working-directory: port/app
         run: npm install
 
+      - name: Frontend unit tests (vitest)
+        if: steps.check_tauri.outputs.tauri_exists == 'true'
+        working-directory: port/app
+        run: npm test
+
+      - name: Rust unit tests (src-tauri)
+        if: steps.check_tauri.outputs.tauri_exists == 'true'
+        working-directory: port/app
+        run: |
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml
+
       - name: Build Tauri
         if: steps.check_tauri.outputs.tauri_exists == 'true'
         working-directory: port/app
