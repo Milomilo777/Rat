@@ -60,7 +60,15 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
 - Differences from the macOS app: the sidebar groups by service instead of by app; the inspector shows all
   connections instead of the selected one; port 53 shows the IANA name `domain` instead of `DNS`; the world map
   is empty with the demo data.
-- Debug builds open a console window next to the app (release builds do not).
+- Debug builds open a console window next to the app (release builds do not). Debug builds also lack the
+  administrator manifest, so on Windows run them from an elevated terminal to reach the daemon.
+- The app reads the current rules from the daemon's rules file (the protocol has no "get rules" message yet) and
+  sends the whole list back with SetRules; temporary rules (once / until quit) are not in that file and are
+  dropped when the app changes the rules.
+- The rule form takes a full program path; a bare name such as `firefox` does not match.
+- The app's connection to a real daemon is covered by unit tests against an in-memory daemon, not yet by the
+  real-OS end-to-end suites; the browser-based accessibility (axe) checks were not re-run for the new rule form
+  and banner.
 
 ## Testing
 - Real-OS end-to-end tests run in GitHub Actions: on Windows scenarios W1-W6 pass, on Linux scenarios L1-L6 pass,

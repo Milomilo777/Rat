@@ -14,8 +14,10 @@ The macOS app lives in the repository root and is not part of this directory.
 This is the first release of the port. The daemon, the rule store and the firewall enforcement are tested on real
 Windows and Linux runners in GitHub Actions. Read [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) before relying on it.
 
-TODO (to be confirmed with the app wiring in this pull request): the app talks to the daemon over IPC; on Windows
-run the app elevated.
+The desktop app connects to the running daemon over its local IPC channel: it shows live connections, adds and
+removes rules, and answers connection alerts. On Windows the daemon only accepts an elevated client, so release
+builds of the app ask for administrator rights (UAC) at start; on Linux the user must be root or in the `rat` group.
+Set `RAT_DEMO=1` to run the app with built-in demo data and no daemon.
 
 ## Build
 

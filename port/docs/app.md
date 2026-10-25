@@ -16,7 +16,9 @@ pub trait DataSource: Send + Sync {
 ```
 
 #### Usage Example
-A mock implementation is provided via `FakeDataSource`:
+`DaemonDataSource` (src-tauri/src/daemon.rs) is the real implementation: it speaks the daemon's IPC protocol v1
+(Hello/HelloAck, Snapshot, SetRules, AlertRequest/AlertAnswer), keeps the latest snapshot in a background task and
+reconnects with backoff. `FakeDataSource` serves fixed demo data and is used only when `RAT_DEMO=1` is set:
 ```rust
 let source = FakeDataSource;
 match source.get_connections() {
@@ -40,5 +42,6 @@ match source.get_connections() {
 - **macOS**: The codebase explicitly skips the macOS port for this specific crate, deferring to the native Swift implementation.
 
 ## Known Limits
-- The Tauri app is not yet connected to the daemon in every build and may show demo data; see the status in `port/README.md`.
+- The app shows demo data only with `RAT_DEMO=1`; otherwise it needs the running daemon and shows a clear message
+  when the service is not running or access is denied.
 - The `DataSource` implementation can fail dynamically (e.g. if the daemon pipe crashes or IPC is lost). The `unwrap` instances on invalid data have been replaced with `Result<T, String>` to bubble up parsing and connectivity errors to the frontend safely instead of panicking.
