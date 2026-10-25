@@ -74,4 +74,4 @@ The Windows backend generates individual rules per application path using `netsh
 - **Limits**: Only program path block rules are applied. Local ports are ignored for Windows since the firewall directly supports per-program rules.
 
 ### Safety Notes
-To prevent accidental misconfiguration of local environments while testing or developing, `apply` will simply print out the commands being executed (dry-run mode) unless the environment variable `RAT_ENFORCE=1` is explicitly set.
+`apply` enforces for real by default (update-08 S7: a privileged enforcer that silently does nothing unless `RAT_ENFORCE=1` was set is its own misconfiguration). Tests and dry runs opt out explicitly with `RAT_DRY_RUN=1`, which makes `apply` print the commands instead of running them.

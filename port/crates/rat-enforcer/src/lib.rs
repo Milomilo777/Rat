@@ -17,6 +17,13 @@ pub trait Enforcer {
     fn apply(&self, plan: &Self::Plan) -> io::Result<()>;
 }
 
+/// S7 (update-08): the enforcer RUNS by default; `RAT_DRY_RUN=1` is the
+/// explicit opt-out for tests and dry runs. (Previously nothing was ever
+/// enforced unless `RAT_ENFORCE=1` was set — including in production.)
+pub fn dry_run_enabled(env_value: Option<&str>) -> bool {
+    env_value == Some("1")
+}
+
 /// S6 (update-08): an enforcer path must be absolute, free of shell-meta
 /// characters and `..` segments, and canonicalized (symlinks/junctions
 /// resolved) when the target exists, so a rule cannot point validation at
@@ -48,6 +55,15 @@ pub fn validate_path(path: &str) -> Result<String, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn test_dry_run_is_opt_in() {
+        // S7 (update-08): enforcing by default; RAT_DRY_RUN=1 opts out.
+        assert!(!dry_run_enabled(None), "must enforce when unset");
+        assert!(dry_run_enabled(Some("1")));
+        assert!(!dry_run_enabled(Some("0")));
+        assert!(!dry_run_enabled(Some("")));
+    }
+
     use proptest::prelude::*;
 
     #[test]

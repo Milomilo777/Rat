@@ -90,7 +90,7 @@ impl Enforcer for WindowsEnforcer {
         let remove = validated(&plan.remove)?;
         let add = validated(&plan.add)?;
 
-        let dry_run = env::var("RAT_ENFORCE").map(|v| v != "1").unwrap_or(true);
+        let dry_run = crate::dry_run_enabled(env::var("RAT_DRY_RUN").ok().as_deref());
 
         for path in &remove {
             let name = format_rule_name(path);
@@ -207,6 +207,8 @@ mod tests {
 
     #[test]
     fn test_windows_apply_rejects_invalid_path() {
+        // S7 (update-08): tests never touch a real firewall.
+        std::env::set_var("RAT_DRY_RUN", "1");
         let current = Blocklist::default();
         let wanted = Blocklist {
             paths: vec!["C:\\Program Files\\App\"; evil".to_string()],

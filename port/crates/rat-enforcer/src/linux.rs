@@ -61,7 +61,7 @@ impl Enforcer for LinuxEnforcer {
     }
 
     fn apply(&self, plan: &Self::Plan) -> io::Result<()> {
-        let dry_run = env::var("RAT_ENFORCE").map(|v| v != "1").unwrap_or(true);
+        let dry_run = crate::dry_run_enabled(env::var("RAT_DRY_RUN").ok().as_deref());
 
         if dry_run {
             println!("nft -f - <<EOF\n{}EOF", plan);
