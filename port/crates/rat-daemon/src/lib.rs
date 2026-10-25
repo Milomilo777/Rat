@@ -24,17 +24,27 @@ pub async fn run_components(
     rules_path: std::path::PathBuf,
     shutdown_rx: tokio::sync::broadcast::Receiver<()>,
 ) -> std::io::Result<()> {
-    // The saved plan (Swift RulesModel parity): rules survive restarts and
-    // are the anchor the reconcile below diffs against.
     let store = std::sync::Arc::new(rat_core::RuleStore::new(rules_path));
-    let (engine, loaded) = match store.load_set() {
+    // The saved plan (Swift RulesModel parity): rules survive restarts and
+    // are the anchor the reconcile below diffs against. review-02 I2: an
+    // unparsable rules file is an ERROR (load_set never yields a zero-rule
+    // set) — starting from an empty plan would reconcile every real Rat:*
+    // rule away (fail-open). Without a recovered plan the startup reconcile
+    // is SKIPPED: the firewall keeps exactly what the predecessor left until
+    // a client sends rules. The backend is deliberately never seeded with
+    // the live state in this mode, so its diff can only add, never remove;
+    // the cost is that stray rules the later plan no longer names stay until
+    // the uninstall cleanup.
+    let (engine, loaded, plan_loaded) = match store.load_set() {
         Ok(set) => {
             let count = set.rules.len();
-            (rat_core::RuleEngine::with_rule_set(set), count)
+            (rat_core::RuleEngine::with_rule_set(set), count, true)
         }
         Err(e) => {
-            eprintln!("rat-daemon: rules file unreadable ({e}); starting with defaults");
-            (rat_core::RuleEngine::new(), 0)
+            eprintln!(
+                "rat-daemon: rules file unreadable ({e}); keeping the current firewall state until a client sends rules"
+            );
+            (rat_core::RuleEngine::new(), 0, false)
         }
     };
     let policy = RuleEnginePolicy(engine);
@@ -51,17 +61,25 @@ pub async fn run_components(
     // client is ever served against unrepaired state. Failures are
     // best-effort: a daemon that cannot read the firewall still serves, and
     // the pipeline's first tick re-attempts the diff.
-    match backend.existing() {
-        Ok(found) => backend.adopt(found),
-        Err(e) => {
-            eprintln!("rat-daemon: firewall read-back failed ({e}); reconciling from an empty view")
+    if plan_loaded {
+        match backend.existing() {
+            Ok(found) => backend.adopt(found),
+            Err(e) => {
+                eprintln!(
+                    "rat-daemon: firewall read-back failed ({e}); reconciling from an empty view"
+                )
+            }
         }
+        let anchor = core::static_blocklist(&policy.0.all_rules());
+        if let Err(e) = backend.enforce(&anchor) {
+            eprintln!("rat-daemon: startup reconcile enforce failed: {e} (first tick retries)");
+        }
+        eprintln!("rat-daemon: {loaded} rules loaded, startup reconcile done");
+    } else {
+        eprintln!(
+            "rat-daemon: no saved plan recovered; startup reconcile skipped (firewall state kept)"
+        );
     }
-    let anchor = core::static_blocklist(&policy.0.all_rules());
-    if let Err(e) = backend.enforce(&anchor) {
-        eprintln!("rat-daemon: startup reconcile enforce failed: {e} (first tick retries)");
-    }
-    eprintln!("rat-daemon: {loaded} rules loaded, startup reconcile done");
 
     let (snapshot_tx, snapshot_rx) = tokio::sync::broadcast::channel(16);
     let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();

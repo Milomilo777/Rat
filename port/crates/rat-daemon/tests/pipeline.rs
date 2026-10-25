@@ -603,9 +603,12 @@ async fn test_stop_keeps_rules_no_cleanup_on_shutdown() {
 }
 
 // e2e-01 item 1's fake-enforcer rule: never real firewall changes in unit
-// tests. A rules file that is garbage must not keep the daemon from serving
-// (Swift "gracefully defaulted" parity), and a failed firewall read-back is
-// tolerated: reconcile proceeds from an empty view.
+// tests. review-02 I2 redefined what a garbage rules file means: it is an
+// ERROR, and the daemon keeps the current firewall state (no startup
+// reconcile, nothing adopted — seeding `current` is what lets the diff
+// remove rules) while it still SERVES. Every enforcement round that runs
+// carries an empty anchor: the unknown plan invents none until a client
+// sends rules.
 #[tokio::test]
 async fn test_corrupt_rules_file_daemon_still_serves() {
     let rules_path = temp_rules_path("corrupt");
@@ -625,16 +628,96 @@ async fn test_corrupt_rules_file_daemon_still_serves() {
     ));
 
     wait_until(Duration::from_secs(10), || endpoint_serving(&endpoint)).await;
+    // Wait for at least one full pipeline round so the assertion below covers
+    // the tick path, not only startup.
+    wait_until(Duration::from_secs(5), || {
+        recorder
+            .events_snapshot()
+            .iter()
+            .any(|e| matches!(e, Event::Enforce(_)))
+    })
+    .await;
 
     let events = recorder.events_snapshot();
     assert!(
         !events.iter().any(|e| matches!(e, Event::Adopt(_))),
-        "existing() failed (default recorder) — nothing to adopt: {events:?}"
+        "nothing may be adopted while the plan is unknown: {events:?}"
     );
+    for event in &events {
+        if let Event::Enforce(b) = event {
+            assert!(
+                b.paths.is_empty() && b.local_ports.is_empty(),
+                "an unknown plan must never invent an enforcement anchor: {event:?}"
+            );
+        }
+    }
+
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("run_components must end on shutdown")
+        .expect("pipeline task did not panic")
+        .expect("clean shutdown is not an error");
+}
+
+// review-02 I2, the prescribed fail-open scenario: rules.json truncated
+// MID-JSON (a crash during a non-atomic save) with a firewall preloaded with
+// a predecessor's rules. The truncated file must not become a zero-rule plan:
+// the daemon serves, the preloaded state is never adopted, and no enforcement
+// round proposes the predecessor's paths. The old behaviour parsed the
+// truncated file into zero rules with Ok and removed every real Rat:* rule.
+#[tokio::test]
+async fn test_truncated_rules_file_keeps_current_firewall_state() {
+    let rules_path = temp_rules_path("truncated");
+    // Valid JSON up to the cut: parses as neither RuleSet nor legacy Vec<Rule>.
+    std::fs::write(
+        &rules_path,
+        br#"{"version":2,"profiles":[],"rules":[{"id":" "#,
+    )
+    .expect("seed truncated rules file");
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let recorder = RecorderBackend::default();
+    // The firewall still holds rules a previous daemon created.
+    let [stale1, _] = stale_apps();
+    let preloaded = vec![test_app().to_string(), stale1.to_string()];
+    *recorder.existing_state.lock().unwrap() = Some(rat_enforcer::Blocklist {
+        paths: preloaded.clone(),
+        local_ports: vec![],
+    });
+
+    let source = ScriptedSource { conns: vec![] };
+    let endpoint = test_endpoint("truncated");
+    let task = tokio::spawn(rat_daemon::run_components(
+        endpoint.clone(),
+        source,
+        recorder.clone(),
+        rules_path,
+        shutdown_rx,
+    ));
+
+    wait_until(Duration::from_secs(10), || endpoint_serving(&endpoint)).await;
+    wait_until(Duration::from_secs(5), || {
+        recorder
+            .events_snapshot()
+            .iter()
+            .any(|e| matches!(e, Event::Enforce(_)))
+    })
+    .await;
+
+    let events = recorder.events_snapshot();
     assert!(
-        events.iter().any(|e| matches!(e, Event::Enforce(_))),
-        "the reconcile enforce still ran from the (empty) saved plan: {events:?}"
+        !events.iter().any(|e| matches!(e, Event::Adopt(_))),
+        "the preloaded firewall state must never be adopted while the plan is unknown (adopting is what makes the diff remove): {events:?}"
     );
+    for event in &events {
+        if let Event::Enforce(b) = event {
+            assert!(
+                b.paths.iter().all(|p| !preloaded.contains(p)),
+                "an unknown plan must never propose the predecessor's rules: {event:?}"
+            );
+        }
+    }
 
     let _ = shutdown_tx.send(());
     tokio::time::timeout(Duration::from_secs(5), task)

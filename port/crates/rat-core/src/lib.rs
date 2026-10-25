@@ -785,6 +785,15 @@ pub struct RuleStore {
     pub url: PathBuf,
 }
 
+/// `<file><suffix>` next to the real file (`rules.json` -> `rules.json.bak`):
+/// same directory, so the save's rename stays on one volume (atomic on both
+/// platforms).
+fn sibling_path(url: &Path, suffix: &str) -> PathBuf {
+    let mut name = url.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
 impl RuleStore {
     pub fn new(url: PathBuf) -> Self {
         Self { url }
@@ -794,26 +803,68 @@ impl RuleStore {
         if !self.url.exists() {
             return Ok(RuleSet::standard(None));
         }
-        let data = fs::read_to_string(&self.url)?;
-        // If data is empty or completely unparseable, return an error rather than silently defaulting if it's completely malformed, but Swift gracefully defaulted.
+        if let Some(s) = Self::parse_set_file(&self.url)? {
+            return Ok(s);
+        }
+        // The main file exists but is unparsable (e.g. truncated mid-JSON by
+        // a crash). review-02 I2: this is an ERROR, never an empty rule set
+        // with Ok — a zero-rule set makes the daemon reconcile every real
+        // Rat:* rule away. First try the recovery copy the atomic save keeps.
+        let bak = sibling_path(&self.url, ".bak");
+        if let Ok(Some(s)) = Self::parse_set_file(&bak) {
+            return Ok(s);
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "rules file {} is unparsable and no usable backup at {}",
+                self.url.display(),
+                bak.display()
+            ),
+        ))
+    }
+
+    /// Read and parse one rules file: the RuleSet JSON (v1 files migrate to
+    /// v2 here), or the legacy bare rule list (Swift RulesModel parity).
+    /// `Ok(None)` = readable but unparsable.
+    fn parse_set_file(path: &Path) -> std::io::Result<Option<RuleSet>> {
+        let data = fs::read_to_string(path)?;
         if let Ok(mut s) = serde_json::from_str::<RuleSet>(&data) {
             if s.version < 2 {
                 s.version = 2;
                 s.silent_verdict = Some(Verdict::Allow);
             }
-            return Ok(s);
+            return Ok(Some(s));
         }
-
-        let mut s = RuleSet::standard(None);
-        s.rules = serde_json::from_str::<Vec<Rule>>(&data).unwrap_or_default();
-        Ok(s)
+        Ok(serde_json::from_str::<Vec<Rule>>(&data).ok().map(|rules| {
+            let mut s = RuleSet::standard(None);
+            s.rules = rules;
+            s
+        }))
     }
 
     pub fn save_set(&self, set: &RuleSet) -> std::io::Result<()> {
         let mut s = set.clone();
         s.rules.retain(|r| r.lifetime == Lifetime::Forever);
         let data = serde_json::to_string_pretty(&s).map_err(std::io::Error::other)?;
-        fs::write(&self.url, data)
+        // review-02 I2: the save is atomic — write a sibling temp file, push
+        // it to disk, keep the previous content as `.bak`, then rename over
+        // the real file. A crash mid-save can no longer leave a truncated
+        // rules.json that a restart would read as zero rules.
+        let tmp = sibling_path(&self.url, ".tmp");
+        let bak = sibling_path(&self.url, ".bak");
+        {
+            use std::io::Write;
+            let mut f = fs::File::create(&tmp)?;
+            f.write_all(data.as_bytes())?;
+            f.sync_all()?;
+        }
+        if self.url.exists() {
+            // Best effort: `.bak` is the recovery copy; the atomic rename is
+            // the primary integrity mechanism.
+            let _ = fs::copy(&self.url, &bak);
+        }
+        fs::rename(&tmp, &self.url)
     }
 
     pub fn load(&self) -> std::io::Result<Vec<Rule>> {
@@ -1326,19 +1377,102 @@ mod load_tests {
     use std::fs;
     use tempfile::tempdir;
 
+    // review-02 I2: an unparsable rules file is an ERROR, never Ok with zero
+    // rules — a zero-rule set makes the daemon reconcile every real Rat:*
+    // rule away (fail-open).
     #[test]
-    fn test_malformed_lines_handled_gracefully() {
+    fn test_unparsable_rules_file_is_an_error() {
         let dir = tempdir().unwrap();
         let url = dir.path().join("malformed.json");
         fs::write(&url, "this is not json").unwrap();
 
         let store = RuleStore::new(url);
-        // Swift handles it by falling back to RuleSet::standard() or empty array.
-        // We implemented it similarly: if it fails to decode RuleSet, it tries Vec<Rule>.
-        // If that fails (unwrap_or_default), it just returns an empty standard RuleSet.
-        let s = store.load_set().unwrap();
-        assert_eq!(s.rules.len(), 0);
-        assert_eq!(s.version, 2); // standard default
+        let err = store
+            .load_set()
+            .expect_err("an unparsable file must be an error");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    // review-02 I2, the prescribed scenario: a file truncated MID-JSON (a
+    // crash during a save) is neither a RuleSet nor a legacy rule list.
+    #[test]
+    fn test_truncated_rules_file_is_an_error() {
+        let dir = tempdir().unwrap();
+        let url = dir.path().join("truncated.json");
+        fs::write(&url, "{\"version\":2,\"rules\":[{\"id\":\"").unwrap();
+
+        let store = RuleStore::new(url);
+        let err = store
+            .load_set()
+            .expect_err("a truncated file must be an error");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    // review-02 I2: the `.bak` the atomic save keeps is the recovery copy for
+    // a corrupted main file.
+    #[test]
+    fn test_unparsable_main_file_recovers_from_bak() {
+        let dir = tempdir().unwrap();
+        let url = dir.path().join("rules.json");
+
+        let mut s = RuleSet::standard(None);
+        let mut r = tests::new_rule();
+        r.verdict = Verdict::Deny;
+        r.remote_domain = Some("bak.example".to_string());
+        s.rules = vec![r];
+        let bak = dir.path().join("rules.json.bak");
+        fs::write(&bak, serde_json::to_string_pretty(&s).unwrap()).unwrap();
+        fs::write(&url, "{\"version\":2,\"rules\":[{\"id\":\"").unwrap(); // truncated
+
+        let store = RuleStore::new(url);
+        let loaded = store.load_set().expect("the .bak must be recovered");
+        assert_eq!(loaded.rules.len(), 1);
+        assert_eq!(
+            loaded.rules[0].remote_domain.as_deref(),
+            Some("bak.example")
+        );
+    }
+
+    // review-02 I2: save_set writes through a sibling temp file (fsync +
+    // rename) and keeps the PREVIOUS content as `.bak` — a crash mid-save can
+    // no longer truncate rules.json, and the last good set stays on disk.
+    #[test]
+    fn test_save_set_is_atomic_and_keeps_previous_as_bak() {
+        let dir = tempdir().unwrap();
+        let url = dir.path().join("rules.json");
+        let store = RuleStore::new(url.clone());
+
+        let mut first = RuleSet::standard(None);
+        let mut r1 = tests::new_rule();
+        r1.verdict = Verdict::Deny;
+        r1.remote_domain = Some("first.example".to_string());
+        first.rules = vec![r1];
+        store.save_set(&first).unwrap();
+
+        let mut second = RuleSet::standard(None);
+        let mut r2 = tests::new_rule();
+        r2.verdict = Verdict::Deny;
+        r2.remote_domain = Some("second.example".to_string());
+        second.rules = vec![r2];
+        store.save_set(&second).unwrap();
+
+        let bak = dir.path().join("rules.json.bak");
+        assert!(bak.exists(), "the previous content must be kept as .bak");
+        let from_bak: RuleSet = serde_json::from_str(&fs::read_to_string(&bak).unwrap()).unwrap();
+        assert_eq!(
+            from_bak.rules[0].remote_domain.as_deref(),
+            Some("first.example"),
+            ".bak holds the PREVIOUS content, not the just-written one"
+        );
+        assert_eq!(
+            store.load_set().unwrap().rules[0].remote_domain.as_deref(),
+            Some("second.example")
+        );
+        // The temp file is consumed by the rename, not left next to the set.
+        assert!(
+            !dir.path().join("rules.json.tmp").exists(),
+            "the temp file must be gone after the save"
+        );
     }
 }
 
