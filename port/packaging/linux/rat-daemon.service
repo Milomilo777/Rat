@@ -5,6 +5,7 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/rat-daemon
+ExecStopPost=-/usr/sbin/nft delete table inet rat
 Restart=on-failure
 User=root
 Group=rat

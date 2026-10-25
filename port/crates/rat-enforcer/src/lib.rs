@@ -15,6 +15,13 @@ pub trait Enforcer {
     type Plan;
     fn plan(&self, wanted: &Blocklist) -> Self::Plan;
     fn apply(&self, plan: &Self::Plan) -> io::Result<()>;
+    /// S8 (update-08): remove every rule this enforcer created. Called on
+    /// start and on clean shutdown (daemon wiring, PROPOSALS #10) so
+    /// persistent rules do not survive crashes as duplicates; systemd's
+    /// ExecStopPost covers the linux daemon meanwhile.
+    fn cleanup(&self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// S7 (update-08): the enforcer RUNS by default; `RAT_DRY_RUN=1` is the

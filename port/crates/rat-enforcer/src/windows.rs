@@ -61,6 +61,24 @@ pub fn netsh_path() -> io::Result<std::path::PathBuf> {
     }
 }
 
+/// S5 (update-08): resolve powershell from %SystemRoot% for the wildcard
+/// rule cleanup (netsh cannot delete by name pattern); same PATH-hardening
+/// rationale as [`netsh_path`].
+pub fn powershell_path() -> io::Result<std::path::PathBuf> {
+    let root = std::env::var_os("SystemRoot")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
+    let candidate = root.join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    if candidate.is_file() {
+        Ok(candidate)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "powershell.exe not found under SystemRoot",
+        ))
+    }
+}
+
 impl Enforcer for WindowsEnforcer {
     type Plan = WindowsPlan;
 
@@ -141,11 +159,59 @@ impl Enforcer for WindowsEnforcer {
 
         Ok(())
     }
+
+    /// S8 (update-08): netsh cannot delete by name pattern, so the wildcard
+    /// cleanup goes through PowerShell's NetSecurity module.
+    fn cleanup(&self) -> io::Result<()> {
+        use std::env;
+        use std::process::Command;
+
+        let dry_run = crate::dry_run_enabled(env::var("RAT_DRY_RUN").ok().as_deref());
+        if dry_run {
+            println!(
+                "powershell: Get-NetFirewallRule -DisplayName 'Rat:path:*' | Remove-NetFirewallRule"
+            );
+            return Ok(());
+        }
+
+        let status = Command::new(powershell_path()?)
+            .args([
+                "-NoProfile",
+                "-Command",
+                "Get-NetFirewallRule -DisplayName 'Rat:path:*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule",
+            ])
+            .status()?;
+        if !status.success() {
+            return Err(io::Error::other("Failed to clean up Rat firewall rules"));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_powershell_resolved_absolute() {
+        let p = powershell_path().expect("powershell must resolve under SystemRoot");
+        assert!(
+            p.is_absolute(),
+            "powershell must be resolved absolutely: {p:?}"
+        );
+        assert!(p.is_file(), "resolved powershell does not exist: {p:?}");
+    }
+
+    #[test]
+    fn test_windows_cleanup_is_dry_run_safe() {
+        // S7+S8: with the dry-run opt-out set, cleanup must not spawn
+        // any process (verified by it succeeding instantly offline).
+        std::env::set_var("RAT_DRY_RUN", "1");
+        let enforcer = WindowsEnforcer {
+            current: Blocklist::default(),
+        };
+        enforcer.cleanup().expect("dry-run cleanup must succeed");
+    }
 
     #[test]
     fn test_netsh_resolved_absolute() {
