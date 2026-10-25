@@ -1,4 +1,4 @@
-//! Shared data types for the Rat port. Feature lanes never edit this file.
+//! Shared data types for the Rat port. Edit with care: every crate depends on it.
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -31,7 +31,7 @@ pub struct Connection {
     pub listening: bool,
     pub bytes_in: Option<u64>,
     pub bytes_out: Option<u64>,
-    /// M5 (update-09): true when the connection leaves through a VPN
+    /// true when the connection leaves through a VPN
     /// interface (v1.2.0 "mark connections through a VPN"). serde-defaulted
     /// so pre-field JSON still decodes.
     #[serde(default)]

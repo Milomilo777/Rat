@@ -1,6 +1,6 @@
 //! Platform-independent port of the macOS app's `Ledger` + `AlertCenter` logic
 //! (App/Model/Ledger.swift, App/Model/AlertCenter.swift on main b56220e).
-//! Spec: ZCODE/specs/port-ledger.md.
+//!
 
 pub mod alerts;
 pub mod answers;
@@ -20,7 +20,7 @@ pub use shared::{is_shared_service, note as shared_service_note};
 use rat_core::Verdict;
 use std::net::SocketAddr;
 
-/// Decides what happens to a connection. Spec signature (supervisor instruction);
+/// Decides what happens to a connection. Signature:
 /// `app` is the executable path, `host` the display name when one is known.
 pub trait Policy {
     fn evaluate(&self, app: &str, remote: &SocketAddr, host: Option<&str>) -> Verdict;

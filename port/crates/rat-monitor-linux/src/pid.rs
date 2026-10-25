@@ -26,7 +26,7 @@ pub fn map_inodes_to_pids(proc_root: &Path) -> HashMap<u64, u32> {
                         if target_str.starts_with("socket:[") && target_str.ends_with(']') {
                             let inode_str = &target_str[8..target_str.len() - 1];
                             if let Ok(inode) = inode_str.parse::<u64>() {
-                                // M8 (update-09): prefork servers share one
+                                // prefork servers share one
                                 // socket inode across processes; keep the
                                 // lowest pid so the mapping is deterministic
                                 // regardless of readdir order.
@@ -99,7 +99,7 @@ fn get_user_name(uid: u32) -> String {
         unsafe {
             let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
             let mut pwd_ptr = std::ptr::null_mut();
-            // M8 (update-09): c_char is u8 on aarch64 (and i8 on x86) - an
+            // c_char is u8 on aarch64 (and i8 on x86) - an
             // i8 buffer does not compile there; use u8 and cast.
             let mut buf = vec![0u8; 1024];
             let ret = libc::getpwuid_r(
@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn test_shared_inode_maps_to_lowest_pid() {
-        // M8 (update-09): prefork servers expose the same socket inode via
+        // prefork servers expose the same socket inode via
         // several processes' fd dirs; the mapping must be deterministic.
         let root = tempfile::tempdir().unwrap();
         for pid in [200u32, 100] {

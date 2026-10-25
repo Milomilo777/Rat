@@ -14,7 +14,7 @@ pub struct ReverseDnsInfo {
 
 impl PartialEq for ReverseDnsInfo {
     fn eq(&self, other: &Self) -> bool {
-        // R4: compared in punycode
+        // compared in punycode
         self.punycode == other.punycode
     }
 }

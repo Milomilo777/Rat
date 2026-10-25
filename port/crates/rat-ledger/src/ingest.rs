@@ -64,7 +64,7 @@ pub struct RemoteEntry {
     pub rate_out: f64,
 }
 
-/// Ledger.swift:50-61 AppEntry, keyed by executable path on Windows/Linux (spec R1).
+/// Ledger.swift:50-61 AppEntry, keyed by executable path on Windows/Linux.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppEntry {
     pub app: String,
@@ -93,7 +93,7 @@ pub struct EnforcementPlan {
     pub denied_local_ports: BTreeSet<u16>,
 }
 
-/// Per-connection byte-counter baseline identity (socket reuse detection, R2).
+/// Per-connection byte-counter baseline identity (socket reuse detection).
 type ConnId = (u32, SocketAddr, Option<SocketAddr>, Protocol);
 
 /// Swift probes whole-app denial with TEST-NET-3 (Ledger.swift:411).
@@ -149,7 +149,7 @@ impl Ledger {
         }
     }
 
-    /// App key (R1): the executable path; `<unknown>` when the monitor could not see one.
+    /// App key: the executable path; `<unknown>` when the monitor could not see one.
     fn app_key(c: &Connection) -> String {
         c.process
             .exe
@@ -158,11 +158,11 @@ impl Ledger {
             .unwrap_or_else(|| "<unknown>".to_string())
     }
 
-    /// Ingest one sample (Ledger.swift:226-354): groups by exe path (R1),
+    /// Ingest one sample (Ledger.swift:226-354): groups by exe path,
     /// accumulates byte totals/rates per app and remote — never negative on a
-    /// counter reset (R2) — counts verdicts, reports Ask connections as alerts
-    /// after warmup (R3), rebuilds remotes with their v1.2.0 details (R6) and
-    /// recomputes the enforcement plan (R4).
+    /// counter reset — counts verdicts, reports Ask connections as alerts
+    /// after warmup, rebuilds remotes with their v1.2.0 details and
+    /// recomputes the enforcement plan.
     pub fn ingest(
         &mut self,
         policy: &dyn Policy,
@@ -180,7 +180,7 @@ impl Ledger {
         let dt = dt.max(0.2);
         self.last_tick_ms = Some(now_ms);
 
-        // R1: group the sample by executable path.
+        // group the sample by executable path.
         let mut listening_by_app: BTreeMap<String, usize> = BTreeMap::new();
         let mut conns_by_app: BTreeMap<String, Vec<&Connection>> = BTreeMap::new();
         let mut listening_total = 0usize;
@@ -199,7 +199,7 @@ impl Ledger {
             }
         }
 
-        // R2: deltas from the previous sample. The baseline is ALWAYS updated
+        // deltas from the previous sample. The baseline is ALWAYS updated
         // (Swift's `defer { previous[t.pid] = t }`); a delta is accumulated only
         // when both counters are monotonic, so a reused socket can never produce
         // a negative rate.
@@ -259,7 +259,7 @@ impl Ledger {
         let cutoff = minute.saturating_sub(week_of_minutes);
         self.buckets.retain(|&m, _| m >= cutoff);
 
-        // R6 + R2 per app: rebuild remotes from the current sample (Swift :347
+        // +  per app: rebuild remotes from the current sample (Swift :347
         // `e.remotes = remotes`), merging this tick's per-remote deltas.
         let mut denied = 0usize;
         let mut unconfirmed = 0usize;
@@ -298,7 +298,7 @@ impl Ledger {
                 });
             }
 
-            // R4: verdict per outbound remote; local remotes are listed but never
+            // verdict per outbound remote; local remotes are listed but never
             // judged (Ledger.swift:329). Only the LOCAL port of a denied socket is
             // ever blocked (:330-332), never the server address.
             for c in sample {
@@ -348,7 +348,7 @@ impl Ledger {
             }
         }
 
-        // R4: whole-app denial, probed like Swift's 203.0.113.9:443 check
+        // whole-app denial, probed like Swift's 203.0.113.9:443 check
         // (Ledger.swift:411). Through the Policy seam the probe IS the answer:
         // an app with an allow rule probes as Allow.
         let denied_apps: BTreeSet<String> = self
@@ -403,7 +403,7 @@ impl Ledger {
         (self.rate_in, self.rate_out)
     }
 
-    /// The enforcement plan derived from the latest ingest (R4: always derived,
+    /// The enforcement plan derived from the latest ingest (always derived,
     /// never accumulated — removing a rule shrinks it on the next ingest).
     pub fn enforcement(&self) -> &EnforcementPlan {
         &self.plan

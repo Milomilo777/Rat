@@ -71,7 +71,7 @@ fn peer_decision(
     gid == rat || supplementary.is_some_and(|groups| groups.contains(&rat))
 }
 
-/// S2 (update-08): who may talk to the privileged daemon over the unix
+/// who may talk to the privileged daemon over the unix
 /// socket — root, the daemon's own user, or a member of the `rat` group
 /// (primary or supplementary gid, e.g. `usermod -aG rat`; override the group
 /// name with RAT_IPC_GROUP). `pid` comes from SO_PEERCRED; a missing pid or an
@@ -105,7 +105,7 @@ pub async fn start_ipc_server(
     use std::os::unix::fs::PermissionsExt;
     use tokio::net::UnixListener;
 
-    // PROPOSALS #9: if a live listener answers on this path, another daemon
+    // if a live listener answers on this path, another daemon
     // owns the socket — refuse to start instead of silently stealing it.
     // Only a stale socket left by a crashed daemon gets removed below.
     if tokio::net::UnixStream::connect(socket_path).await.is_ok() {
@@ -117,7 +117,7 @@ pub async fn start_ipc_server(
 
     let _ = std::fs::remove_file(socket_path);
     if let Some(parent) = std::path::Path::new(socket_path).parent() {
-        // S4 (update-08): a directory we create is 0o750 so the socket it
+        // a directory we create is 0o750 so the socket it
         // holds stays unreachable for others even during the bind->chmod
         // window (systemd's RuntimeDirectory=rat covers /run/rat the same
         // way in production).
@@ -132,10 +132,10 @@ pub async fn start_ipc_server(
 
     let listener = UnixListener::bind(socket_path)?;
 
-    // S3 (update-08): bounded concurrent clients.
+    // bounded concurrent clients.
     let client_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CLIENTS));
 
-    // S4 (update-08): always tighten the socket to owner+group read/write.
+    // always tighten the socket to owner+group read/write.
     let mut perms = std::fs::metadata(socket_path)?.permissions();
     perms.set_mode(0o660);
     std::fs::set_permissions(socket_path, perms)?;
@@ -148,7 +148,7 @@ pub async fn start_ipc_server(
             res = listener.accept() => {
                 match res {
                     Ok((stream, _)) => {
-                        // S2 (update-08): drop connections from peers that are
+                        // drop connections from peers that are
                         // neither root, us, nor in the rat group.
                         let allowed = stream
                             .peer_cred()
@@ -157,7 +157,7 @@ pub async fn start_ipc_server(
                         if !allowed {
                             continue;
                         }
-                        // S3 (update-08): at capacity the extra client is
+                        // at capacity the extra client is
                         // dropped instead of spawning another handler.
                         let permit = match client_slots.clone().try_acquire_owned() {
                             Ok(permit) => permit,
@@ -171,7 +171,7 @@ pub async fn start_ipc_server(
                         });
                     }
                     Err(_) => {
-                        // S9 (update-08): back off so a persistent accept
+                        // back off so a persistent accept
                         // error (e.g. EMFILE) cannot spin the CPU.
                         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     }
@@ -200,14 +200,14 @@ impl Drop for SdGuard {
 }
 
 #[cfg(windows)]
-// S1 (update-08): SYSTEM and Administrators get GENERIC_ALL; Interactive
+// SYSTEM and Administrators get GENERIC_ALL; Interactive
 // Users only read/write (0x12019b = FILE_GENERIC_READ | FILE_GENERIC_WRITE)
 // so a local app cannot create rogue pipe instances or rewrite the DACL
 // (GA for IU would include FILE_CREATE_PIPE_INSTANCE and WRITE_DAC).
 // D:P makes the DACL protected against inherited ACE reordering.
 const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12019b;;;IU)\0";
 
-/// S1 call-site split (gate-fix-S1 caveat): the ONLY place PIPE_SDDL becomes
+/// Call-site split: the ONLY place PIPE_SDDL becomes
 /// a security descriptor, so the const cannot drift away from what the pipe
 /// is actually created with.
 #[cfg(windows)]
@@ -237,14 +237,14 @@ fn security_descriptor() -> std::io::Result<SdGuard> {
 
 #[cfg(windows)]
 mod client_auth {
-    //! C2 (PROPOSALS #5/#10, gate-fix-S2): per-client identity on the named
-    //! pipe. The S1 DACL admits every Interactive User, so before a
+    //! per-client identity on the named
+    //! pipe. The pipe DACL admits every Interactive User, so before a
     //! connection reaches the handler the daemon checks the CLIENT process's
     //! primary token: the same user as the daemon, or a Builtin Administrator
-    //! whose admin group is ENABLED / whose token is elevated (I6 — a token
+    //! whose admin group is ENABLED / whose token is elevated (a token
     //! that merely LISTS the group, as an unelevated admin's filtered token
     //! does, is refused). Every error fails CLOSED (connection dropped) —
-    //! this is the token check gate-fix-S2 deferred to "when the handshake
+    //! this is the token check deferred to "when the handshake
     //! lands".
 
     use std::sync::OnceLock;
@@ -282,7 +282,7 @@ mod client_auth {
         (ok != 0).then_some(buf)
     }
 
-    /// One token group: (SID bytes, SE_GROUP_* attributes). I6 needs the
+    /// One token group: (SID bytes, SE_GROUP_* attributes). The admin check needs the
     /// attributes to tell an ENABLED Administrators membership from a
     /// deny-only one.
     pub type TokenGroup = (Vec<u8>, u32);
@@ -410,7 +410,7 @@ mod client_auth {
     }
 
     #[cfg(windows)]
-    /// I6 belt-and-braces: an elevated token admits even when the group walk
+    /// belt-and-braces: an elevated token admits even when the group walk
     /// above came up empty. Any error fails closed.
     pub(super) fn token_elevated(pid: u32) -> bool {
         use windows_sys::Win32::Security::{TokenElevation, TOKEN_ELEVATION};
@@ -451,7 +451,7 @@ mod client_auth {
 }
 
 #[cfg(windows)]
-/// C2: may the client process behind this pipe connection set rules? Same
+/// may the client process behind this pipe connection set rules? Same
 /// user as the daemon, or a Builtin Administrator whose admin group is
 /// ENABLED (not deny-only) / whose token is elevated; anything else — and
 /// every error — is refused.
@@ -470,14 +470,14 @@ fn client_pid_allowed(pid: u32) -> bool {
             return true;
         }
     }
-    // I6: listing Builtin Administrators is not enough — the group must be
+    // listing Builtin Administrators is not enough — the group must be
     // enabled (an unelevated admin's filtered token carries it deny-only), or
     // the token must be elevated outright.
     admin_group_enabled(&groups) || client_auth::token_elevated(pid)
 }
 
 #[cfg(windows)]
-/// I6: does any group in this token ADMIT via Builtin Administrators? The old
+/// does any group in this token ADMIT via Builtin Administrators? The old
 /// check accepted a token that merely LISTS the group — an unelevated admin
 /// process runs on a filtered token where the group is deny-only. Only an
 /// ENABLED membership (deny-only clear) counts here.
@@ -521,7 +521,7 @@ pub async fn start_ipc_server(
     let sd_guard = std::sync::Arc::new(security_descriptor()?);
     let sd_val = sd_guard.0;
 
-    // S3 (update-08): bounded concurrent clients.
+    // bounded concurrent clients.
     let client_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CLIENTS));
 
     let mut server_options = ServerOptions::new();
@@ -564,7 +564,7 @@ pub async fn start_ipc_server(
             res = server.connect() => {
                 match res {
                     Ok(()) => {
-                        // C2 (gate-fix-S2): identify the client before it can
+                        // identify the client before it can
                         // send anything; errors above already failed closed.
                         let allowed = match pipe_client_pid(&server) {
                             Some(pid) => client_pid_allowed(pid),
@@ -573,7 +573,7 @@ pub async fn start_ipc_server(
                         if !allowed {
                             continue;
                         }
-                        // S3 (update-08): at capacity the extra client's pipe
+                        // at capacity the extra client's pipe
                         // end is dropped instead of spawning another handler.
                         let permit = match client_slots.clone().try_acquire_owned() {
                             Ok(permit) => permit,
@@ -587,7 +587,7 @@ pub async fn start_ipc_server(
                         });
                     }
                     Err(_) => {
-                        // S9 (update-08): back off so a persistent connect
+                        // back off so a persistent connect
                         // error cannot spin the CPU.
                         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     }
@@ -600,7 +600,7 @@ pub async fn start_ipc_server(
     Ok(())
 }
 
-// S3 (update-08): inbound client lines are capped at 64 KiB (a request is a
+// inbound client lines are capped at 64 KiB (a request is a
 // small JSON message; anything bigger is abuse) while outbound snapshots keep
 // the 10 MiB ceiling (hundreds of connections serialize large). Concurrent
 // clients are capped so a local user cannot exhaust daemon memory.
@@ -608,7 +608,7 @@ const MAX_CLIENT_LINE: usize = 64 * 1024;
 const MAX_SERVER_LINE: usize = 10 * 1024 * 1024;
 const MAX_CONCURRENT_CLIENTS: usize = 4;
 
-/// PROPOSALS #15: a client has this long to complete the Hello handshake
+/// a client has this long to complete the Hello handshake
 /// before the slot is given up (4 bounded slots: unauthenticated clients
 /// cannot pin the daemon forever).
 const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -645,7 +645,7 @@ async fn handle_connection<S>(
         tokio_util::codec::LinesCodec::new_with_max_length(MAX_SERVER_LINE),
     );
 
-    // PROPOSALS #15: the FIRST client message must be Hello; nothing is sent
+    // the FIRST client message must be Hello; nothing is sent
     // to the client before the handshake completes, and a version mismatch
     // or any other opener is answered with Error and the connection closed.
     let first = tokio::time::timeout(HANDSHAKE_TIMEOUT, reader.next()).await;
@@ -733,7 +733,7 @@ async fn handle_connection<S>(
                     Some(Ok(line)) => {
                         match ClientMessage::from_json_str(&line) {
                             Ok(ClientMessage::SetRules { rules }) => {
-                                // PROPOSALS #10: forwarded to the pipeline,
+                                // forwarded to the pipeline,
                                 // which owns the rule engine and enforcer.
                                 let _ = commands.send(Command::SetRules { rules });
                             }
@@ -758,7 +758,7 @@ async fn handle_connection<S>(
                                 .await;
                             }
                             Err(_) => {
-                                // S10 (update-08): reply once, then close —
+                                // reply once, then close —
                                 // a client that cannot produce a valid
                                 // message gets no second attempt.
                                 let _ = send_server(
@@ -793,7 +793,7 @@ async fn handle_connection<S>(
 mod sddl_tests {
     use super::{security_descriptor, PIPE_SDDL};
 
-    // S1 (update-08): the pipe DACL must never hand GENERIC_ALL to
+    // the pipe DACL must never hand GENERIC_ALL to
     // Interactive Users (that includes FILE_CREATE_PIPE_INSTANCE and
     // WRITE_DAC), while SYSTEM/Administrators stay full-control and the
     // DACL itself is protected.
@@ -815,7 +815,7 @@ mod sddl_tests {
         );
     }
 
-    // S1 call-site split (gate-fix-S1 caveat): the real conversion path used
+    // Call-site split: the real conversion path used
     // by start_ipc_server must accept exactly this const.
     #[test]
     fn test_pipe_sddl_converts_through_the_real_path() {
@@ -871,7 +871,7 @@ mod client_auth_tests {
         );
     }
 
-    // I6 (review-02): an unelevated admin's filtered token still LISTS Builtin
+    // an unelevated admin's filtered token still LISTS Builtin
     // Administrators, but the group is deny-only there. Only an ENABLED
     // membership (deny-only clear) may admit.
     #[test]
@@ -1004,7 +1004,7 @@ mod decision_tests {
 mod peer_tests {
     use super::{effective_uid, peer_allowed};
 
-    // S2 (update-08): root and the daemon's own user are always allowed;
+    // root and the daemon's own user are always allowed;
     // anyone else only via the rat group's gid.
     #[test]
     fn test_peer_allowed_root_and_self() {

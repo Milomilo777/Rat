@@ -1,4 +1,4 @@
-//! Vendored IANA zone reference-city coordinates (PROPOSALS #6).
+//! Vendored IANA zone reference-city coordinates.
 //!
 //! Trimmed from tzdata's `zone.tab` to the zones reachable through the
 //! CLDR Windows-zone mapping in [`crate::windows_tz`], so the home position

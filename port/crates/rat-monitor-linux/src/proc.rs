@@ -18,7 +18,6 @@ pub fn parse_proc_net(content: &str, protocol: Protocol) -> Vec<ProcNetEntry> {
         // tx_queue:rx_queue(4), tr:tm->when(5), retrnsmt(6), uid(7),
         // timeout(8), inode(9). "tr:tm->when" is ONE column - the old
         // labels read the timeout column as uid (inode was still correct).
-        // M7 (update-09).
         let _sl = parts.next();
         let local_str = parts.next();
         let remote_str = parts.next();
@@ -110,7 +109,7 @@ mod edge_tests {
 mod tests {
     #[test]
     fn test_inode_comes_from_column_nine() {
-        // M7 (update-09): every column between st(3) and inode(9) carries
+        // every column between st(3) and inode(9) carries
         // distinctive values; the inode must come from position 9.
         let line = "  1: 0100007F:0050 0200007F:01BB 01 000000AA:000000BB 00000CC 00000DD 00000EE 00100FF 43981 1 2 3 4 5 6 7 8";
         let entries = parse_proc_net(

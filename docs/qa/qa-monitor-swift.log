@@ -1,6 +1,0 @@
-Testing Swift sources on Ubuntu failed deeply within clang::RawComment segmentation faults on all provided swift-6.0.1 and swift-5.10.1 distributions via swift.org, blocking swift test. The requirement evaluation has been analyzed statically through the codebase sources instead since runtime evaluation could not be safely executed. Mac framework reliance (Darwin, SystemConfiguration, BPF, XCTest, etc) also precludes Linux-based testing.
-Deep Layer Fuzzing
-
-Fuzzing native Swift frameworks locally through `swiftc -sanitize=fuzzer` on linux distributions fails intrinsically within the toolchain compiler component `clang::RawComment`. Since the toolchain encounters segmentation faults on the sandbox environment parsing basic files regardless of file contents or configuration modifications, `fuzzer` execution runs over the `RatMonitor` component rules cannot proceed on this runner instance.
-
-Test evaluation was forced into relying purely on codebase analysis and logic flow mapping.

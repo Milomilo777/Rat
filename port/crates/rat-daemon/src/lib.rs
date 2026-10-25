@@ -10,11 +10,11 @@ pub use crate::ipc::start_ipc_server;
 use rat_ledger::{AlertCenterConfig, Ledger, LedgerConfig, RuleEnginePolicy};
 use rat_types::ConnectionSource;
 
-/// The daemon shell (PROPOSALS #10): startup cleanup (#8), then the pipeline
+/// The daemon shell: startup cleanup (#8), then the pipeline
 /// (monitor -> ledger -> policy -> enforcer) and the IPC server until
 /// `shutdown_rx` fires. Returns an error when the IPC endpoint cannot be
 /// claimed — e.g. a second daemon finds the socket/pipe already owned by a
-/// live one (PROPOSALS #9) — so the caller can exit instead of running
+/// live one — so the caller can exit instead of running
 /// headless. `endpoint`/`source`/`backend` are parameters so tests inject a
 /// fake source and a recorder backend; [`run_daemon`] holds the production
 /// wiring.
@@ -43,7 +43,7 @@ pub async fn run_components_trusted(
 ) -> std::io::Result<()> {
     let store = rules_trusted.then(|| std::sync::Arc::new(rat_core::RuleStore::new(rules_path)));
     // The saved plan (Swift RulesModel parity): rules survive restarts and
-    // are the anchor the reconcile below diffs against. review-02 I2: an
+    // are the anchor the reconcile below diffs against. an
     // unparsable rules file is an ERROR (load_set never yields a zero-rule
     // set) — starting from an empty plan would reconcile every real Rat:*
     // rule away (fail-open). Without a recovered plan the startup reconcile
@@ -70,7 +70,6 @@ pub async fn run_components_trusted(
     };
     let policy = RuleEnginePolicy(engine);
 
-    // R2/e2e-01 (macOS parity: repair-at-restart, Enforcer.swift:110-111):
     // RECONCILE, never wipe-then-apply. A cleanup() here would drop wanted
     // rules and leave a fail-open window until the first re-add. Instead:
     // read back what is really in the firewall, adopt it as the backend's
@@ -129,7 +128,7 @@ pub async fn run_components_trusted(
     // recv() also resolves (with Err) when every sender is dropped; treat
     // that as shutdown like an explicit signal.
     //
-    // S9 (update-08): if EITHER task ends on its own the daemon shuts down
+    // if EITHER task ends on its own the daemon shuts down
     // and exits non-zero, so systemd/SCM Restart=on-failure brings it back
     // instead of serving a half-dead process. run_pipeline only returns on
     // shutdown, so a core exit without a pending signal is the failure.

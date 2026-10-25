@@ -88,7 +88,7 @@ impl ConnectionSource for LinuxMonitor {
                                 (None, None)
                             };
 
-                            // M5 (update-09): classify by the best route
+                            // classify by the best route
                             // for the remote (no remote = not marked).
                             let via_vpn = entry
                                 .remote

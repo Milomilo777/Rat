@@ -5,7 +5,7 @@ use std::path::Path;
 pub fn is_vpn_address(proc_root: &Path, addr: IpAddr) -> bool {
     match addr {
         IpAddr::V4(v4) => {
-            // M6 (update-09): pick the LONGEST matching prefix over all
+            // pick the LONGEST matching prefix over all
             // routes, then answer by that route's interface - a tun0 default
             // route must not mark LAN traffic as VPN when a more specific
             // non-VPN route exists.
@@ -67,7 +67,7 @@ pub fn is_vpn_address(proc_root: &Path, addr: IpAddr) -> bool {
                         if valid {
                             if let Ok(prefix_len) = u32::from_str_radix(prefix_len_hex, 16) {
                                 let dest_ip = Ipv6Addr::from(dest_bytes);
-                                // M6 (update-09): longest prefix wins; a
+                                // longest prefix wins; a
                                 // malformed prefix above 128 never matches
                                 // (instead of indexing out of bounds).
                                 if prefix_len <= 128
@@ -143,7 +143,7 @@ tun0	00000A0A	00000000	0001	0	0	0	00FFFFFF	0	0	0
 
     #[test]
     fn test_vpn_default_route_does_not_shadow_specific_route() {
-        // M6 (update-09): tun0 owns the default route, eth0 the specific
+        // tun0 owns the default route, eth0 the specific
         // 10.0.0.0/8 route - the specific route must win.
         let temp_dir = tempfile::tempdir().unwrap();
         let net_dir = temp_dir.path().join("net");
@@ -168,7 +168,7 @@ eth0	0000000A	00000000	0001	0	0	100	000000FF	0	0	0
 
     #[test]
     fn test_v6_prefix_over_128_does_not_panic() {
-        // M6 (update-09): a malformed prefix length above 128 must be
+        // a malformed prefix length above 128 must be
         // ignored, not index out of bounds.
         let temp_dir = tempfile::tempdir().unwrap();
         let net_dir = temp_dir.path().join("net");

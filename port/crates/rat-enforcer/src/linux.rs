@@ -6,7 +6,7 @@ use crate::{Blocklist, Enforcer};
 
 pub struct LinuxEnforcer;
 
-/// S5 (update-08): resolve nft from its known absolute locations instead of
+/// resolve nft from its known absolute locations instead of
 /// PATH / the working directory, so a tampered PATH cannot substitute the
 /// binary the privileged daemon shells out to.
 pub fn nft_path() -> io::Result<std::path::PathBuf> {
@@ -29,7 +29,7 @@ impl Enforcer for LinuxEnforcer {
         crate::nft_plan::nft_script(&wanted.local_ports)
     }
 
-    /// S8 (update-08): drop the whole `inet rat` table on clean shutdown
+    /// drop the whole `inet rat` table on clean shutdown
     /// (systemd's ExecStopPost runs the same command after any exit).
     fn cleanup(&self) -> io::Result<()> {
         let dry_run = crate::dry_run_enabled(env::var("RAT_DRY_RUN").ok().as_deref());
@@ -61,7 +61,7 @@ impl Enforcer for LinuxEnforcer {
                 .spawn()?;
 
             use std::io::Write;
-            // S10 (update-08): remember the write result but ALWAYS reap the
+            // remember the write result but ALWAYS reap the
             // child, so a failed write cannot leave a zombie behind.
             let mut write_result = Ok(());
             if let Some(mut stdin) = child.stdin.take() {

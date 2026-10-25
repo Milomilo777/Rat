@@ -144,7 +144,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ------------------------------------------------------------ scenarios
 
-// PROPOSALS #15: Hello{PROTOCOL_VERSION} is answered with HelloAck; a repeat
+// Hello{PROTOCOL_VERSION} is answered with HelloAck; a repeat
 // Hello gets an error but keeps the connection.
 async fn scenario_hello_ack<S>(stream: S)
 where
@@ -185,7 +185,7 @@ where
     );
 }
 
-// PROPOSALS #15: a mismatched version is answered with Error and closed.
+// a mismatched version is answered with Error and closed.
 async fn scenario_version_mismatch<S>(stream: S)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -219,7 +219,7 @@ where
     );
 }
 
-// PROPOSALS #15: any other opener is rejected — the first message must be
+// any other opener is rejected — the first message must be
 // Hello, and SetRules before it is dropped on the floor.
 async fn scenario_first_message_must_be_hello<S>(stream: S)
 where
@@ -248,7 +248,7 @@ where
     );
 }
 
-// A client that never sends Hello receives nothing (PROPOSALS #15: no
+// A client that never sends Hello receives nothing (no
 // ServerMessage flows before the handshake completes).
 async fn scenario_unhandshaked_gets_nothing<S>(stream: S)
 where
@@ -265,7 +265,7 @@ where
 }
 
 // Malformed and oversized input before the handshake: answered with Error,
-// then closed (S10).
+// then closed.
 async fn scenario_bad_input<S>(stream: S, payload: &[u8], needle: &str)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -538,7 +538,7 @@ fn is_socket(p: &str) -> bool {
         .unwrap_or(false)
 }
 
-// PROPOSALS #9: a second daemon must refuse to start while another daemon's
+// a second daemon must refuse to start while another daemon's
 // socket is live, instead of removing it and binding its own.
 #[cfg(unix)]
 #[tokio::test]
@@ -593,7 +593,7 @@ async fn test_second_daemon_cannot_steal_live_socket() {
     );
 }
 
-// PROPOSALS #9: a socket file left behind by a crashed daemon is not live,
+// a socket file left behind by a crashed daemon is not live,
 // so a new daemon must still be able to reclaim it.
 #[cfg(unix)]
 #[tokio::test]
@@ -639,7 +639,7 @@ async fn test_stale_socket_from_crashed_daemon_is_reclaimed() {
     );
 }
 
-// PROPOSALS #9, named-pipe side: first_pipe_instance(true) must make a second
+// named-pipe side: first_pipe_instance(true) must make a second
 // daemon fail while the first one owns the pipe.
 #[cfg(windows)]
 #[tokio::test]
@@ -702,7 +702,7 @@ async fn test_second_daemon_cannot_steal_live_pipe() {
         .expect("first daemon clean shutdown");
 }
 
-// S3 (update-08): an inbound line over the 64 KiB cap must be rejected with
+// an inbound line over the 64 KiB cap must be rejected with
 // an error reply and the connection closed.
 #[cfg(unix)]
 #[tokio::test]
@@ -830,7 +830,7 @@ async fn test_oversized_client_line_is_rejected_and_closed() {
     ipc_task.await.unwrap().unwrap();
 }
 
-// S3 (update-08): the 5th concurrent client must be refused (connection
+// the 5th concurrent client must be refused (connection
 // closed without service) while the first four stay connected.
 #[cfg(unix)]
 #[tokio::test]
@@ -960,7 +960,7 @@ async fn test_fifth_concurrent_client_is_refused() {
     ipc_task.await.unwrap().unwrap();
 }
 
-// S4 (update-08): the socket is always 0o660 and a directory the daemon
+// the socket is always 0o660 and a directory the daemon
 // created is 0o750, so others cannot reach the socket during the
 // bind->chmod window (runs on CI linux).
 #[cfg(unix)]

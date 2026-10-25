@@ -164,7 +164,7 @@ final class RuleEngineTests: XCTestCase {
         XCTAssertEqual(try RuleStore(url: url).loadSet().unknownNetworkAction, .activate(s.profiles[1].id))
     }
 
-    // MARK: QA Acceptance Tests (R1-R6) — from the qa-core-swift lane; R4 is at the end.
+    // MARK: QA acceptance tests; the disabled/unapproved case is at the end.
 
     func testQAR1RulePrecedenceHigherSpecificityWins() {
         let e = RuleEngine(rules: [
@@ -261,7 +261,7 @@ final class RuleEngineTests: XCTestCase {
         XCTAssertEqual(s.rules.first?.remoteDomain, "migrated.com")
     }
 
-    /// QA R4, documented semantics: a disabled rule never matches; an enabled but unapproved rule
+    /// Documented semantics: a disabled rule never matches; an enabled but unapproved rule
     /// still does (`approved` is a review marker only).
     func testQAR4DisabledNeverMatchesUnapprovedStillMatches() {
         let e = RuleEngine(rules: [

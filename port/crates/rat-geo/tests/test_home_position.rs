@@ -1,4 +1,4 @@
-//! PROPOSALS #6: the home position must resolve on Windows without a
+//! the home position must resolve on Windows without a
 //! system zone.tab, and every zone the CLDR map can produce must have
 //! vendored coordinates (except the Etc/* offsets, which have no reference
 //! city — the Swift app's zone.tab lookup also returns None for them).

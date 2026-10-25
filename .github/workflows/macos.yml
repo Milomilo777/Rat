@@ -3,7 +3,23 @@ name: macOS
 on:
   push:
     branches: [main, 'v1/**']
+    paths:
+      - 'App/**'
+      - 'AppTests/**'
+      - 'RatFilter/**'
+      - 'Enforcerd/**'
+      - 'scripts/**'
+      - 'project.yml'
+      - '.github/workflows/macos.yml'
   pull_request:
+    paths:
+      - 'App/**'
+      - 'AppTests/**'
+      - 'RatFilter/**'
+      - 'Enforcerd/**'
+      - 'scripts/**'
+      - 'project.yml'
+      - '.github/workflows/macos.yml'
   workflow_dispatch:
 
 permissions:

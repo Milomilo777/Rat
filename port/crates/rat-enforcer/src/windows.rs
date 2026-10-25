@@ -3,11 +3,11 @@ use std::io;
 
 use crate::{Blocklist, Enforcer};
 
-/// review-01 R6 test seam: stands in for the spawned netsh child. When set,
+/// test seam: stands in for the spawned netsh child. When set,
 /// apply() routes EVERY command through it instead of spawning (and instead
 /// of the dry-run print) — the seam owns execution, so tests can model real
 /// netsh semantics. `Ok(true)` = exit success, `Ok(false)` = failure exit —
-/// except on `delete rule` commands, where (review-01 R7) `Ok(false)`
+/// except on `delete rule` commands, where `Ok(false)`
 /// models netsh's no-match exit ("No rules match the specified criteria"),
 /// which the reconcile remove loops tolerate; a real delete failure is
 /// `Err` there.
@@ -24,21 +24,21 @@ pub struct WindowsEnforcer {
 pub struct WindowsPlan {
     pub add: Vec<String>,
     pub remove: Vec<String>,
-    /// review-01 R5: denied LOCAL ports to add as per-port rules — the
+    /// denied LOCAL ports to add as per-port rules — the
     /// Windows mirror of the Linux backend's `rat_ports` nft set and the
     /// macOS Ledger's local-port blocks (Ledger.swift:330-332). This is also
     /// what a refused shared host's denied socket gets instead of a silent
     /// no-op ("block by port instead").
     pub add_ports: Vec<u16>,
     pub remove_ports: Vec<u16>,
-    /// W2 (PROPOSALS #1): wanted whole-program blocks that were REFUSED
+    /// wanted whole-program blocks that were REFUSED
     /// because the target is a shared service host (svchost.exe hosts DNS,
     /// DHCP and more for the whole machine). The caller decides how to tell
     /// the user; per-port rules below still apply.
     pub refused: Vec<String>,
-    /// review-01 R8: whole-program entries (from `wanted` or from `current`)
+    /// whole-program entries (from `wanted` or from `current`)
     /// that FAILED path validation. They are reported here and skipped — no
-    /// rule is ever created from or deleted by an unvalidated string (the S6
+    /// rule is ever created from or deleted by an unvalidated string (the validation
     /// invariant), they are never claimed into the enforcer's `current`, and
     /// the REST of the plan still applies. Same contract as `refused`: the
     /// caller decides how to tell the user.
@@ -48,19 +48,19 @@ pub struct WindowsPlan {
 pub fn generate_windows_plan(current: &Blocklist, wanted: &Blocklist) -> WindowsPlan {
     // Avoid O(n^2) nested loops by converting one list to a HashSet, giving O(n) average time complexity.
     let current_set: HashSet<&str> = current.paths.iter().map(String::as_str).collect();
-    // V2: the wanted set in NORMALISED form (what apply() stores in
+    // the wanted set in NORMALISED form (what apply() stores in
     // `current`), so a differently-spelled path (letter case, symlink,
     // trailing dot) diffs equal instead of churning remove + add each tick.
     let mut wanted_set: HashSet<String> = HashSet::new();
 
     let mut add = Vec::new();
     let mut refused = Vec::new();
-    // review-01 R8: entries that fail path validation are REPORTED here and
+    // entries that fail path validation are REPORTED here and
     // skipped — one unenforceable entry must not fail (or silently void) the
     // rest of the plan. Same channel as `refused`: the caller tells the user.
     let mut rejected = Vec::new();
     for path in &wanted.paths {
-        // V2 + R8 (add axis): run apply()'s own validation (rules AND
+        // run apply's own validation (rules AND
         // canonicalisation) FIRST. An invalid wanted path is reported and
         // never becomes a rule; the rest of the plan is unaffected.
         let normalised = match crate::validate_path(path) {
@@ -71,7 +71,7 @@ pub fn generate_windows_plan(current: &Blocklist, wanted: &Blocklist) -> Windows
             }
         };
         wanted_set.insert(normalised.clone());
-        // W2: never block a shared service host per-program — checked on the
+        // never block a shared service host per-program — checked on the
         // RAW and the NORMALISED form (a non-canonical spelling can resolve
         // to one, and apply() aborts the whole plan on such an add). The
         // caller's own spelling is what gets reported.
@@ -91,7 +91,7 @@ pub fn generate_windows_plan(current: &Blocklist, wanted: &Blocklist) -> Windows
         if wanted_set.contains(path) {
             continue;
         }
-        // R8 (remove axis): a rule name that fails the validation rules
+        // a rule name that fails the validation rules
         // (e.g. a hostile hand-made `Rat:path:*` rule picked up by the
         // read-back) cannot be built into a netsh delete command. It is
         // reported and never enters `remove`, so apply() cannot claim it
@@ -104,10 +104,10 @@ pub fn generate_windows_plan(current: &Blocklist, wanted: &Blocklist) -> Windows
         remove.push(path.clone());
     }
 
-    // review-01 R5: the port axis diffs like the path axis. Local ports are
+    // the port axis diffs like the path axis. Local ports are
     // ephemeral, so their churn (denied socket opens/closes) is expected —
     // the ledger's plan drops a closed socket's port from the wanted set and
-    // the diff removes the rule (PROPOSALS #3, Linux parity).
+    // the diff removes the rule.
     let current_ports: HashSet<u16> = current.local_ports.iter().copied().collect();
     let wanted_ports: HashSet<u16> = wanted.local_ports.iter().copied().collect();
     let mut add_ports: Vec<u16> = wanted
@@ -149,7 +149,7 @@ pub fn format_rule_name(path: &str) -> String {
     format!("Rat:path:{}", path)
 }
 
-/// review-01 R5: per-port rules share one name per port so the delete path
+/// per-port rules share one name per port so the delete path
 /// removes every variant at once.
 pub fn format_port_rule_name(port: u16) -> String {
     format!("Rat:port:{}", port)
@@ -171,7 +171,7 @@ fn path_rule_args(name: &str, program: &str) -> Vec<String> {
 }
 
 /// The netsh arguments to delete every rule carrying one display name (the
-/// reconcile remove loop, and — review-01 R6 — the pre-add dedupe).
+/// reconcile remove loop, and the pre-add dedupe).
 fn path_delete_args(name: &str) -> Vec<String> {
     vec![
         "advfirewall".to_string(),
@@ -213,7 +213,7 @@ fn port_delete_args(port: u16) -> Vec<String> {
     ]
 }
 
-/// S5 (update-08): resolve netsh from %SystemRoot% instead of PATH / the
+/// resolve netsh from %SystemRoot% instead of PATH / the
 /// working directory, so a tampered PATH cannot substitute the binary the
 /// privileged daemon shells out to.
 pub fn netsh_path() -> io::Result<std::path::PathBuf> {
@@ -231,7 +231,7 @@ pub fn netsh_path() -> io::Result<std::path::PathBuf> {
     }
 }
 
-/// S5 (update-08): resolve powershell from %SystemRoot% for the wildcard
+/// resolve powershell from %SystemRoot% for the wildcard
 /// rule cleanup (netsh cannot delete by name pattern); same PATH-hardening
 /// rationale as [`netsh_path`].
 pub fn powershell_path() -> io::Result<std::path::PathBuf> {
@@ -267,17 +267,17 @@ impl Enforcer for WindowsEnforcer {
         use std::env;
         use std::process::Command;
 
-        // S6 (update-08): validate AND canonicalize every path before use,
+        // validate AND canonicalize every path before use,
         // so rule names and program= targets always name the real binary.
-        // review-01 R8: ONE invalid path must not fail the whole plan (the
+        // ONE invalid path must not fail the whole plan (the
         // previous `collect()?` aborted every other entry — a hostile
         // read-back rule name or one weird path disabled ALL enforcement).
         // Entries that fail validation are SKIPPED on BOTH axes: no rule is
-        // ever created from or deleted by an unvalidated string (the S6/S7
+        // ever created from or deleted by an unvalidated string (the validation
         // invariant), the skipped entry is never claimed into `current`, and
         // plan() reports it via `WindowsPlan::rejected` for plan-built plans
         // (the caller tells the user); a hand-built plan's skips are the
-        // caller's own to observe. The W2 shared-host refusal below is the
+        // caller's own to observe. The shared-host refusal below is the
         // one remaining whole-plan abort: it refuses to CREATE a dangerous
         // rule, a different class than tolerating an unenforceable one.
         let partition = |paths: &[String]| -> (Vec<String>, Vec<String>) {
@@ -294,7 +294,7 @@ impl Enforcer for WindowsEnforcer {
         let (remove, _skipped_removes) = partition(&plan.remove);
         let (add, _skipped_adds) = partition(&plan.add);
 
-        // W2 (PROPOSALS #1): plan() already refuses shared service hosts; a
+        // plan already refuses shared service hosts; a
         // hand-built plan must not be able to smuggle one through — fail
         // closed, also in dry-run.
         if let Some(path) = add.iter().find(|p| crate::is_shared_service_host(p)) {
@@ -319,7 +319,7 @@ impl Enforcer for WindowsEnforcer {
                 Ok(Command::new(&netsh).args(args).status()?.success())
             }
         };
-        // review-01 R7 + update-19 V1: the reconcile remove loops' delete of
+        // the reconcile remove loops' delete of
         // an ALREADY-GONE rule (user/GPO removed it) exits 1 — success for
         // that delete, because its desired state is already reached. The
         // decision is by EXIT CODES, never by message text: the old
@@ -359,7 +359,7 @@ impl Enforcer for WindowsEnforcer {
 
         for path in &remove {
             let name = format_rule_name(path);
-            // R7/V1: a verified-gone rule's delete is tolerated (see
+            // a verified-gone rule's delete is tolerated (see
             // run_delete); a real failure aborts.
             if !run_delete(
                 &name,
@@ -372,7 +372,7 @@ impl Enforcer for WindowsEnforcer {
 
         for path in &add {
             let name = format_rule_name(path);
-            // R6: netsh `add rule` DUPLICATES a rule whose name already
+            // netsh `add rule` DUPLICATES a rule whose name already
             // exists, so delete any same-name rule first — a stale diff
             // (restart with a failed read-back, a canonicalized rename)
             // would otherwise pile up copies. Best-effort: "no rules match"
@@ -393,11 +393,11 @@ impl Enforcer for WindowsEnforcer {
             }
         }
 
-        // review-01 R5: the port axis. One delete per port (removes all four
+        // the port axis. One delete per port (removes all four
         // variants), four adds per new port (out/in x TCP/UDP).
         for port in &plan.remove_ports {
             let name = format_port_rule_name(*port);
-            // R7/V1: the same exit-code tolerance as the path delete site.
+            // the same exit-code tolerance as the path delete site.
             if !run_delete(
                 &name,
                 &port_delete_args(*port),
@@ -411,7 +411,7 @@ impl Enforcer for WindowsEnforcer {
 
         for port in &plan.add_ports {
             let name = format_port_rule_name(*port);
-            // R6: the same pre-add dedupe as the path axis; one delete
+            // the same pre-add dedupe as the path axis; one delete
             // removes all four variants of the port.
             let _ = run(
                 &port_delete_args(*port),
@@ -432,10 +432,10 @@ impl Enforcer for WindowsEnforcer {
             }
         }
 
-        // R6 part 1: apply() owns the crate's view of reality. Advance
+        // Part 1: apply owns the crate's view of reality. Advance
         // `current` to what the firewall now holds — the VALIDATED names the
         // rules were actually created under, so a later read-back reconcile
-        // sees the same strings (raw-vs-validated normalization is R9). On
+        // sees the same strings (raw-vs-validated normalization is separate). On
         // any failure above, the early returns leave `current` behind so the
         // next diff retries the same change; the pre-add deletes make that
         // retry idempotent instead of duplicating.
@@ -465,7 +465,7 @@ impl Enforcer for WindowsEnforcer {
         Ok(())
     }
 
-    /// S8 (update-08): netsh cannot delete by name pattern, so the wildcard
+    /// netsh cannot delete by name pattern, so the wildcard
     /// cleanup goes through PowerShell's NetSecurity module.
     fn cleanup(&self) -> io::Result<()> {
         use std::env;
@@ -487,7 +487,7 @@ impl Enforcer for WindowsEnforcer {
     }
 }
 
-/// review-01 R5: the wildcard cleanup must remove BOTH rule families this
+/// the wildcard cleanup must remove BOTH rule families this
 /// daemon creates — per-program (`Rat:path:*`) and per-port (`Rat:port:*`).
 pub(crate) const CLEANUP_RULES_QUERY: &str = "Get-NetFirewallRule -DisplayName @('Rat:path:*','Rat:port:*') -ErrorAction SilentlyContinue | Remove-NetFirewallRule";
 
@@ -507,7 +507,7 @@ mod tests {
 
     #[test]
     fn test_windows_cleanup_is_dry_run_safe() {
-        // S7+S8: with the dry-run opt-out set, cleanup must not spawn
+        // with the dry-run opt-out set, cleanup must not spawn
         // any process (verified by it succeeding instantly offline).
         std::env::set_var("RAT_DRY_RUN", "1");
         let enforcer = WindowsEnforcer {
@@ -533,7 +533,7 @@ mod tests {
 
     #[test]
     fn test_windows_plan_diff() {
-        // review-01 R8: plan() validates every path it diffs, so these must
+        // plan() validates every path it diffs, so these must
         // be absolute paths that are valid on the host this test runs on
         // (the plan stage is where an invalid entry is reported and skipped).
         let (old, new) = if cfg!(windows) {
@@ -570,7 +570,7 @@ mod tests {
 
     #[test]
     fn test_windows_plan_refuses_shared_service_host() {
-        // W2 / PROPOSALS #1: svchost.exe must never become a program= rule;
+        // svchost.exe must never become a program= rule;
         // the refusal is reported, not silently dropped.
         let wanted = Blocklist {
             paths: vec![
@@ -593,7 +593,7 @@ mod tests {
 
     #[test]
     fn test_windows_plan_rejects_invalid_path_and_reports_it() {
-        // review-01 R8: ONE invalid path (a `"` cannot occur in a real
+        // ONE invalid path (a `"` cannot occur in a real
         // Windows filename) must not fail or void the plan — it is reported
         // in `rejected` and skipped, the rest of the plan still applies.
         let good = r"C:\Apps\Denied\app.exe";
@@ -618,7 +618,7 @@ mod tests {
 
     #[test]
     fn test_windows_plan_invalid_current_path_reported_not_removed() {
-        // review-01 R8 (remove axis): a rule name that fails validation (a
+        // Remove axis: a rule name that fails validation (a
         // hostile read-back entry, e.g. a hand-made `Rat:path:*` rule) cannot
         // be built into a netsh delete command. It is reported and never
         // enters `remove` — so apply() cannot claim it gone and the entry
@@ -646,7 +646,7 @@ mod tests {
         assert_eq!(plan.rejected, vec![bad.to_string()]);
     }
 
-    /// V2 test helper: a private temp directory removed on drop.
+    /// test helper: a private temp directory removed on drop.
     struct TempDir(std::path::PathBuf);
     impl TempDir {
         fn new(tag: &str) -> Self {
@@ -675,7 +675,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn test_windows_plan_normalised_path_no_churn_across_ticks() {
-        // V2: current holds NORMALISED paths (apply() stores them). The same
+        // current holds NORMALISED paths (apply() stores them). The same
         // program wanted in another letter case must diff equal, not churn
         // a remove + add every tick.
         let dir = TempDir::new("case");
@@ -722,7 +722,7 @@ mod tests {
 
     #[test]
     fn test_windows_plan_noncanonical_shared_host_is_refused() {
-        // V2: a path that only NORMALISES to a shared service host (trailing
+        // a path that only NORMALISES to a shared service host (trailing
         // dot on Windows, a symlink elsewhere) must be refused at plan time,
         // not planned and then abort apply(); other adds are still planned.
         let dir = TempDir::new("shared");
@@ -761,7 +761,7 @@ mod tests {
 
     #[test]
     fn test_windows_plan_invalid_wanted_path_reported_valid_planned() {
-        // V2: validation runs first; an invalid wanted path is reported in
+        // validation runs first; an invalid wanted path is reported in
         // `rejected` and the valid existing paths are still planned
         // (in normalised form).
         let dir = TempDir::new("invalid");
@@ -810,7 +810,7 @@ mod tests {
 
     #[test]
     fn test_windows_plan_ports_diff() {
-        // review-01 R5: the port axis diffs like the path axis, sorted and
+        // the port axis diffs like the path axis, sorted and
         // deduplicated.
         let current = Blocklist {
             paths: vec![],
@@ -833,7 +833,7 @@ mod tests {
 
     #[test]
     fn test_windows_plan_refused_host_keeps_port_axis() {
-        // review-01 R5: a refused shared service host must not be a silent
+        // a refused shared service host must not be a silent
         // no-op — the denied socket's local port still becomes a per-port
         // rule ("block by port instead").
         let svchost = r"C:\Windows\System32\svchost.exe";
@@ -879,7 +879,7 @@ mod tests {
 
     #[test]
     fn test_windows_cleanup_covers_both_rule_families() {
-        // review-01 R5: cleanup must remove per-path AND per-port rules.
+        // cleanup must remove per-path AND per-port rules.
         assert!(CLEANUP_RULES_QUERY.contains("'Rat:path:*'"));
         assert!(CLEANUP_RULES_QUERY.contains("'Rat:port:*'"));
         assert!(CLEANUP_RULES_QUERY.contains("Remove-NetFirewallRule"));
@@ -909,7 +909,7 @@ mod tests {
 
     #[test]
     fn test_windows_apply_reports_invalid_path_and_applies_rest() {
-        // S7 (update-08) as amended by review-01 R8: the S7 invariant stands
+        // The no-rule-for-an-invalid-path invariant stands
         // — no rule is ever created for a path that fails validate_path, not
         // even in dry-run — but ONE invalid path must no longer abort the
         // whole plan: it is reported (plan.rejected) and skipped, the rest
@@ -942,7 +942,7 @@ mod tests {
 
     #[test]
     fn test_windows_plan_performance_budget() {
-        // review-01 R8: plan() validates (and canonicalizes) every path, so
+        // plan() validates (and canonicalizes) every path, so
         // the budget must hold WITH that cost, on host-valid absolute paths.
         let prefix = if cfg!(windows) {
             r"C:\Apps\Perf"
@@ -976,13 +976,13 @@ mod tests {
         let plan = enforcer.plan(&wanted);
         let duration = start.elapsed();
 
-        // Budget for a 5000-path diff. Since v1 (review V2) plan() canonicalises
+        // Budget for a 5000-path diff. Since v1 the plan canonicalises
         // every wanted path once (one filesystem call each, ~30 us on Windows,
         // measured ~150 ms here in a debug build), so the old 50 ms no-I/O
         // budget no longer applies; real rule sets hold tens of paths.
         assert!(
             duration.as_millis() < 500,
-            "5000-path plan took {duration:?} (debug build, loaded-host flake documented in PROPOSALS #7)"
+            "5000-path plan took {duration:?} (debug build, loaded-host flake possible)"
         );
 
         // Memory usage bounds (string array pointers should be small, actual allocations too).
@@ -1044,7 +1044,7 @@ mod tests {
         }
     }
 
-    // review-01 R6: apply() twice must leave the live rule count at the plan
+    // apply() twice must leave the live rule count at the plan
     // size. Real netsh cannot run in tests, so these inject a runner that
     // models its actual duplicate-on-add semantics.
     #[cfg(windows)]
@@ -1055,10 +1055,10 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         /// Stands in for netsh.exe with its REAL semantics: `add rule name=N`
-        /// on an existing N adds a DUPLICATE (the defect R6 reports);
+        /// on an existing N adds a DUPLICATE;
         /// `delete rule name=N` removes every N, or exits nonzero when none
         /// match ("No rules match the specified criteria"); `show rule name=N`
-        /// (update-19 V1) is read-only and exits 0 iff a rule named N exists.
+        /// is read-only and exits 0 iff a rule named N exists.
         struct FakeNetsh {
             rules: Mutex<HashMap<String, usize>>,
         }
@@ -1112,7 +1112,7 @@ mod tests {
         #[test]
         fn test_windows_apply_twice_live_count_equals_plan_size() {
             // One plan's worth of firewall rules: 1 per-program rule + 4
-            // per-port variants (out/in x TCP/UDP, review-01 R5).
+            // per-port variants (out/in x TCP/UDP).
             let fake = Arc::new(FakeNetsh {
                 rules: Mutex::new(HashMap::new()),
             });
@@ -1134,7 +1134,7 @@ mod tests {
                 "four live port rules after the first apply"
             );
 
-            // R6 part 1: apply() must advance `current`, so planning the same
+            // Part 1: apply must advance `current`, so planning the same
             // wanted state again is empty — and the second apply cannot touch
             // the firewall. (Pre-fix, `current` stayed empty and the plan was
             // identical, so netsh added every rule a second time.)
@@ -1161,7 +1161,7 @@ mod tests {
 
         #[test]
         fn test_windows_apply_fresh_enforcer_never_duplicates() {
-            // R6 part 2: a NEW enforcer (restart; read-back failed so
+            // Part 2: a NEW enforcer (restart; read-back failed so
             // `current` is empty again) re-plans the same wanted state. netsh
             // add duplicates on an existing name, so apply deletes any
             // same-name rule before adding: the live count stays at the plan
@@ -1198,12 +1198,12 @@ mod tests {
             assert!(second.plan(&wanted()).add.is_empty());
         }
 
-        // review-01 R7: `delete rule name=N` on an ALREADY-GONE rule (the
+        // `delete rule name=N` on an ALREADY-GONE rule (the
         // user or GPO removed it behind the daemon's back) exits 1 with "No
         // rules match the specified criteria". That is success for a
         // reconcile delete — the rule's desired state is already reached —
         // and the rest of the plan must still be applied. Both delete sites
-        // (path and port, the R5 axis) get their own test.
+        // (path and port) get their own test.
         #[test]
         fn test_windows_apply_survives_pre_deleted_path_rule() {
             let fake = Arc::new(FakeNetsh {
@@ -1242,7 +1242,7 @@ mod tests {
 
         #[test]
         fn test_windows_apply_survives_pre_deleted_port_rule() {
-            // R5 note on R7: the per-port delete site has the same
+            // The per-port delete site has the same
             // !success() -> Err pattern and the same tolerance.
             let fake = Arc::new(FakeNetsh {
                 rules: Mutex::new(HashMap::new()),
@@ -1275,10 +1275,10 @@ mod tests {
             );
         }
 
-        // review-01 R8: a hand-built plan (the daemon never builds one — this
+        // a hand-built plan (the daemon never builds one — this
         // is apply()'s own defense) with ONE invalid entry must not abort the
         // whole plan either: the invalid entry is skipped (no rule is created
-        // from or deleted by an unvalidated string — the S6/S7 invariant),
+        // from or deleted by an unvalidated string),
         // never claimed into `current`, and the rest applies. Both validated()
         // call sites (add and remove axis) get their own test.
         #[test]
@@ -1335,7 +1335,7 @@ mod tests {
                 runner: Some(Arc::new(move |exe: &Path, args: &[String]| {
                     if args.iter().any(|a| a.contains("bad")) {
                         // If apply ever built a delete from the unvalidated
-                        // name, this Err would abort the plan (pre-R8 shape).
+                        // name, this Err would abort the plan (earlier shape).
                         return Err(io::Error::other("delete attempted on unvalidated name"));
                     }
                     shared.run(exe, args)
@@ -1352,7 +1352,7 @@ mod tests {
             enforcer
                 .apply(&plan)
                 .expect("an invalid remove must not fail the whole plan");
-            // The valid stale entry was deleted (R7: no-match is tolerated);
+            // The valid stale entry was deleted (no-match is tolerated);
             // the invalid name was never touched.
             assert_eq!(fake.count(&format_rule_name(gone)), 0);
             assert!(
@@ -1363,7 +1363,7 @@ mod tests {
 
         #[test]
         fn test_windows_apply_real_delete_failure_still_aborts() {
-            // R7's tolerance is only for the no-match exit: a real delete
+            // the tolerance is only for the no-match exit: a real delete
             // failure (seam Err) still fails the apply, so `current` stays
             // behind and the next diff retries — nothing else is applied.
             let fake = Arc::new(FakeNetsh {
@@ -1400,7 +1400,7 @@ mod tests {
             );
         }
 
-        // update-19 V1: the already-gone decision must never depend on the
+        // the already-gone decision must never depend on the
         // message TEXT (the old English-only "no rules match" grep fails
         // open on a localized Windows: every tick errors, `current` never
         // advances, no new block is ever applied). The decision is by EXIT
@@ -1493,7 +1493,7 @@ mod tests {
                 "current must advance past a localized no-match delete"
             );
             // The decision went through the exit-code probe, not blind
-            // tolerance (pre-V1 the old code tolerated without probing).
+            // tolerance (the old code tolerated without probing).
             assert!(
                 fake.seen
                     .lock()

@@ -48,7 +48,7 @@ fn test_optional_fields_decode_from_null() {
 
 #[test]
 fn test_via_vpn_is_on_the_wire() {
-    // M5: the field is serialized (post-field readers see it), and pre-field
+    // the field is serialized (post-field readers see it), and pre-field
     // JSON still decodes (compat.rs pins that half).
     let json = serde_json::to_string(&sample_connection()).expect("serialize");
     assert!(json.contains(r#""via_vpn":true"#), "got {json}");
@@ -65,7 +65,7 @@ fn test_protocol_wire_spellings() {
         serde_json::from_str::<Protocol>(r#""Udp""#).expect("Udp"),
         Protocol::Udp
     );
-    // ...Swift's lowercase raw values decode (aliases, PROPOSALS #11)...
+    // ...Swift's lowercase raw values decode (aliases)...
     assert_eq!(
         serde_json::from_str::<Protocol>(r#""tcp""#).expect("tcp alias"),
         Protocol::Tcp
@@ -75,7 +75,7 @@ fn test_protocol_wire_spellings() {
         Protocol::Udp
     );
     // ...and the SERIALIZED form stays the canonical spelling (wire-format
-    // note in ZCODE/parity.md §7: a Swift-side consumer would need this).
+    // a Swift-side consumer would need this).
     assert_eq!(
         serde_json::to_string(&Protocol::Tcp).expect("serialize Tcp"),
         r#""Tcp""#

@@ -1,4 +1,4 @@
-//! M5 (update-09): `Connection` gained a `via_vpn` field; pre-field JSON
+//! `Connection` gained a `via_vpn` field; pre-field JSON
 //! (daemon snapshots, persisted ledgers) must keep decoding.
 
 use rat_types::Connection;

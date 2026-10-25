@@ -43,7 +43,7 @@ final class GeoTests: XCTestCase {
         XCTAssertNotNil(TimeZoneLocator.coordinates(forZone: "Europe/Berlin"))
     }
 
-    // MARK: QA Acceptance Tests (R7, R8, R9, R10) — from the qa-core-swift lane
+    // MARK: QA acceptance tests
 
     func testQAR7MalformedFileRejection() {
         XCTAssertThrowsError(try MMDB(data: Data("completely garbage file content".utf8)))

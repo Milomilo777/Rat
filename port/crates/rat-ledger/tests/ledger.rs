@@ -1,4 +1,4 @@
-//! rat-ledger acceptance tests (spec ZCODE/specs/port-ledger.md, R1..R6).
+//! rat-ledger acceptance tests.
 //! Fake policy + fake samples + explicit time; no real clock, no real names.
 
 use rat_core::{Lifetime, Verdict};
@@ -93,7 +93,7 @@ fn net_remote(port: u16) -> SocketAddr {
     addr([1, 2, 3, 4], port)
 }
 
-// ---------- R1: grouping ----------
+// ---------- grouping ----------
 
 #[test]
 fn test_r1_groups_pids_by_exe_path() {
@@ -145,7 +145,7 @@ fn test_r1_missing_exe_groups_unknown() {
     );
 }
 
-// ---------- R2: totals + rates, never negative ----------
+// ---------- totals + rates, never negative ----------
 
 #[test]
 fn test_r2_totals_and_rates_accumulate() {
@@ -255,7 +255,7 @@ fn test_r2_rates_ring_caps_at_14() {
     );
 }
 
-// ---------- R3: alert dedup / revalidation / once ----------
+// ---------- alert dedup / revalidation / once ----------
 
 #[test]
 fn test_r3_one_alert_per_app_and_address() {
@@ -372,7 +372,7 @@ fn test_r3_warmup_suppresses_alerts() {
     );
 }
 
-// ---------- R4: derived enforcement ----------
+// ---------- derived enforcement ----------
 
 #[test]
 fn test_r4_denied_connection_puts_local_port_in_plan() {
@@ -444,7 +444,7 @@ fn test_r4_port_zero_and_loopback_never_listed() {
     );
 }
 
-// ---------- R5: timeout ----------
+// ---------- timeout ----------
 
 #[test]
 fn test_r5_timeout_resolves_to_configured_default() {
@@ -496,7 +496,7 @@ fn test_r5_timeout_zero_never_fires() {
     assert!(center.current().is_some());
 }
 
-// ---------- R6: v1.2.0 details carried ----------
+// ---------- v1.2.0 details carried ----------
 
 #[test]
 fn test_r6_details_carried_on_remote_entries() {

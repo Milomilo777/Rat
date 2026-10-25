@@ -153,7 +153,7 @@ impl TimeZoneLocator {
     }
 
     /// Reference-city coordinates for an IANA zone from the vendored table
-    /// (PROPOSALS #6): no filesystem access, works on every OS.
+    /// no filesystem access, works on every OS.
     pub fn zone_coordinates(zone_name: &str) -> Option<(f64, f64)> {
         let coords = crate::zone_coords::ZONE_COORDS
             .iter()

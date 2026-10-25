@@ -15,15 +15,15 @@ pub struct Blocklist {
 pub trait Enforcer {
     type Plan;
     fn plan(&self, wanted: &Blocklist) -> Self::Plan;
-    /// review-01 R6: apply() OWNS the enforcer's notion of the current
+    /// apply() OWNS the enforcer's notion of the current
     /// state. A Windows implementation advances `current` to the plan's
     /// outcome on success (so re-planning an unchanged wanted state is an
     /// empty diff) and leaves it behind on failure (the next diff retries);
     /// its add path must be idempotent, because netsh duplicates a rule when
     /// the name already exists.
     fn apply(&mut self, plan: &Self::Plan) -> io::Result<()>;
-    /// S8 (update-08): remove every rule this enforcer created. Called on
-    /// start and on clean shutdown (daemon wiring, PROPOSALS #10) so
+    /// remove every rule this enforcer created. Called on
+    /// start and on clean shutdown (daemon wiring) so
     /// persistent rules do not survive crashes as duplicates; systemd's
     /// ExecStopPost covers the linux daemon meanwhile.
     fn cleanup(&self) -> io::Result<()> {
@@ -31,7 +31,7 @@ pub trait Enforcer {
     }
 }
 
-/// S7 (update-08): the enforcer RUNS by default; `RAT_DRY_RUN=1` is the
+/// the enforcer RUNS by default; `RAT_DRY_RUN=1` is the
 /// explicit opt-out for tests and dry runs. (Previously nothing was ever
 /// enforced unless `RAT_ENFORCE=1` was set — including in production.)
 pub fn dry_run_enabled(env_value: Option<&str>) -> bool {
@@ -39,16 +39,16 @@ pub fn dry_run_enabled(env_value: Option<&str>) -> bool {
 }
 
 /// The rejection rules of [`validate_path`] WITHOUT the canonicalize: `None`
-/// means the path would pass. review-01 R8: plan() decides reject-vs-report
+/// means the path would pass. plan decides reject-vs-report
 /// with this — it is pure string work (no filesystem access, so the
-/// PROPOSALS #7 plan budget holds) and it is EXACTLY apply()'s rejection
+/// plan budget holds) and it is EXACTLY apply()'s rejection
 /// set, because the canonicalize step never rejects (a not-yet-existing
 /// target passes as-is).
 pub fn path_validation_error(path: &str) -> Option<&'static str> {
     // Byte-level scans, exactly equivalent to the char-level checks: every
     // delimiter and match target is ASCII, and UTF-8 continuation bytes are
     // never ASCII, so a multibyte character can neither match nor split.
-    // plan() runs this per path per tick (PROPOSALS #7 budget) and the
+    // plan() runs this per path per tick and the
     // debug-build char-pattern iterators measured ~4µs per 25-char path
     // (39ms/10000) — the byte scan is ~10x cheaper.
     if path
@@ -73,14 +73,14 @@ pub fn path_validation_error(path: &str) -> Option<&'static str> {
     None
 }
 
-/// S6 (update-08): an enforcer path must be absolute, free of `..` segments,
+/// an enforcer path must be absolute, free of `..` segments,
 /// free of characters that cannot occur in a real filename or that could
 /// confuse netsh's `name=` parsing (`"` is impossible in a Windows filename,
 /// CR/LF are control characters; `;` stays rejected as defense-in-depth even
-/// though no shell is involved — PROPOSALS review-01 R8 follow-up), and
+/// though no shell is involved), and
 /// canonicalized (symlinks/junctions resolved) when the target exists, so a
 /// rule cannot point validation at one file and enforcement at another.
-/// review-01 R8: `'` IS accepted — it is a legal Windows filename character
+/// `'` IS accepted — it is a legal Windows filename character
 /// and no shell is involved anywhere (netsh is spawned via Command::args), so
 /// an apostrophe in a user path (O'Brien) must not make the path
 /// unenforceable.
@@ -100,7 +100,7 @@ pub fn validate_path(path: &str) -> Result<String, &'static str> {
     }
 }
 
-/// W2 (update-04 architecture review / PROPOSALS #1): svchost.exe hosts DNS
+/// svchost.exe hosts DNS
 /// (Dnscache), DHCP and many other services for the WHOLE machine — a
 /// per-program block rule for it cuts them all at once. Whole-program
 /// enforcement of shared service hosts is refused instead (see
@@ -118,7 +118,7 @@ mod tests {
     use super::*;
     #[test]
     fn test_dry_run_is_opt_in() {
-        // S7 (update-08): enforcing by default; RAT_DRY_RUN=1 opts out.
+        // enforcing by default; RAT_DRY_RUN=1 opts out.
         assert!(!dry_run_enabled(None), "must enforce when unset");
         assert!(dry_run_enabled(Some("1")));
         assert!(!dry_run_enabled(Some("0")));
@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn test_shared_service_host_detection() {
-        // W2 / PROPOSALS #1: svchost.exe must never be blocked per-program.
+        // svchost.exe must never be blocked per-program.
         assert!(is_shared_service_host("C:\\Windows\\System32\\svchost.exe"));
         assert!(is_shared_service_host("C:\\Windows\\System32\\SVCHOST.EXE"));
         assert!(is_shared_service_host("svchost.exe"));
@@ -156,7 +156,7 @@ mod tests {
         assert!(validate_path("/usr/bin/app\"").is_err());
         assert!(validate_path("/usr/bin/app\n").is_err());
         assert!(validate_path("/usr/bin/app\r").is_err());
-        // review-01 R8: an apostrophe is a legal filename character on
+        // an apostrophe is a legal filename character on
         // Windows and no shell is involved (netsh is spawned via
         // Command::args), so O'Brien-style paths must be enforceable.
         if cfg!(windows) {
@@ -165,7 +165,7 @@ mod tests {
             assert!(validate_path("/usr/bin/app'").is_ok());
         }
         assert!(validate_path("/usr/bin/رنامه").is_ok() || cfg!(windows));
-        // S6: relative, parent-hopping, and env-var strings are rejected.
+        // relative, parent-hopping, and env-var strings are rejected.
         assert!(validate_path("app.exe").is_err(), "relative rejected");
         assert!(validate_path("./app").is_err(), "dot-relative rejected");
         assert!(validate_path("/usr/bin/../app").is_err(), ".. rejected");
@@ -200,7 +200,7 @@ mod tests {
         }
 
         #[test]
-        // review-01 R8: `'` is legal, so it left the rejected class.
+        // `'` is legal, so it left the rejected class.
         fn proptest_validate_path_rejects_bad_chars(s in ".*[\";\n\r].*") {
             assert!(validate_path(&s).is_err());
         }

@@ -1,4 +1,4 @@
-//! PROPOSALS #10 wiring tests: monitor -> ledger -> policy -> enforcer via
+//! wiring tests: monitor -> ledger -> policy -> enforcer via
 //! run_pipeline, and the #8/e2e-01 restart obligations via run_components:
 //! startup RECONCILES (read existing rules, diff against the saved plan,
 //! never wipe-then-apply) before the IPC endpoint serves, a clean stop KEEPS
@@ -262,10 +262,10 @@ fn test_endpoint(tag: &str) -> String {
     }
 }
 
-// PROPOSALS #10: SetRules must reach the rule engine and produce an
+// SetRules must reach the rule engine and produce an
 // enforcement diff on the backend WITHOUT waiting for the next sample tick;
 // the ledger's plan (denied app + the denied socket's LOCAL port) unions with
-// the static anchor the saved rules demand (R4 / L2 wiring).
+// the static anchor the saved rules demand (L2 wiring).
 #[tokio::test]
 async fn test_set_rules_enforces_denied_app_and_local_port() {
     let app = test_app();
@@ -323,7 +323,7 @@ async fn test_set_rules_enforces_denied_app_and_local_port() {
         .unwrap();
 }
 
-// PROPOSALS #10: an unknown connection (default verdict Ask) queues an alert
+// an unknown connection (default verdict Ask) queues an alert
 // after warmup; the AlertRequest goes out with an id, and the matching
 // AlertAnswer takes the alert out of the queue, creates the rule and
 // enforces it (port of RulesModel.addRule(from:verdict:scope:lifetime:)).
@@ -392,7 +392,7 @@ async fn test_alert_answer_creates_rule_and_enforces() {
         .unwrap();
 }
 
-// PROPOSALS #10: an AlertAnswer with a stale id (no matching current alert)
+// an AlertAnswer with a stale id (no matching current alert)
 // must be ignored — no rule, no enforcement.
 #[tokio::test]
 async fn test_stale_alert_answer_is_ignored() {
@@ -445,7 +445,7 @@ async fn test_stale_alert_answer_is_ignored() {
         .unwrap();
 }
 
-// e2e-01/R2, the restart scenario (W4): the rules file holds ONE wanted deny
+// The restart scenario (W4): the rules file holds ONE wanted deny
 // (W); the live firewall holds W + two stale rules from a predecessor. The
 // daemon must (1) read the existing rules back, (2) reconcile BEFORE the IPC
 // endpoint serves, (3) ask for exactly the wanted set — the diff keeps W and
@@ -602,8 +602,8 @@ async fn test_stop_keeps_rules_no_cleanup_on_shutdown() {
     );
 }
 
-// e2e-01 item 1's fake-enforcer rule: never real firewall changes in unit
-// tests. review-02 I2 redefined what a garbage rules file means: it is an
+// Fake-enforcer rule: never real firewall changes in unit
+// tests. A garbage rules file is an
 // ERROR, and the daemon keeps the current firewall state (no startup
 // reconcile, nothing adopted — seeding `current` is what lets the diff
 // remove rules) while it still SERVES. Every enforcement round that runs
@@ -660,7 +660,7 @@ async fn test_corrupt_rules_file_daemon_still_serves() {
         .expect("clean shutdown is not an error");
 }
 
-// review-02 I2, the prescribed fail-open scenario: rules.json truncated
+// the prescribed fail-open scenario: rules.json truncated
 // MID-JSON (a crash during a non-atomic save) with a firewall preloaded with
 // a predecessor's rules. The truncated file must not become a zero-rule plan:
 // the daemon serves, the preloaded state is never adopted, and no enforcement
@@ -727,10 +727,10 @@ async fn test_truncated_rules_file_keeps_current_firewall_state() {
         .expect("clean shutdown is not an error");
 }
 
-// The R2 diff itself on the REAL windows backend: after adopting what the
+// The reconcile diff itself on the REAL windows backend: after adopting what the
 // firewall read-back reported, the plan must remove exactly the stale rules
-// and never the wanted one — reconcile, not wipe-then-apply. review-01 R5:
-// the port axis diffs the same way (stale port rule goes, wanted port is
+// and never the wanted one — reconcile, not wipe-then-apply.
+// The port axis diffs the same way (stale port rule goes, wanted port is
 // added).
 #[cfg(windows)]
 #[test]
@@ -821,7 +821,7 @@ async fn test_set_rules_persists_to_store() {
     assert!(loaded[0].enabled && loaded[0].approved);
 }
 
-// PROPOSALS #10: a failing enforcement backend must not kill the pipeline —
+// a failing enforcement backend must not kill the pipeline —
 // the monitor keeps running and the next tick retries the diff.
 #[tokio::test]
 async fn test_enforcement_failure_does_not_stop_the_pipeline() {
@@ -871,7 +871,7 @@ async fn test_enforcement_failure_does_not_stop_the_pipeline() {
 fn test_windows_backend_refuses_shared_host_and_enforces_paths() {
     use rat_enforcer::Blocklist;
 
-    // S7: RAT_DRY_RUN makes apply() a no-op printer, so the backend diff and
+    // RAT_DRY_RUN makes apply() a no-op printer, so the backend diff and
     // refusal logic run for real without touching the firewall.
     std::env::set_var("RAT_DRY_RUN", "1");
 
@@ -904,7 +904,7 @@ fn test_windows_backend_refuses_shared_host_and_enforces_paths() {
     assert!(!outcome.applied, "unchanged state must not re-apply");
 }
 
-// review-01 R5: the Windows backend must enforce the denied sockets' LOCAL
+// the Windows backend must enforce the denied sockets' LOCAL
 // ports (the port axis, macOS Ledger.swift:330 parity) instead of silently
 // dropping them — and a refused shared host's denied socket port must still
 // land as a per-port rule ("block by port instead" must not be a no-op).
@@ -929,7 +929,7 @@ fn test_windows_backend_enforces_denied_local_ports() {
     let outcome = backend.enforce(&wanted).expect("dry-run enforce");
     assert!(!outcome.applied, "unchanged port set must not re-apply");
 
-    // A port that dropped out (socket closed, PROPOSALS #3) is part of the
+    // A port that dropped out (socket closed) is part of the
     // next diff, like on the Linux backend.
     let outcome = backend
         .enforce(&Blocklist {
@@ -940,7 +940,7 @@ fn test_windows_backend_enforces_denied_local_ports() {
     assert!(outcome.applied, "port removal re-applies the ruleset");
 }
 
-// review-01 R8: ONE invalid path (a `"` cannot occur in a real Windows
+// ONE invalid path (a `"` cannot occur in a real Windows
 // filename) must not fail the whole enforce — the backend reports it in
 // `outcome.rejected`, skips it, and applies the rest. The skipped entry
 // must also not churn the diff: the next tick with the same wanted state is
@@ -1001,7 +1001,7 @@ fn test_linux_backend_enforces_and_skips_unchanged() {
     let outcome = backend.enforce(&wanted).expect("dry-run enforce");
     assert!(!outcome.applied, "unchanged state must not re-apply");
 
-    // A port that dropped out (socket closed, PROPOSALS #3) is part of the
+    // A port that dropped out (socket closed) is part of the
     // next diff.
     let outcome = backend
         .enforce(&Blocklist {

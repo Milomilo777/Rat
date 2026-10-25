@@ -3,14 +3,14 @@ use rat_ledger::{Alert, AnswerScope};
 use rat_types::Connection;
 use serde::{Deserialize, Serialize};
 
-/// PROPOSALS #15: bumped on every breaking protocol change. The FIRST client
+/// bumped on every breaking protocol change. The FIRST client
 /// message must be `Hello { protocol_version }`; a mismatched client is
 /// answered with `Error` and closed (see ipc::handle_connection).
 pub const PROTOCOL_VERSION: u32 = 1;
 
-/// PROPOSALS #16: everything an IPC CLIENT may send. Split from the one
+/// everything an IPC CLIENT may send. Split from the one
 /// `Message` enum so a connected client cannot send server-side message
-/// types (update-08 S10) and the daemon never parses its own output.
+/// types and the daemon never parses its own output.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClientMessage {
     Hello {
@@ -30,7 +30,7 @@ pub enum ClientMessage {
     },
 }
 
-/// PROPOSALS #16: everything the DAEMON sends. No ServerMessage reaches a
+/// everything the DAEMON sends. No ServerMessage reaches a
 /// client before its Hello completed (#15).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ServerMessage {
@@ -164,7 +164,7 @@ mod tests {
         assert!(err2.is_err());
     }
 
-    // PROPOSALS #16: the split must be real — a client message type must not
+    // the split must be real — a client message type must not
     // decode as a server message and vice versa.
     #[test]
     fn test_directions_do_not_cross() {

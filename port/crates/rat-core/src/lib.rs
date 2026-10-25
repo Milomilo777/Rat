@@ -687,7 +687,7 @@ impl RuleEngine {
                     && !(r.group_id.is_some_and(|gid| disabled_groups.contains(&gid)))
             })
             // `enabled` gates matching (enforced again in Rule::matches); `approved` is a review
-            // marker only and never gates matching - supervisor update-16, upstream CLAUDE.md.
+            // marker only and never gates matching.
             .filter(|r| r.matches(c))
             .max_by(|a, b| {
                 if a.specificity() != b.specificity() {
@@ -807,7 +807,7 @@ impl RuleStore {
             return Ok(s);
         }
         // The main file exists but is unparsable (e.g. truncated mid-JSON by
-        // a crash). review-02 I2: this is an ERROR, never an empty rule set
+        // a crash). this is an ERROR, never an empty rule set
         // with Ok — a zero-rule set makes the daemon reconcile every real
         // Rat:* rule away. First try the recovery copy the atomic save keeps.
         let bak = sibling_path(&self.url, ".bak");
@@ -847,7 +847,7 @@ impl RuleStore {
         let mut s = set.clone();
         s.rules.retain(|r| r.lifetime == Lifetime::Forever);
         let data = serde_json::to_string_pretty(&s).map_err(std::io::Error::other)?;
-        // review-02 I2: the save is atomic — write a sibling temp file, push
+        // the save is atomic — write a sibling temp file, push
         // it to disk, keep the previous content as `.bak`, then rename over
         // the real file. A crash mid-save can no longer leave a truncated
         // rules.json that a restart would read as zero rules.
@@ -985,9 +985,9 @@ mod tests {
         assert_eq!(e.evaluate(&conn("a.com", 443)), Verdict::Deny);
     }
 
-    /// Documented semantics (CLAUDE.md, the `approved` field doc): `approved` is a review marker
+    /// Documented semantics (the `approved` field doc): `approved` is a review marker
     /// only - an enabled but unapproved rule still matches; `enabled` gates matching
-    /// (`Rule::matches`). Supervisor update-16.
+    /// (`Rule::matches`).
     #[test]
     fn test_unapproved_still_matches_but_disabled_never_does() {
         let mut r1 = new_rule();
@@ -1281,7 +1281,7 @@ mod tests {
         );
     }
 
-    // R2: JSON format byte-compatible both ways with Swift
+    // JSON format byte-compatible both ways with Swift
     #[test]
     fn test_r2_json_byte_compatibility() {
         let json_str = r#"{
@@ -1307,7 +1307,7 @@ mod tests {
         assert!(out_str.contains(r#""remoteDomain": "example.com""#));
     }
 
-    // R3: Path normalization handling case-insensitivity on Windows
+    // Path normalization handling case-insensitivity on Windows
     #[test]
     fn test_r3_path_normalization() {
         let p1 = AppIdentity::new(None, None, r"C:\Program Files\App\app.exe".to_string());
@@ -1377,7 +1377,7 @@ mod load_tests {
     use std::fs;
     use tempfile::tempdir;
 
-    // review-02 I2: an unparsable rules file is an ERROR, never Ok with zero
+    // an unparsable rules file is an ERROR, never Ok with zero
     // rules — a zero-rule set makes the daemon reconcile every real Rat:*
     // rule away (fail-open).
     #[test]
@@ -1393,7 +1393,7 @@ mod load_tests {
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 
-    // review-02 I2, the prescribed scenario: a file truncated MID-JSON (a
+    // the prescribed scenario: a file truncated MID-JSON (a
     // crash during a save) is neither a RuleSet nor a legacy rule list.
     #[test]
     fn test_truncated_rules_file_is_an_error() {
@@ -1408,7 +1408,7 @@ mod load_tests {
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 
-    // review-02 I2: the `.bak` the atomic save keeps is the recovery copy for
+    // the `.bak` the atomic save keeps is the recovery copy for
     // a corrupted main file.
     #[test]
     fn test_unparsable_main_file_recovers_from_bak() {
@@ -1433,7 +1433,7 @@ mod load_tests {
         );
     }
 
-    // review-02 I2: save_set writes through a sibling temp file (fsync +
+    // save_set writes through a sibling temp file (fsync +
     // rename) and keeps the PREVIOUS content as `.bak` — a crash mid-save can
     // no longer truncate rules.json, and the last good set stays on disk.
     #[test]

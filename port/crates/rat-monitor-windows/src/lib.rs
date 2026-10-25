@@ -91,7 +91,7 @@ pub mod windows_sys {
 
     pub fn get_tcp_table_v4() -> std::io::Result<Vec<MIB_TCPROW_OWNER_PID>> {
         let mut size = 0;
-        // M10 (update-09): u32-aligned storage for the table cast (a Vec<u8>
+        // u32-aligned storage for the table cast (a Vec<u8>
         // is only 1-aligned), and the size query passes NULL, not a dangling
         // non-null pointer.
         let mut buffer: Vec<u32> = Vec::new();
@@ -134,7 +134,7 @@ pub mod windows_sys {
 
     pub fn get_tcp_table_v6() -> std::io::Result<Vec<MIB_TCP6ROW_OWNER_PID>> {
         let mut size = 0;
-        // M10 (update-09): u32-aligned storage for the table cast (a Vec<u8>
+        // u32-aligned storage for the table cast (a Vec<u8>
         // is only 1-aligned), and the size query passes NULL, not a dangling
         // non-null pointer.
         let mut buffer: Vec<u32> = Vec::new();
@@ -177,7 +177,7 @@ pub mod windows_sys {
 
     pub fn get_udp_table_v4() -> std::io::Result<Vec<MIB_UDPROW_OWNER_PID>> {
         let mut size = 0;
-        // M10 (update-09): u32-aligned storage for the table cast (a Vec<u8>
+        // u32-aligned storage for the table cast (a Vec<u8>
         // is only 1-aligned), and the size query passes NULL, not a dangling
         // non-null pointer.
         let mut buffer: Vec<u32> = Vec::new();
@@ -220,7 +220,7 @@ pub mod windows_sys {
 
     pub fn get_udp_table_v6() -> std::io::Result<Vec<MIB_UDP6ROW_OWNER_PID>> {
         let mut size = 0;
-        // M10 (update-09): u32-aligned storage for the table cast (a Vec<u8>
+        // u32-aligned storage for the table cast (a Vec<u8>
         // is only 1-aligned), and the size query passes NULL, not a dangling
         // non-null pointer.
         let mut buffer: Vec<u32> = Vec::new();
@@ -342,7 +342,7 @@ pub mod process_info {
     }
 }
 
-/// M3 (update-09): API-level conditions that disable estats for the whole
+/// API-level conditions that disable estats for the whole
 /// process (no admin rights / OS support) - but only for rows a real
 /// process owns: kernel rows (pid 0, e.g. TIME_WAIT) answer NOT_SUPPORTED
 /// for row-class reasons, which is per-row, not global. Takes the raw
@@ -364,7 +364,7 @@ pub mod stats {
     };
 
     pub fn get_tcp_estats_v4(row: &MIB_TCPROW_OWNER_PID) -> Result<(u64, u64), WIN32_ERROR> {
-        // M10 (update-09): the ROD carries u64 counters; read it through
+        // the ROD carries u64 counters; read it through
         // 8-aligned storage instead of an align-1 Vec<u8>.
         let mut data_storage =
             vec![0u64; std::mem::size_of::<TCP_ESTATS_DATA_ROD_v0>().div_ceil(8)];
@@ -396,7 +396,7 @@ pub mod stats {
     }
 
     pub fn get_tcp_estats_v6(row: &MIB_TCP6ROW_OWNER_PID) -> Result<(u64, u64), WIN32_ERROR> {
-        // M10 (update-09): the ROD carries u64 counters; read it through
+        // the ROD carries u64 counters; read it through
         // 8-aligned storage instead of an align-1 Vec<u8>.
         let mut data_storage =
             vec![0u64; std::mem::size_of::<TCP_ESTATS_DATA_ROD_v0>().div_ceil(8)];
@@ -427,7 +427,7 @@ pub mod stats {
         }
     }
 
-    /// M2 (update-09): `MIB_TCP6ROW_OWNER_PID` and `MIB_TCP6ROW` have
+    /// `MIB_TCP6ROW_OWNER_PID` and `MIB_TCP6ROW` have
     /// different layouts (State first vs. last, no PID field); casting one
     /// to the other made the estats call read garbage fields. Build the
     /// real row from the owner-pid row's fields.
@@ -453,7 +453,7 @@ pub mod stats {
         }
     }
 
-    /// M3 (update-09): API-level conditions that disable estats for the
+    /// API-level conditions that disable estats for the
     /// whole process (no admin rights / OS support); anything else is a
     /// per-row error.
     fn estats_rw_bytes(rw: &TCP_ESTATS_DATA_RW_v0) -> &[u8] {
@@ -465,7 +465,7 @@ pub mod stats {
         }
     }
 
-    /// M1 (update-09): byte counters stay zero until data collection is
+    /// byte counters stay zero until data collection is
     /// enabled for the individual connection; call once per established row.
     pub fn enable_tcp_estats_v4(row: &MIB_TCPROW_OWNER_PID) -> WIN32_ERROR {
         let rw = TCP_ESTATS_DATA_RW_v0 {
@@ -541,7 +541,7 @@ fn estats_row_key_v6(
 #[cfg(windows)]
 pub struct WindowsMonitor {
     estats_supported: bool,
-    /// M1 (update-09): connections whose estats collection was already
+    /// connections whose estats collection was already
     /// enabled (never on LISTEN rows).
     enabled_rows: std::collections::HashSet<EstatsRowKey>,
 }
@@ -568,13 +568,13 @@ impl ConnectionSource for WindowsMonitor {
     fn sample(&mut self) -> std::io::Result<Vec<Connection>> {
         let mut connections = Vec::new();
 
-        // M1 (update-09): bound the enabled-connection set; re-enabling a
+        // bound the enabled-connection set; re-enabling a
         // still-live connection is harmless, so a plain clear suffices.
         if self.enabled_rows.len() > 8192 {
             self.enabled_rows.clear();
         }
 
-        // M5 (update-09): one adapter scan per sample feeds the per-row VPN
+        // one adapter scan per sample feeds the per-row VPN
         // classification.
         let vpn_adapters = crate::list_adapter_descriptions();
 
@@ -596,13 +596,13 @@ impl ConnectionSource for WindowsMonitor {
                 let mut bytes_in = None;
                 let mut bytes_out = None;
 
-                // M3 (update-09): LISTEN rows are never queried (estats is
+                // LISTEN rows are never queried (estats is
                 // for live connections), and only API-level failures switch
                 // byte counting off globally - a row-level error (the row
                 // vanished between the table snapshot and the stats call)
                 // leaves that row at None without affecting the others.
                 if self.estats_supported && !is_listening_state(row.dwState) {
-                    // M1 (update-09): enable collection once per connection.
+                    // enable collection once per connection.
                     let key = estats_row_key_v4(&row);
                     if !self.enabled_rows.contains(&key) {
                         let rc = stats::enable_tcp_estats_v4(&row);
@@ -671,13 +671,13 @@ impl ConnectionSource for WindowsMonitor {
                 let mut bytes_in = None;
                 let mut bytes_out = None;
 
-                // M3 (update-09): LISTEN rows are never queried (estats is
+                // LISTEN rows are never queried (estats is
                 // for live connections), and only API-level failures switch
                 // byte counting off globally - a row-level error (the row
                 // vanished between the table snapshot and the stats call)
                 // leaves that row at None without affecting the others.
                 if self.estats_supported && !is_listening_state(row.dwState) {
-                    // M1 (update-09): enable collection once per connection.
+                    // enable collection once per connection.
                     let key = estats_row_key_v6(&row);
                     if !self.enabled_rows.contains(&key) {
                         let rc = stats::enable_tcp_estats_v6(&row);
@@ -743,7 +743,7 @@ impl ConnectionSource for WindowsMonitor {
             for row in table {
                 let local_ip = convert_ipv6_addr(&row.ucLocalAddr);
                 let local_port = parse_port(row.dwLocalPort);
-                // M10 (update-09): scope id from the row, not hard-coded 0.
+                // scope id from the row, not hard-coded 0.
                 let local = SocketAddr::V6(SocketAddrV6::new(
                     local_ip,
                     local_port,
@@ -776,7 +776,7 @@ pub mod routes {
     use windows::Win32::NetworkManagement::IpHelper::GetBestInterfaceEx;
     use windows::Win32::NetworkManagement::Ndis::NET_LUID_LH;
 
-    /// M5 (update-09): variant for hot loops - the adapter list is scanned
+    /// variant for hot loops - the adapter list is scanned
     /// once per sample and reused per connection.
     pub fn is_vpn_route_with(adapters: &[(u64, String, u32)], remote: IpAddr) -> bool {
         is_vpn_route_inner(adapters, remote)
@@ -845,7 +845,7 @@ pub mod routes {
             return false;
         }
 
-        // M4 (update-09): decide from the adapter's tunnel type + DESCRIPTION;
+        // decide from the adapter's tunnel type + DESCRIPTION;
         // the user-editable alias and IF_TYPE_PROP_VIRTUAL alone produce
         // false positives (Hyper-V vSwitch, WSL vEthernet are type 53 too).
         for (adapter_luid, description, if_type) in adapters {
@@ -857,7 +857,7 @@ pub mod routes {
     }
 }
 
-/// (luid, description, if_type) for every adapter. M4 (update-09): the
+/// (luid, description, if_type) for every adapter. The
 /// DESCRIPTION is the driver-provided string, unlike the editable alias.
 #[cfg(windows)]
 pub fn list_adapter_descriptions() -> Vec<(u64, String, u32)> {
@@ -916,7 +916,7 @@ pub fn list_adapter_descriptions() -> Vec<(u64, String, u32)> {
 }
 
 pub fn check_is_vpn_interface(if_type: u32, description: &str) -> bool {
-    // M4 (update-09): 131 (IF_TYPE_TUNNEL) is authoritative. 53
+    // 131 (IF_TYPE_TUNNEL) is authoritative. 53
     // (IF_TYPE_PROP_VIRTUAL) is NOT - Hyper-V vSwitch and WSL vEthernet
     // adapters report it too - so it needs a matching driver DESCRIPTION.
     if if_type == 131 {
@@ -933,7 +933,7 @@ mod vpn_tests {
 
     #[test]
     fn test_check_is_vpn_interface_description_semantics() {
-        // M4 (update-09): tunnel type is authoritative...
+        // tunnel type is authoritative...
         assert!(check_is_vpn_interface(131, "anything"));
         // ...but PROP_VIRTUAL alone is not (Hyper-V vSwitch / WSL vEthernet)
         assert!(!check_is_vpn_interface(
@@ -976,7 +976,7 @@ mod edge_case_tests {
     #[cfg(windows)]
     #[test]
     fn test_estats_enablement_live_loopback_counts_bytes() {
-        // M1 (update-09): without SetPerTcpConnectionEStats the Get side
+        // without SetPerTcpConnectionEStats the Get side
         // reports zeros; enablement must happen once per connection. Two
         // samples: the first enables, traffic flows, the second reads.
         use rat_types::Protocol;
@@ -1014,7 +1014,7 @@ mod edge_case_tests {
 
     #[test]
     fn test_estats_global_vs_row_errors() {
-        // M3 (update-09): only API-level conditions on owned rows are global.
+        // only API-level conditions on owned rows are global.
         assert!(estats_error_is_global(5, 42)); // ACCESS_DENIED, owned row
         assert!(estats_error_is_global(50, 42)); // NOT_SUPPORTED, owned row
         assert!(!estats_error_is_global(50, 0)); // kernel TIME_WAIT row: per-row
@@ -1025,7 +1025,7 @@ mod edge_case_tests {
     #[cfg(windows)]
     #[test]
     fn test_mib_tcp6_row_layouts_differ_and_copy_is_faithful() {
-        // M2 (update-09): the owner-pid row and the plain row have
+        // the owner-pid row and the plain row have
         // different layouts; the faithful copy must carry every field.
         assert_ne!(
             std::mem::size_of::<windows::Win32::NetworkManagement::IpHelper::MIB_TCP6ROW>(),
