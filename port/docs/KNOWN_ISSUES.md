@@ -11,14 +11,15 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
   not followed; after an update the block may stop applying. A renamed or copied executable is not blocked.
 - **Short gap on re-add (low).** Re-adding a rule deletes the old one first, so there is a brief window without a
   block while netsh runs.
-- **No timeouts on netsh / PowerShell / nft child processes (medium).** A hung tool stalls the daemon's pipeline
-  and, at startup, the read-back before the IPC server starts.
+- **Firewall tool time limit (low).** netsh, PowerShell and nft are killed after 30 seconds. On Windows the kill
+  does not reach processes the tool itself started, and a failed netsh add or delete reports no tool output.
 - **Long paths (low).** Rule names embed the full path (`Rat:path:<path>`); very long paths may exceed netsh's
   name limit.
 - **Ownership marker (low).** Cleanup removes every rule whose display name starts with `Rat:path:` /
   `Rat:port:`; rules are not tagged with a firewall group yet.
-- **Shared-host list (medium).** Only `svchost.exe` is treated as a shared system host; other shared hosts
-  (`dllhost.exe`, `RuntimeBroker.exe`, ...) are not refused.
+- **Shared-host list (low).** Whole-program blocks are refused for a fixed list of Windows hosts that work for
+  many apps (`svchost.exe`, `dllhost.exe`, `RuntimeBroker.exe`, `taskhostw.exe`, `backgroundTaskHost.exe`,
+  `sihost.exe`, `conhost.exe`, `rundll32.exe`, `WmiPrvSE.exe`); other such hosts are not on the list yet.
 - **`cleanup()` keeps in-memory state (low).** After `cleanup()` the enforcer's `current` set still lists the
   removed rules until the next reconcile.
 - **Silent disable (medium).** If Windows Defender Firewall is off, a profile is disabled, a third-party firewall
@@ -35,8 +36,8 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
   app must run elevated.
 - **No installer or uninstaller (medium).** The service is installed by hand (see the install guides). Rules and
   firewall entries outlive the service unless `rat-daemon --cleanup` is run before removing it.
-- **UNC paths (medium).** A rule path like `\\host\share\app.exe` is canonicalised by the SYSTEM service, which
-  contacts that host.
+- **Network and verbatim paths (low).** Rule paths on a network share (`\\host\share\app.exe`) and paths that
+  start with `\\?\` or `\\.\` are refused; programs on a network share cannot be blocked by path.
 - **Back pressure (medium).** The command channel is unbounded and each `SetRules` runs a full enforce; a client can
   queue a lot of work.
 - **Pipe start-up (low).** If another process already owns `\\.\pipe\rat`, the daemon exits; there is no retry, and

@@ -42,7 +42,10 @@ impl Enforcer for LinuxEnforcer {
         cmd.args(["delete", "table", "inet", "rat"]);
         let out = crate::run_with_timeout(cmd, "nft", crate::TOOL_TIMEOUT, None)?;
         if !out.status.success() {
-            return Err(io::Error::other("failed to delete nft table inet rat"));
+            return Err(crate::tool_failure(
+                "failed to delete nft table inet rat",
+                &out,
+            ));
         }
         Ok(())
     }
@@ -63,7 +66,7 @@ impl Enforcer for LinuxEnforcer {
             let out =
                 crate::run_with_timeout(cmd, "nft", crate::TOOL_TIMEOUT, Some(plan.as_bytes()))?;
             if !out.status.success() {
-                return Err(io::Error::other("nftables command failed"));
+                return Err(crate::tool_failure("nftables command failed", &out));
             }
             Ok(())
         }

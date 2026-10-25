@@ -110,7 +110,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   of the active profile and the enabled groups (`static_blocklist`). A scoped deny rule never blocks the whole
   app; it is enforced per connection through the local ports of the sockets it denies.
 * Windows: `netsh advfirewall` per-program rules, diffed against the backend's applied state (no churn per tick);
-  whole-program blocks of shared service hosts (svchost.exe) are REFUSED. Local ports are the Linux axis.
+  whole-program blocks of shared service hosts (`SHARED_SERVICE_HOSTS` in rat-enforcer: svchost.exe, dllhost.exe,
+  RuntimeBroker.exe and others) are REFUSED. Local ports are the Linux axis.
+* Every firewall tool child (netsh, PowerShell, nft) runs under `rat_enforcer::run_with_timeout` and is killed
+  after `TOOL_TIMEOUT` (30 s), so a hung tool cannot stall the pipeline or the start-up read-back.
 * Linux: the whole `inet rat` nft table is rebuilt on change, so a closed socket's local port drops out of the
   next diff (no stale per-port rule).
 * `RAT_DRY_RUN=1` keeps every enforcer call a printed no-op. Without it the enforcer really applies its rules.

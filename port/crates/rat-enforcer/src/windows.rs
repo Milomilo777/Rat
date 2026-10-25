@@ -495,7 +495,10 @@ impl Enforcer for WindowsEnforcer {
         cmd.args(["-NoProfile", "-Command", CLEANUP_RULES_QUERY]);
         let out = crate::run_with_timeout(cmd, "powershell", crate::TOOL_TIMEOUT, None)?;
         if !out.status.success() {
-            return Err(io::Error::other("Failed to clean up Rat firewall rules"));
+            return Err(crate::tool_failure(
+                "Failed to clean up Rat firewall rules",
+                &out,
+            ));
         }
         Ok(())
     }

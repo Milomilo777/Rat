@@ -139,6 +139,25 @@ fn wait_child_deadline(child: &mut Child, tool: &str, limit: Duration) -> io::Re
     }
 }
 
+/// Longest tool output quoted in a [`tool_failure`] error.
+const FAILURE_DETAIL_MAX: usize = 400;
+
+/// An error for a firewall tool that exited non-zero: `what` plus the exit
+/// status and the tool's own stderr (or stdout when stderr is empty),
+/// trimmed and cut to [`FAILURE_DETAIL_MAX`] characters. The output is
+/// captured by [`run_with_timeout`], so without this the reason would be lost.
+pub fn tool_failure(what: &str, out: &Output) -> io::Error {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let detail = if stderr.trim().is_empty() {
+        stdout.trim()
+    } else {
+        stderr.trim()
+    };
+    let cut: String = detail.chars().take(FAILURE_DETAIL_MAX).collect();
+    io::Error::other(format!("{what} ({}): {cut}", out.status))
+}
+
 /// The rejection rules of [`validate_path`] WITHOUT the canonicalize: `None`
 /// means the path would pass. plan decides reject-vs-report
 /// with this — it is pure string work (no filesystem access, so the
@@ -157,7 +176,9 @@ pub fn path_validation_error(path: &str) -> Option<&'static str> {
     // an ordinary absolute path and stays accepted.
     let bytes = path.as_bytes();
     if bytes.starts_with(b"\\\\") || (cfg!(windows) && bytes.starts_with(b"//")) {
-        return Some("UNC paths are not supported");
+        return Some(
+            "network (UNC) and device or verbatim paths are not supported; use a plain drive path",
+        );
     }
     // Byte-level scans, exactly equivalent to the char-level checks: every
     // delimiter and match target is ASCII, and UTF-8 continuation bytes are
@@ -488,7 +509,38 @@ mod tests {
         );
     }
 
+    /// a command that writes to stderr and exits 3
+    fn failing_command() -> std::process::Command {
+        #[cfg(windows)]
+        {
+            let mut c = std::process::Command::new(system32_tool("cmd.exe"));
+            c.args(["/c", "echo rat-boom 1>&2 & exit /b 3"]);
+            c
+        }
+        #[cfg(not(windows))]
+        {
+            let mut c = std::process::Command::new("sh");
+            c.args(["-c", "echo rat-boom >&2; exit 3"]);
+            c
+        }
+    }
+
     #[test]
+    fn test_tool_failure_keeps_the_tools_stderr() {
+        // the output is captured by run_with_timeout, so a failed tool's
+        // own message must travel in the error, not vanish
+        let out = run_with_timeout(failing_command(), "cmd", TOOL_TIMEOUT, None)
+            .expect("the child runs; only its exit code is non-zero");
+        assert!(!out.status.success());
+        let msg = tool_failure("Failed to clean up Rat firewall rules", &out).to_string();
+        assert!(
+            msg.starts_with("Failed to clean up Rat firewall rules"),
+            "{msg}"
+        );
+        assert!(msg.contains("rat-boom"), "stderr must be quoted: {msg}");
+        assert!(msg.contains('3'), "the exit status must be named: {msg}");
+    }
+
     #[test]
     fn test_validation_path_rejects_unc() {
         // UNC must be refused as pure string work BEFORE any
@@ -505,19 +557,19 @@ mod tests {
         ] {
             assert_eq!(
                 path_validation_error(unc),
-                Some("UNC paths are not supported"),
+                Some("network (UNC) and device or verbatim paths are not supported; use a plain drive path"),
                 "{unc} must be refused by the string gate"
             );
             assert_eq!(
                 validate_path(unc).unwrap_err(),
-                "UNC paths are not supported",
+                "network (UNC) and device or verbatim paths are not supported; use a plain drive path",
                 "{unc} must be refused before canonicalisation"
             );
         }
         #[cfg(windows)]
         assert_eq!(
             path_validation_error("//server/share/app.exe"),
-            Some("UNC paths are not supported"),
+            Some("network (UNC) and device or verbatim paths are not supported; use a plain drive path"),
             "//server/share is the same UNC path on Windows"
         );
     }
@@ -536,7 +588,7 @@ mod tests {
             );
             assert_eq!(
                 path_validation_error(r"\\?\C:\Windows\System32\netsh.exe"),
-                Some("UNC paths are not supported")
+                Some("network (UNC) and device or verbatim paths are not supported; use a plain drive path")
             );
         } else {
             assert_eq!(path_validation_error("/usr/bin/netsh"), None);
