@@ -7,7 +7,7 @@ use std::time::Duration;
 
 const SVC: &str = "RatDaemon";
 const USER: &str = "rat_test_user";
-const USER_SECRET: &str = "Zq9!rT4#vLm27xW";
+const USER_SECRET: &str = "Zq9!rT4#vLm2";
 const WORK: &str = r"C:\ProgramData\rat_w4";
 const DOC_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12019b;;;IU)";
 const SCRIPT_DACL: &str = include_str!("../ps/pipe_dacl.ps1");
