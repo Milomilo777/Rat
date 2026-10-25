@@ -117,7 +117,9 @@ pub async fn start_ipc_server(
                         });
                     }
                     Err(_) => {
-                        // ignore errors like connection reset
+                        // S9 (update-08): back off so a persistent accept
+                        // error (e.g. EMFILE) cannot spin the CPU.
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     }
                 }
             }
@@ -245,7 +247,9 @@ pub async fn start_ipc_server(
                         });
                     }
                     Err(_) => {
-                        // ignore errors like connection reset
+                        // S9 (update-08): back off so a persistent connect
+                        // error cannot spin the CPU.
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     }
                 }
             }

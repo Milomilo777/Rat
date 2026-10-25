@@ -29,7 +29,7 @@ pub async fn run_daemon(shutdown_rx: tokio::sync::broadcast::Receiver<()>) -> st
     let shutdown_ipc = shutdown_rx.resubscribe();
     let mut shutdown_wait = shutdown_rx.resubscribe();
 
-    let core_task = tokio::spawn(async move {
+    let mut core_task = tokio::spawn(async move {
         run_core_loop(source, snapshot_tx, shutdown_core).await;
     });
 
@@ -44,18 +44,28 @@ pub async fn run_daemon(shutdown_rx: tokio::sync::broadcast::Receiver<()>) -> st
 
     // recv() also resolves (with Err) when every sender is dropped; treat
     // that as shutdown like an explicit signal.
-    let ipc_err = tokio::select! {
+    //
+    // S9 (update-08): if EITHER task ends on its own the daemon shuts down
+    // and exits non-zero, so systemd/SCM Restart=on-failure brings it back
+    // instead of serving a half-dead process. run_core_loop only returns on
+    // shutdown, so a core exit without a pending signal is the failure.
+    let failure = tokio::select! {
         _ = shutdown_wait.recv() => None,
         res = &mut ipc_task => match res {
             Ok(Ok(())) => None,
             Ok(Err(e)) => Some(e),
             Err(e) => Some(std::io::Error::other(e)),
         },
+        _ = &mut core_task => match shutdown_wait.try_recv() {
+            Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => None,
+            Err(_) => Some(std::io::Error::other("core sampling loop exited unexpectedly")),
+        },
     };
 
-    match ipc_err {
+    match failure {
         Some(e) => {
             core_task.abort();
+            ipc_task.abort();
             Err(e)
         }
         None => {
