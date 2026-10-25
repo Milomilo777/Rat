@@ -71,7 +71,7 @@
     {
       "id": "STALE_RULES",
       "what": "Rat daemon does not clean up stale firewall rules on restart",
-      "file_line": "port/e2e/windows/src/w4.rs:88",
+      "file_line": "port/e2e/windows/src/w4.rs:99",
       "evidence": "W4 Failed: Stale rules remained after service restart"
     }
   ],
@@ -88,6 +88,7 @@
     "Added additional checks for negative controls and test logic missing.",
     "Added firewall leftover check in github actions.",
     "Added PowerShell Named Pipe client code check for W6 GUI-to-daemon test.",
-    "Use catch_unwind in test runner so all tests are run before exiting 101."
+    "Use catch_unwind in test runner so all tests are run before exiting 101.",
+    "Fixed W3 cleanup drop guard command using -DisplayName Rat:path:* so leftover check works correctly."
   ]
 }

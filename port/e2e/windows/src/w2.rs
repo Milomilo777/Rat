@@ -1,7 +1,7 @@
-use rat_enforcer::{Blocklist, Enforcer};
 use rat_enforcer::windows::WindowsEnforcer;
-use std::process::Command;
+use rat_enforcer::{Blocklist, Enforcer};
 use std::env;
+use std::process::Command;
 
 struct EnforcerCleanup {
     enforcer: WindowsEnforcer,
@@ -9,13 +9,11 @@ struct EnforcerCleanup {
 }
 impl Drop for EnforcerCleanup {
     fn drop(&mut self) {
-        let _ = self.enforcer.apply(&self.enforcer.plan(&Blocklist::default()));
+        let _ = self
+            .enforcer
+            .apply(&self.enforcer.plan(&Blocklist::default()));
         let _ = std::fs::remove_file(&self.path);
-
-        let _ = Command::new("powershell.exe")
-            .arg("-Command")
-            .arg("Get-NetFirewallRule | Where-Object {$_.DisplayName -like 'Rat:path:*'} | Remove-NetFirewallRule")
-            .output();
+        let _ = self.enforcer.cleanup();
     }
 }
 
@@ -25,10 +23,14 @@ pub fn run_w2() {
     let test_client_path = exe.with_file_name("w2_client.exe");
     std::fs::copy(&exe, &test_client_path).unwrap();
 
-    let enforcer = WindowsEnforcer { current: Blocklist::default() };
+    let enforcer = WindowsEnforcer {
+        current: Blocklist::default(),
+    };
 
     let _cleanup = EnforcerCleanup {
-        enforcer: WindowsEnforcer { current: Blocklist::default() },
+        enforcer: WindowsEnforcer {
+            current: Blocklist::default(),
+        },
         path: test_client_path.clone(),
     };
 
@@ -42,7 +44,9 @@ pub fn run_w2() {
     let count_before = rules_before_str.lines().count();
 
     let mut wanted = Blocklist::default();
-    wanted.paths.push(test_client_path.to_string_lossy().to_string());
+    wanted
+        .paths
+        .push(test_client_path.to_string_lossy().to_string());
 
     let plan = enforcer.plan(&wanted);
 
@@ -56,7 +60,7 @@ pub fn run_w2() {
     // Check if rules are present
     let rule_output = Command::new("powershell.exe")
         .arg("-Command")
-        .arg("Get-NetFirewallRule | Where-Object {$_.DisplayName -like 'Rat:path:*'}")
+        .arg("Get-NetFirewallRule -DisplayName 'Rat:path:*' -ErrorAction SilentlyContinue")
         .output()
         .unwrap();
     let rule_str = String::from_utf8_lossy(&rule_output.stdout);
@@ -71,7 +75,10 @@ pub fn run_w2() {
     let rules_after_str = String::from_utf8_lossy(&rules_after.stdout);
     let count_after = rules_after_str.lines().count();
 
-    println!("Rules before: {}, Rules after: {}", count_before, count_after);
+    println!(
+        "Rules before: {}, Rules after: {}",
+        count_before, count_after
+    );
 
     let output = Command::new(&test_client_path)
         .arg("curl")
@@ -82,9 +89,15 @@ pub fn run_w2() {
     println!("Blocked client status: {}", output.status);
 
     if env::var("RAT_DRY_RUN").is_ok() {
-        assert!(output.status.success(), "W2 Failed: The client was blocked even on dry run");
+        assert!(
+            output.status.success(),
+            "W2 Failed: The client was blocked even on dry run"
+        );
     } else {
-        assert!(!output.status.success(), "W2 Failed: The blocked client was able to connect");
+        assert!(
+            !output.status.success(),
+            "W2 Failed: The blocked client was able to connect"
+        );
     }
 
     // Test curl from normal path works
@@ -94,5 +107,8 @@ pub fn run_w2() {
         .output()
         .unwrap();
     println!("Normal curl status: {}", curl_output.status);
-    assert!(curl_output.status.success(), "W2 Failed: Normal curl was blocked");
+    assert!(
+        curl_output.status.success(),
+        "W2 Failed: Normal curl was blocked"
+    );
 }

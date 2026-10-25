@@ -15,6 +15,7 @@ impl Drop for W3Cleanup {
             .apply(&self.enforcer.plan(&Blocklist::default()));
         let _ = std::fs::remove_file(&self.path_a);
         let _ = std::fs::remove_file(&self.path_b);
+        let _ = self.enforcer.cleanup();
     }
 }
 

@@ -38,7 +38,8 @@ fn main() {
         let target = args[2].clone();
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(3))
-            .build().unwrap();
+            .build()
+            .unwrap();
         let res = client.get(&target).send();
         if res.is_err() {
             std::process::exit(1);
