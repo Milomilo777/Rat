@@ -31,9 +31,9 @@ final class RuleEngineTests: XCTestCase {
         XCTAssertEqual(e.evaluate(conn("a.com")), .deny)
     }
 
-    func testDisabledIgnoredButUnapprovedStillActive() {
+    func testDisabledAndUnapprovedRulesNeverMatch() {
         XCTAssertEqual(RuleEngine(rules: [Rule(verdict: .deny, enabled: false)]).evaluate(conn("a.com")), .ask)
-        XCTAssertEqual(RuleEngine(rules: [Rule(verdict: .deny, approved: false)]).evaluate(conn("a.com")), .deny)
+        XCTAssertEqual(RuleEngine(rules: [Rule(verdict: .deny, approved: false)]).evaluate(conn("a.com")), .ask)
     }
 
     func testStoreRoundTrip() throws {
@@ -160,5 +160,14 @@ final class RuleEngineTests: XCTestCase {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("a-\(UUID()).json")
         try RuleStore(url: url).saveSet(s)
         XCTAssertEqual(try RuleStore(url: url).loadSet().unknownNetworkAction, .activate(s.profiles[1].id))
+    }
+
+    /// QA R4: disabled and unapproved rules must never win the match.
+    func testQAR4DisabledAndUnapprovedRulesNeverMatch() {
+        let e = RuleEngine(rules: [
+            Rule(verdict: .deny, remoteDomain: "example.com", enabled: false),
+            Rule(verdict: .deny, remoteDomain: "example.com", approved: false)
+        ])
+        XCTAssertEqual(e.evaluate(conn("example.com")), .ask)
     }
 }
