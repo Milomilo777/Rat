@@ -1,6 +1,5 @@
 use crate::msg::Message;
 use futures::{SinkExt, StreamExt};
-use tokio_util::codec::Framed;
 
 pub const SOCKET_PATH: &str = "/run/rat/rat.sock";
 pub const PIPE_NAME: &str = r"\\.\pipe\rat";
@@ -70,6 +69,9 @@ pub async fn start_ipc_server(
 
     let listener = UnixListener::bind(socket_path)?;
 
+    // S3 (update-08): bounded concurrent clients.
+    let client_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CLIENTS));
+
     // Only set permissions if it's the real run path to avoid test errors
     if socket_path == SOCKET_PATH {
         let mut perms = std::fs::metadata(socket_path)?.permissions();
@@ -94,8 +96,15 @@ pub async fn start_ipc_server(
                         if !allowed {
                             continue;
                         }
+                        // S3 (update-08): at capacity the extra client is
+                        // dropped instead of spawning another handler.
+                        let permit = match client_slots.clone().try_acquire_owned() {
+                            Ok(permit) => permit,
+                            Err(_) => continue,
+                        };
                         let snap_rx = snapshot_rx.resubscribe();
                         tokio::spawn(async move {
+                            let _permit = permit;
                             handle_connection(stream, snap_rx).await;
                         });
                     }
@@ -172,6 +181,9 @@ pub async fn start_ipc_server(
 
     let sd_guard = std::sync::Arc::new(SdGuard(sd_val));
 
+    // S3 (update-08): bounded concurrent clients.
+    let client_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CLIENTS));
+
     let mut server_options = ServerOptions::new();
     let mut first = true;
 
@@ -212,8 +224,15 @@ pub async fn start_ipc_server(
             res = server.connect() => {
                 match res {
                     Ok(()) => {
+                        // S3 (update-08): at capacity the extra client's pipe
+                        // end is dropped instead of spawning another handler.
+                        let permit = match client_slots.clone().try_acquire_owned() {
+                            Ok(permit) => permit,
+                            Err(_) => continue,
+                        };
                         let snap_rx = snapshot_rx.resubscribe();
                         tokio::spawn(async move {
+                            let _permit = permit;
                             handle_connection(server, snap_rx).await;
                         });
                     }
@@ -229,12 +248,27 @@ pub async fn start_ipc_server(
     Ok(())
 }
 
+// S3 (update-08): inbound client lines are capped at 64 KiB (a request is a
+// small JSON message; anything bigger is abuse) while outbound snapshots keep
+// the 10 MiB ceiling (hundreds of connections serialize large). Concurrent
+// clients are capped so a local user cannot exhaust daemon memory.
+const MAX_CLIENT_LINE: usize = 64 * 1024;
+const MAX_SERVER_LINE: usize = 10 * 1024 * 1024;
+const MAX_CONCURRENT_CLIENTS: usize = 4;
+
 async fn handle_connection<S>(stream: S, mut snapshot_rx: tokio::sync::broadcast::Receiver<Message>)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let codec = tokio_util::codec::LinesCodec::new_with_max_length(10 * 1024 * 1024);
-    let mut framed = Framed::new(stream, codec);
+    let (read_half, write_half) = tokio::io::split(stream);
+    let mut reader = tokio_util::codec::FramedRead::new(
+        read_half,
+        tokio_util::codec::LinesCodec::new_with_max_length(MAX_CLIENT_LINE),
+    );
+    let mut writer = tokio_util::codec::FramedWrite::new(
+        write_half,
+        tokio_util::codec::LinesCodec::new_with_max_length(MAX_SERVER_LINE),
+    );
 
     loop {
         tokio::select! {
@@ -242,7 +276,7 @@ where
                 match msg {
                     Ok(msg) => {
                         if let Ok(serialized) = msg.to_string() {
-                            if framed.send(serialized).await.is_err() {
+                            if writer.send(serialized).await.is_err() {
                                 break;
                             }
                         }
@@ -253,7 +287,7 @@ where
                     Err(_) => break,
                 }
             }
-            result = framed.next() => {
+            result = reader.next() => {
                 match result {
                     Some(Ok(line)) => {
                         match Message::from_json_str(&line) {
@@ -263,7 +297,7 @@ where
                             Err(_) => {
                                 let err_msg = Message::Error { message: "Invalid JSON".to_string() };
                                 if let Ok(err_ser) = err_msg.to_string() {
-                                    let _ = framed.send(err_ser).await;
+                                    let _ = writer.send(err_ser).await;
                                 }
                             }
                         }
@@ -271,7 +305,7 @@ where
                     Some(Err(e)) => {
                         let err_msg = Message::Error { message: format!("LinesCodec error: {}", e) };
                         if let Ok(err_ser) = err_msg.to_string() {
-                            let _ = framed.send(err_ser).await;
+                            let _ = writer.send(err_ser).await;
                         }
                         break;
                     }
