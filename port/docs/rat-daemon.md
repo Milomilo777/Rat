@@ -68,7 +68,9 @@ Server -> client:
   messages: a client that cannot parse them must ignore unknown lines (the desktop app does).
 * `Snapshot` is pushed after every sampling pass (1.5 s) and after every applied command.
 * `AlertRequest` goes out once per NEW current alert (one prompt per app|domain key until answered, AlertCenter
-  parity); the id must be echoed back in `AlertAnswer`.
+  parity); the id must be echoed back in `AlertAnswer`. An alert answered with "allow once" that is queued again
+  at once is a new alert (new id, `AlertCleared` for the old one first). A client that handshakes while an alert is
+  active receives that `AlertRequest` right after `HelloAck`.
 
 ### Example usage (Client side receiving Snapshot)
 

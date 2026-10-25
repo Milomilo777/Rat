@@ -1214,3 +1214,63 @@ async fn test_set_rules_burst_coalesces_to_newest_list() {
         .expect("pipeline must end on shutdown")
         .unwrap();
 }
+
+// "Allow once" creates no rule, so the same (app, host) asks again at once and
+// the new alert has the SAME key as the answered one. It must still be
+// broadcast as a new alert (new id), with the old one cleared first; otherwise
+// the GUI never learns about it and the connection stays undecided.
+#[tokio::test]
+async fn test_requeued_alert_with_the_same_key_is_broadcast_again() {
+    let app = test_app();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let (snapshot_tx, mut rx) = tokio::sync::broadcast::channel(64);
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY);
+
+    let policy = RuleEnginePolicy(rat_core::RuleEngine::new());
+    let ledger = Ledger::new(LedgerConfig { warmup_ms: 0 }, AlertCenterConfig::default());
+    let task = tokio::spawn(rat_daemon::core::run_pipeline(
+        ScriptedSource {
+            conns: vec![conn(app, "evil", 443, 54321)],
+        },
+        policy,
+        ledger,
+        RecorderBackend::default(),
+        dummy_store(),
+        cmd_rx,
+        snapshot_tx,
+        shutdown_rx,
+    ));
+
+    let first = wait_for_msg(&mut rx, |m| match m {
+        ServerMessage::AlertRequest { id, .. } => Some(id),
+        _ => None,
+    })
+    .await;
+    cmd_tx
+        .send(Command::AlertAnswer {
+            id: first,
+            verdict: Verdict::Allow,
+            scope: rat_ledger::AnswerScope::Any,
+            lifetime: Lifetime::Once,
+        })
+        .await
+        .unwrap();
+    let cleared = wait_for_msg(&mut rx, |m| match m {
+        ServerMessage::AlertCleared { id } => Some(id),
+        _ => None,
+    })
+    .await;
+    assert_eq!(cleared, first);
+    let second = wait_for_msg(&mut rx, |m| match m {
+        ServerMessage::AlertRequest { id, .. } => Some(id),
+        _ => None,
+    })
+    .await;
+    assert_ne!(second, first, "the re-queued alert needs a fresh id");
+
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("pipeline must end on shutdown")
+        .unwrap();
+}

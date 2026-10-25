@@ -135,6 +135,7 @@ pub async fn start_ipc_server_with_write_timeout(
 
     // bounded concurrent clients.
     let client_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CLIENTS));
+    let active_alert = track_active_alert(&snapshot_rx, &shutdown);
 
     // always tighten the socket to owner+group read/write.
     let mut perms = std::fs::metadata(socket_path)?.permissions();
@@ -166,9 +167,10 @@ pub async fn start_ipc_server_with_write_timeout(
                         };
                         let snap_rx = snapshot_rx.resubscribe();
                         let cmd_tx = commands.clone();
+                        let alert = active_alert.clone();
                         tokio::spawn(async move {
                             let _permit = permit;
-                            handle_connection(stream, snap_rx, cmd_tx, write_timeout).await;
+                            handle_connection(stream, snap_rx, cmd_tx, alert, write_timeout).await;
                         });
                     }
                     Err(_) => {
@@ -525,6 +527,7 @@ pub async fn start_ipc_server_with_write_timeout(
 
     // bounded concurrent clients.
     let client_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CLIENTS));
+    let active_alert = track_active_alert(&snapshot_rx, &shutdown);
 
     let mut server_options = ServerOptions::new();
     let mut first = true;
@@ -583,9 +586,10 @@ pub async fn start_ipc_server_with_write_timeout(
                         };
                         let snap_rx = snapshot_rx.resubscribe();
                         let cmd_tx = commands.clone();
+                        let alert = active_alert.clone();
                         tokio::spawn(async move {
                             let _permit = permit;
-                            handle_connection(server, snap_rx, cmd_tx, write_timeout).await;
+                            handle_connection(server, snap_rx, cmd_tx, alert, write_timeout).await;
                         });
                     }
                     Err(_) => {
@@ -636,6 +640,42 @@ pub async fn start_ipc_server(
         CLIENT_WRITE_TIMEOUT,
     )
     .await
+}
+
+/// The alert clients are currently asked about (the last `AlertRequest` not
+/// yet followed by its `AlertCleared`), kept so a GUI that connects later can
+/// be shown it: the broadcast only reaches clients that were already there.
+type ActiveAlert = std::sync::Arc<std::sync::Mutex<Option<ServerMessage>>>;
+
+fn track_active_alert(
+    snapshot_rx: &tokio::sync::broadcast::Receiver<ServerMessage>,
+    shutdown: &tokio::sync::broadcast::Receiver<()>,
+) -> ActiveAlert {
+    let state: ActiveAlert = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let mut rx = snapshot_rx.resubscribe();
+    let mut stop = shutdown.resubscribe();
+    let tracked = state.clone();
+    tokio::spawn(async move {
+        loop {
+            let msg = tokio::select! {
+                _ = stop.recv() => break,
+                msg = rx.recv() => msg,
+            };
+            let mut slot = tracked.lock().unwrap_or_else(|e| e.into_inner());
+            match msg {
+                Ok(alert @ ServerMessage::AlertRequest { .. }) => *slot = Some(alert),
+                Ok(ServerMessage::AlertCleared { id }) => {
+                    if matches!(&*slot, Some(ServerMessage::AlertRequest { id: held, .. }) if *held == id)
+                    {
+                        *slot = None;
+                    }
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+    state
 }
 
 /// a client has this long to complete the Hello handshake
@@ -709,6 +749,7 @@ async fn handle_connection<S>(
     stream: S,
     mut snapshot_rx: tokio::sync::broadcast::Receiver<ServerMessage>,
     commands: tokio::sync::mpsc::Sender<Command>,
+    active_alert: ActiveAlert,
     write_timeout: std::time::Duration,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -730,6 +771,9 @@ async fn handle_connection<S>(
     // the FIRST client message must be Hello; nothing is sent
     // to the client before the handshake completes, and a version mismatch
     // or any other opener is answered with Error and the connection closed.
+    // Id of the active alert replayed after the handshake: the same request may
+    // also sit in this client's own broadcast queue and must not be sent twice.
+    let mut replayed_alert_id: Option<u64> = None;
     let first = tokio::time::timeout(HANDSHAKE_TIMEOUT, reader.next()).await;
     match first {
         Ok(Some(Ok(line))) => match ClientMessage::from_json_str(&line) {
@@ -746,6 +790,20 @@ async fn handle_connection<S>(
                 .is_err()
                 {
                     return;
+                }
+                // An alert that is already active was broadcast before this
+                // client existed: hand it over right after the handshake.
+                let held = active_alert
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                if let Some(alert) = held {
+                    if let ServerMessage::AlertRequest { id, .. } = &alert {
+                        replayed_alert_id = Some(*id);
+                    }
+                    if send_server(&mut writer, alert).await.is_err() {
+                        return;
+                    }
                 }
             }
             Ok(ClientMessage::Hello { protocol_version }) => {
@@ -800,6 +858,14 @@ async fn handle_connection<S>(
             msg = snapshot_rx.recv() => {
                 match msg {
                     Ok(msg) => {
+                        if let (ServerMessage::AlertRequest { id, .. }, Some(replayed)) =
+                            (&msg, replayed_alert_id)
+                        {
+                            if *id == replayed {
+                                replayed_alert_id = None;
+                                continue;
+                            }
+                        }
                         if send_server(&mut writer, msg).await.is_err() {
                             break;
                         }

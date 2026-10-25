@@ -1197,3 +1197,91 @@ async fn test_client_that_never_reads_is_dropped_and_frees_its_slot() {
 
     let _ = shutdown_tx.send(());
 }
+
+fn test_alert() -> rat_ledger::Alert {
+    rat_ledger::Alert {
+        app: "/apps/late.exe".to_string(),
+        app_name: "late".to_string(),
+        host: "example.test".to_string(),
+        remote: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 443),
+        proto: Protocol::Tcp,
+        details: Default::default(),
+        reported_ms: 1,
+    }
+}
+
+#[cfg(unix)]
+type TestStream = tokio::net::UnixStream;
+#[cfg(windows)]
+type TestStream = tokio::net::windows::named_pipe::NamedPipeClient;
+
+/// Connect, handshake, return the split halves with the HelloAck consumed.
+async fn handshaked_client(
+    endpoint: &str,
+) -> (
+    FramedRead<tokio::io::ReadHalf<TestStream>, LinesCodec>,
+    FramedWrite<tokio::io::WriteHalf<TestStream>, LinesCodec>,
+) {
+    let stream = connect_ep(endpoint).await;
+    let (r, w) = tokio::io::split(stream);
+    let mut reader = FramedRead::new(r, LinesCodec::new());
+    let mut writer = FramedWrite::new(w, LinesCodec::new());
+    send_client(
+        &mut writer,
+        &ClientMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    )
+    .await;
+    match read_server(&mut reader, READ_TIMEOUT).await {
+        Some(ServerMessage::HelloAck { .. }) => {}
+        other => panic!("expected HelloAck, got {other:?}"),
+    }
+    (reader, writer)
+}
+
+// A GUI that connects while an alert is active gets that alert right after
+// the handshake (it missed the broadcast). Once the alert is cleared, a later
+// GUI gets nothing.
+#[tokio::test]
+async fn test_late_client_receives_the_active_alert_after_the_handshake() {
+    let (endpoint, snapshot_tx, shutdown_tx) = spawn_server("latealert").await;
+
+    // An early client proves the broadcast went out.
+    let (mut early, _early_writer) = handshaked_client(&endpoint).await;
+    snapshot_tx
+        .send(ServerMessage::AlertRequest {
+            id: 7,
+            alert: Box::new(test_alert()),
+        })
+        .expect("a handler is listening");
+    assert!(matches!(
+        read_server(&mut early, READ_TIMEOUT).await,
+        Some(ServerMessage::AlertRequest { id: 7, .. })
+    ));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let (mut late, _late_writer) = handshaked_client(&endpoint).await;
+    match read_server(&mut late, READ_TIMEOUT).await {
+        Some(ServerMessage::AlertRequest { id: 7, alert }) => {
+            assert_eq!(*alert, test_alert());
+        }
+        other => panic!("a late client must get the active alert, got {other:?}"),
+    }
+
+    // Cleared: the next late client gets no alert.
+    snapshot_tx
+        .send(ServerMessage::AlertCleared { id: 7 })
+        .expect("a handler is listening");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (mut later, _later_writer) = handshaked_client(&endpoint).await;
+    use futures::StreamExt;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), later.next())
+            .await
+            .is_err(),
+        "no alert is active, so nothing may be sent after the handshake"
+    );
+
+    let _ = shutdown_tx.send(());
+}
