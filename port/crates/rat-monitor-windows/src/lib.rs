@@ -355,7 +355,8 @@ pub mod stats {
     pub fn get_tcp_estats_v4(row: &MIB_TCPROW_OWNER_PID) -> Result<(u64, u64), WIN32_ERROR> {
         // M10 (update-09): the ROD carries u64 counters; read it through
         // 8-aligned storage instead of an align-1 Vec<u8>.
-        let mut data_storage = vec![0u64; std::mem::size_of::<TCP_ESTATS_DATA_ROD_v0>().div_ceil(8)];
+        let mut data_storage =
+            vec![0u64; std::mem::size_of::<TCP_ESTATS_DATA_ROD_v0>().div_ceil(8)];
         let mut data = unsafe {
             std::slice::from_raw_parts_mut(
                 data_storage.as_mut_ptr() as *mut u8,
@@ -386,7 +387,8 @@ pub mod stats {
     pub fn get_tcp_estats_v6(row: &MIB_TCP6ROW_OWNER_PID) -> Result<(u64, u64), WIN32_ERROR> {
         // M10 (update-09): the ROD carries u64 counters; read it through
         // 8-aligned storage instead of an align-1 Vec<u8>.
-        let mut data_storage = vec![0u64; std::mem::size_of::<TCP_ESTATS_DATA_ROD_v0>().div_ceil(8)];
+        let mut data_storage =
+            vec![0u64; std::mem::size_of::<TCP_ESTATS_DATA_ROD_v0>().div_ceil(8)];
         let mut data = unsafe {
             std::slice::from_raw_parts_mut(
                 data_storage.as_mut_ptr() as *mut u8,
