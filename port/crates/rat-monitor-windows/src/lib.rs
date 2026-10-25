@@ -350,7 +350,7 @@ pub mod stats {
         let mut data = vec![0u8; std::mem::size_of::<TCP_ESTATS_DATA_ROD_v0>()];
         let res = unsafe {
             GetPerTcp6ConnectionEStats(
-                row as *const _ as *const MIB_TCP6ROW,
+                &to_mib_tcp6_row(row),
                 TcpConnectionEstatsData,
                 None,
                 0,
@@ -368,12 +368,45 @@ pub mod stats {
             Err(WIN32_ERROR(res))
         }
     }
+
+    /// M2 (update-09): `MIB_TCP6ROW_OWNER_PID` and `MIB_TCP6ROW` have
+    /// different layouts (State first vs. last, no PID field); casting one
+    /// to the other made the estats call read garbage fields. Build the
+    /// real row from the owner-pid row's fields.
+    pub fn to_mib_tcp6_row(row: &MIB_TCP6ROW_OWNER_PID) -> MIB_TCP6ROW {
+        use windows::Win32::NetworkManagement::IpHelper::MIB_TCP_STATE;
+        use windows::Win32::Networking::WinSock::{IN6_ADDR, IN6_ADDR_0};
+        MIB_TCP6ROW {
+            State: MIB_TCP_STATE(row.dwState as i32),
+            LocalAddr: IN6_ADDR {
+                u: IN6_ADDR_0 {
+                    Byte: row.ucLocalAddr,
+                },
+            },
+            dwLocalScopeId: row.dwLocalScopeId,
+            dwLocalPort: row.dwLocalPort,
+            RemoteAddr: IN6_ADDR {
+                u: IN6_ADDR_0 {
+                    Byte: row.ucRemoteAddr,
+                },
+            },
+            dwRemoteScopeId: row.dwRemoteScopeId,
+            dwRemotePort: row.dwRemotePort,
+        }
+    }
+
+    /// M3 (update-09): API-level conditions that disable estats for the
+    /// whole process (no admin rights / OS support); anything else is a
+    /// per-row error.
+    pub fn estats_error_is_global(e: &WIN32_ERROR) -> bool {
+        *e == windows::Win32::Foundation::ERROR_ACCESS_DENIED
+            || *e == windows::Win32::Foundation::ERROR_NOT_SUPPORTED
+    }
 }
 
 #[cfg(windows)]
 pub struct WindowsMonitor {
     estats_supported: bool,
-    estats_checked: bool,
 }
 
 #[cfg(windows)]
@@ -388,7 +421,6 @@ impl WindowsMonitor {
     pub fn new() -> Self {
         Self {
             estats_supported: true,
-            estats_checked: false,
         }
     }
 }
@@ -416,21 +448,20 @@ impl ConnectionSource for WindowsMonitor {
                 let mut bytes_in = None;
                 let mut bytes_out = None;
 
-                if self.estats_supported {
+                // M3 (update-09): LISTEN rows are never queried (estats is
+                // for live connections), and only API-level failures switch
+                // byte counting off globally - a row-level error (the row
+                // vanished between the table snapshot and the stats call)
+                // leaves that row at None without affecting the others.
+                if self.estats_supported && !is_listening_state(row.dwState) {
                     match stats::get_tcp_estats_v4(&row) {
                         Ok((bin, bout)) => {
-                            self.estats_checked = true;
                             bytes_in = Some(bin);
                             bytes_out = Some(bout);
                         }
                         Err(e) => {
-                            if !self.estats_checked {
-                                if e == windows::Win32::Foundation::ERROR_ACCESS_DENIED
-                                    || e == windows::Win32::Foundation::ERROR_NOT_SUPPORTED
-                                {
-                                    self.estats_supported = false;
-                                }
-                                self.estats_checked = true;
+                            if stats::estats_error_is_global(&e) {
+                                self.estats_supported = false;
                             }
                         }
                     }
@@ -476,21 +507,20 @@ impl ConnectionSource for WindowsMonitor {
                 let mut bytes_in = None;
                 let mut bytes_out = None;
 
-                if self.estats_supported {
+                // M3 (update-09): LISTEN rows are never queried (estats is
+                // for live connections), and only API-level failures switch
+                // byte counting off globally - a row-level error (the row
+                // vanished between the table snapshot and the stats call)
+                // leaves that row at None without affecting the others.
+                if self.estats_supported && !is_listening_state(row.dwState) {
                     match stats::get_tcp_estats_v6(&row) {
                         Ok((bin, bout)) => {
-                            self.estats_checked = true;
                             bytes_in = Some(bin);
                             bytes_out = Some(bout);
                         }
                         Err(e) => {
-                            if !self.estats_checked {
-                                if e == windows::Win32::Foundation::ERROR_ACCESS_DENIED
-                                    || e == windows::Win32::Foundation::ERROR_NOT_SUPPORTED
-                                {
-                                    self.estats_supported = false;
-                                }
-                                self.estats_checked = true;
+                            if stats::estats_error_is_global(&e) {
+                                self.estats_supported = false;
                             }
                         }
                     }
@@ -674,6 +704,46 @@ mod vpn_tests {
 mod edge_case_tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn test_estats_global_vs_row_errors() {
+        use windows::Win32::Foundation::WIN32_ERROR;
+        // M3 (update-09): only API-level conditions are global.
+        assert!(stats::estats_error_is_global(&WIN32_ERROR(5))); // ACCESS_DENIED
+        assert!(stats::estats_error_is_global(&WIN32_ERROR(50))); // NOT_SUPPORTED
+        assert!(!stats::estats_error_is_global(&WIN32_ERROR(1168))); // NOT_FOUND (row vanished)
+        assert!(!stats::estats_error_is_global(&WIN32_ERROR(87))); // INVALID_PARAMETER
+    }
+
+    #[test]
+    fn test_mib_tcp6_row_layouts_differ_and_copy_is_faithful() {
+        // M2 (update-09): the owner-pid row and the plain row have
+        // different layouts; the faithful copy must carry every field.
+        assert_ne!(
+            std::mem::size_of::<windows::Win32::NetworkManagement::IpHelper::MIB_TCP6ROW>(),
+            std::mem::size_of::<windows::Win32::NetworkManagement::IpHelper::MIB_TCP6ROW_OWNER_PID>(
+            ),
+            "layouts must not be conflated"
+        );
+        let owner = windows::Win32::NetworkManagement::IpHelper::MIB_TCP6ROW_OWNER_PID {
+            ucLocalAddr: [1; 16],
+            dwLocalScopeId: 7,
+            dwLocalPort: 0x1234,
+            ucRemoteAddr: [2; 16],
+            dwRemoteScopeId: 9,
+            dwRemotePort: 0x5678,
+            dwState: 5,
+            dwOwningPid: 42,
+        };
+        let plain = stats::to_mib_tcp6_row(&owner);
+        assert_eq!(plain.State.0, 5);
+        assert_eq!(unsafe { plain.LocalAddr.u.Byte }, [1; 16]);
+        assert_eq!(plain.dwLocalScopeId, 7);
+        assert_eq!(plain.dwLocalPort, 0x1234);
+        assert_eq!(unsafe { plain.RemoteAddr.u.Byte }, [2; 16]);
+        assert_eq!(plain.dwRemoteScopeId, 9);
+        assert_eq!(plain.dwRemotePort, 0x5678);
+    }
 
     #[test]
     fn test_extract_process_name_from_path() {

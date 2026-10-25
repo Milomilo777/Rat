@@ -6,6 +6,22 @@ use crate::{Blocklist, Enforcer};
 
 pub struct LinuxEnforcer;
 
+/// S5 (update-08): resolve nft from its known absolute locations instead of
+/// PATH / the working directory, so a tampered PATH cannot substitute the
+/// binary the privileged daemon shells out to.
+pub fn nft_path() -> io::Result<std::path::PathBuf> {
+    for candidate in ["/usr/sbin/nft", "/sbin/nft"] {
+        let path = std::path::PathBuf::from(candidate);
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "nft not found in /usr/sbin or /sbin",
+    ))
+}
+
 impl Enforcer for LinuxEnforcer {
     type Plan = String;
 
@@ -44,25 +60,47 @@ impl Enforcer for LinuxEnforcer {
         )
     }
 
+    /// S8 (update-08): drop the whole `inet rat` table on clean shutdown
+    /// (systemd's ExecStopPost runs the same command after any exit).
+    fn cleanup(&self) -> io::Result<()> {
+        let dry_run = crate::dry_run_enabled(env::var("RAT_DRY_RUN").ok().as_deref());
+        if dry_run {
+            println!("nft delete table inet rat");
+            return Ok(());
+        }
+
+        let status = Command::new(nft_path()?)
+            .args(["delete", "table", "inet", "rat"])
+            .status()?;
+        if !status.success() {
+            return Err(io::Error::other("failed to delete nft table inet rat"));
+        }
+        Ok(())
+    }
+
     fn apply(&self, plan: &Self::Plan) -> io::Result<()> {
-        let dry_run = env::var("RAT_ENFORCE").map(|v| v != "1").unwrap_or(true);
+        let dry_run = crate::dry_run_enabled(env::var("RAT_DRY_RUN").ok().as_deref());
 
         if dry_run {
             println!("nft -f - <<EOF\n{}EOF", plan);
             Ok(())
         } else {
-            let mut child = Command::new("nft")
+            let mut child = Command::new(nft_path()?)
                 .arg("-f")
                 .arg("-")
                 .stdin(std::process::Stdio::piped())
                 .spawn()?;
 
             use std::io::Write;
+            // S10 (update-08): remember the write result but ALWAYS reap the
+            // child, so a failed write cannot leave a zombie behind.
+            let mut write_result = Ok(());
             if let Some(mut stdin) = child.stdin.take() {
-                stdin.write_all(plan.as_bytes())?;
+                write_result = stdin.write_all(plan.as_bytes());
             }
 
             let status = child.wait()?;
+            write_result?;
             if !status.success() {
                 return Err(io::Error::other("nftables command failed"));
             }
@@ -74,6 +112,24 @@ impl Enforcer for LinuxEnforcer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_nft_resolved_absolute_when_present() {
+        // Consistency: if either known location holds nft, it is returned;
+        // otherwise the lookup fails instead of falling back to PATH.
+        let present = ["/usr/sbin/nft", "/sbin/nft"]
+            .iter()
+            .find(|c| std::path::Path::new(c).is_file());
+        match (present, nft_path()) {
+            (Some(found), Ok(p)) => {
+                assert!(p.is_absolute());
+                assert_eq!(&p.to_string_lossy(), found);
+            }
+            (None, Err(e)) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
+            (Some(_), Err(e)) => panic!("nft present but lookup failed: {e}"),
+            (None, Ok(p)) => panic!("nft not present but lookup returned {p:?}"),
+        }
+    }
     use proptest::prelude::*;
     use std::time::Instant;
 

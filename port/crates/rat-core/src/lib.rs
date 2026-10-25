@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use rat_types::Protocol;
-use serde::{Deserialize, Serialize};
+use serde::de::{self, MapAccess, SeqAccess, Visitor};
+use serde::ser::SerializeMap as _;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -29,7 +31,9 @@ pub enum Lifetime {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppIdentity {
+    #[serde(default, alias = "signingID")]
     pub signing_id: Option<String>,
+    #[serde(default, alias = "teamID")]
     pub team_id: Option<String>,
     pub path: String,
 }
@@ -82,11 +86,63 @@ impl AppConnection {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+// Swift models ports as `ClosedRange<Int>`, whose Codable form is the array
+// `[lower, upper]`. Read both that form and our `{start, end}` object, and
+// write the Swift form so rules.json stays readable by the Swift app.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortRange {
     pub start: u16,
     pub end: u16,
+}
+
+impl Serialize for PortRange {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq([self.start, self.end])
+    }
+}
+
+impl<'de> Deserialize<'de> for PortRange {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct PortRangeVisitor;
+
+        impl<'de> Visitor<'de> for PortRangeVisitor {
+            type Value = PortRange;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a [start, end] pair or a {start, end} object")
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<PortRange, A::Error> {
+                let start = seq
+                    .next_element::<u16>()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &"two port numbers"))?;
+                let end = seq
+                    .next_element::<u16>()?
+                    .ok_or_else(|| de::Error::invalid_length(1, &"two port numbers"))?;
+                Ok(PortRange { start, end })
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<PortRange, A::Error> {
+                let mut start = None;
+                let mut end = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "start" => start = Some(map.next_value()?),
+                        "end" => end = Some(map.next_value()?),
+                        _ => {
+                            let _ = map.next_value::<de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(PortRange {
+                    start: start.ok_or_else(|| de::Error::missing_field("start"))?,
+                    end: end.ok_or_else(|| de::Error::missing_field("end"))?,
+                })
+            }
+        }
+
+        deserializer.deserialize_any(PortRangeVisitor)
+    }
 }
 
 impl PortRange {
@@ -104,7 +160,9 @@ pub struct Rule {
 
     // Application executable path; matches the path itself and anything inside it.
     pub process_path: Option<String>,
+    #[serde(alias = "signingID")]
     pub signing_id: Option<String>,
+    #[serde(alias = "teamID")]
     pub team_id: Option<String>,
 
     // "example.com" matches the domain and subdomains; "*" or nil = any remote.
@@ -123,7 +181,9 @@ pub struct Rule {
     #[serde(default = "default_lifetime")]
     pub lifetime: Lifetime,
 
+    #[serde(alias = "profileID")]
     pub profile_id: Option<Uuid>,
+    #[serde(alias = "groupID")]
     pub group_id: Option<Uuid>,
 
     #[serde(default = "default_created_at")]
@@ -365,13 +425,92 @@ pub struct NetworkTrigger {
     pub profile_id: Uuid,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnknownNetworkAction {
     Ask,
     DoNothing,
     Deactivate,
     Activate(Uuid),
+}
+
+// Swift's enum-with-associated-value Codable writes payload-less cases as
+// {"ask": {}} and .activate as {"activate": "<uuid>"}. Read that form as well
+// as the plain-string externally-tagged form, and write the Swift form so
+// rules.json stays readable by the Swift app.
+struct EmptyObject;
+impl Serialize for EmptyObject {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_map(Some(0))?.end()
+    }
+}
+
+impl Serialize for UnknownNetworkAction {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(1))?;
+        match self {
+            UnknownNetworkAction::Ask => map.serialize_entry("ask", &EmptyObject)?,
+            UnknownNetworkAction::DoNothing => map.serialize_entry("doNothing", &EmptyObject)?,
+            UnknownNetworkAction::Deactivate => map.serialize_entry("deactivate", &EmptyObject)?,
+            UnknownNetworkAction::Activate(id) => map.serialize_entry("activate", id)?,
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for UnknownNetworkAction {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct UnknownNetworkActionVisitor;
+
+        impl<'de> Visitor<'de> for UnknownNetworkActionVisitor {
+            type Value = UnknownNetworkAction;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an unknown-network action")
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                match v {
+                    "ask" => Ok(UnknownNetworkAction::Ask),
+                    "doNothing" => Ok(UnknownNetworkAction::DoNothing),
+                    "deactivate" => Ok(UnknownNetworkAction::Deactivate),
+                    other => Err(E::unknown_variant(
+                        other,
+                        &["ask", "doNothing", "deactivate", "activate"],
+                    )),
+                }
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let Some(key) = map.next_key::<String>()? else {
+                    return Err(de::Error::custom("empty unknown-network action"));
+                };
+                let value = match key.as_str() {
+                    "ask" => {
+                        let _ = map.next_value::<de::IgnoredAny>()?;
+                        UnknownNetworkAction::Ask
+                    }
+                    "doNothing" => {
+                        let _ = map.next_value::<de::IgnoredAny>()?;
+                        UnknownNetworkAction::DoNothing
+                    }
+                    "deactivate" => {
+                        let _ = map.next_value::<de::IgnoredAny>()?;
+                        UnknownNetworkAction::Deactivate
+                    }
+                    "activate" => UnknownNetworkAction::Activate(map.next_value::<Uuid>()?),
+                    other => {
+                        return Err(de::Error::unknown_variant(
+                            other,
+                            &["ask", "doNothing", "deactivate", "activate"],
+                        ));
+                    }
+                };
+                Ok(value)
+            }
+        }
+
+        deserializer.deserialize_any(UnknownNetworkActionVisitor)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -386,6 +525,7 @@ pub struct RuleSet {
     pub triggers: Vec<NetworkTrigger>,
     #[serde(default)]
     pub rules: Vec<Rule>,
+    #[serde(alias = "activeProfileID")]
     pub active_profile_id: Uuid,
     #[serde(default)]
     pub mark_new_rules_as_unapproved: bool,
@@ -545,6 +685,8 @@ impl RuleEngine {
             .filter(|r| {
                 (r.profile_id.is_none() || r.profile_id == Some(snapshot.active_profile_id))
                     && !(r.group_id.is_some_and(|gid| disabled_groups.contains(&gid)))
+                    && r.enabled
+                    && r.approved
             })
             .filter(|r| r.matches(c))
             .max_by(|a, b| {
@@ -793,7 +935,7 @@ mod tests {
     }
 
     #[test]
-    fn test_disabled_ignored_but_unapproved_still_active() {
+    fn test_disabled_and_unapproved_rules_never_match() {
         let mut r1 = new_rule();
         r1.verdict = Verdict::Deny;
         r1.enabled = false;
@@ -809,7 +951,7 @@ mod tests {
 
         assert_eq!(
             RuleEngine::with_rules(vec![r2], Verdict::Ask).evaluate(&conn("a.com", 443)),
-            Verdict::Deny
+            Verdict::Ask
         );
     }
 

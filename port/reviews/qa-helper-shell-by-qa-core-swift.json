@@ -1,0 +1,12 @@
+{
+  "lane": "qa-helper-shell",
+  "reviewer": "qa-core-swift",
+  "review": {
+    "R1": "CONFIRMED",
+    "R2": "NOT CONFIRMED",
+    "R3": "CONFIRMED",
+    "R4": "CONFIRMED",
+    "R5": "CONFIRMED",
+    "R6": "NOT CONFIRMED"
+  }
+}

@@ -43,6 +43,42 @@ pub fn format_rule_name(path: &str) -> String {
     format!("Rat:path:{}", path)
 }
 
+/// S5 (update-08): resolve netsh from %SystemRoot% instead of PATH / the
+/// working directory, so a tampered PATH cannot substitute the binary the
+/// privileged daemon shells out to.
+pub fn netsh_path() -> io::Result<std::path::PathBuf> {
+    let root = std::env::var_os("SystemRoot")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
+    let candidate = root.join(r"System32\netsh.exe");
+    if candidate.is_file() {
+        Ok(candidate)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "netsh.exe not found under SystemRoot",
+        ))
+    }
+}
+
+/// S5 (update-08): resolve powershell from %SystemRoot% for the wildcard
+/// rule cleanup (netsh cannot delete by name pattern); same PATH-hardening
+/// rationale as [`netsh_path`].
+pub fn powershell_path() -> io::Result<std::path::PathBuf> {
+    let root = std::env::var_os("SystemRoot")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
+    let candidate = root.join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    if candidate.is_file() {
+        Ok(candidate)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "powershell.exe not found under SystemRoot",
+        ))
+    }
+}
+
 impl Enforcer for WindowsEnforcer {
     type Plan = WindowsPlan;
 
@@ -61,18 +97,25 @@ impl Enforcer for WindowsEnforcer {
         use std::env;
         use std::process::Command;
 
-        for path in plan.add.iter().chain(plan.remove.iter()) {
-            crate::validate_path(path).map_err(io::Error::other)?;
-        }
+        // S6 (update-08): validate AND canonicalize every path before use,
+        // so rule names and program= targets always name the real binary.
+        let validated = |paths: &[String]| -> io::Result<Vec<String>> {
+            paths
+                .iter()
+                .map(|p| crate::validate_path(p).map_err(io::Error::other))
+                .collect()
+        };
+        let remove = validated(&plan.remove)?;
+        let add = validated(&plan.add)?;
 
-        let dry_run = env::var("RAT_ENFORCE").map(|v| v != "1").unwrap_or(true);
+        let dry_run = crate::dry_run_enabled(env::var("RAT_DRY_RUN").ok().as_deref());
 
-        for path in &plan.remove {
+        for path in &remove {
             let name = format_rule_name(path);
             if dry_run {
                 println!("netsh advfirewall firewall delete rule name=\"{}\"", name);
             } else {
-                let status = Command::new("netsh")
+                let status = Command::new(netsh_path()?)
                     .args([
                         "advfirewall",
                         "firewall",
@@ -87,7 +130,7 @@ impl Enforcer for WindowsEnforcer {
             }
         }
 
-        for path in &plan.add {
+        for path in &add {
             let name = format_rule_name(path);
             if dry_run {
                 println!(
@@ -106,7 +149,7 @@ impl Enforcer for WindowsEnforcer {
                     format!("program={}", path),
                 ];
 
-                let status = Command::new("netsh").args(&args).status()?;
+                let status = Command::new(netsh_path()?).args(&args).status()?;
 
                 if !status.success() {
                     return Err(io::Error::other("Failed to add firewall rule"));
@@ -116,11 +159,71 @@ impl Enforcer for WindowsEnforcer {
 
         Ok(())
     }
+
+    /// S8 (update-08): netsh cannot delete by name pattern, so the wildcard
+    /// cleanup goes through PowerShell's NetSecurity module.
+    fn cleanup(&self) -> io::Result<()> {
+        use std::env;
+        use std::process::Command;
+
+        let dry_run = crate::dry_run_enabled(env::var("RAT_DRY_RUN").ok().as_deref());
+        if dry_run {
+            println!(
+                "powershell: Get-NetFirewallRule -DisplayName 'Rat:path:*' | Remove-NetFirewallRule"
+            );
+            return Ok(());
+        }
+
+        let status = Command::new(powershell_path()?)
+            .args([
+                "-NoProfile",
+                "-Command",
+                "Get-NetFirewallRule -DisplayName 'Rat:path:*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule",
+            ])
+            .status()?;
+        if !status.success() {
+            return Err(io::Error::other("Failed to clean up Rat firewall rules"));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_powershell_resolved_absolute() {
+        let p = powershell_path().expect("powershell must resolve under SystemRoot");
+        assert!(
+            p.is_absolute(),
+            "powershell must be resolved absolutely: {p:?}"
+        );
+        assert!(p.is_file(), "resolved powershell does not exist: {p:?}");
+    }
+
+    #[test]
+    fn test_windows_cleanup_is_dry_run_safe() {
+        // S7+S8: with the dry-run opt-out set, cleanup must not spawn
+        // any process (verified by it succeeding instantly offline).
+        std::env::set_var("RAT_DRY_RUN", "1");
+        let enforcer = WindowsEnforcer {
+            current: Blocklist::default(),
+        };
+        enforcer.cleanup().expect("dry-run cleanup must succeed");
+    }
+
+    #[test]
+    fn test_netsh_resolved_absolute() {
+        let p = netsh_path().expect("netsh must resolve under SystemRoot");
+        assert!(p.is_absolute(), "netsh must be resolved absolutely: {p:?}");
+        assert!(p.is_file(), "resolved netsh does not exist: {p:?}");
+        assert_eq!(
+            p.file_name().and_then(|n| n.to_str()),
+            Some("netsh.exe"),
+            "unexpected binary: {p:?}"
+        );
+    }
     use proptest::prelude::*;
     use std::time::Instant;
 
@@ -170,6 +273,8 @@ mod tests {
 
     #[test]
     fn test_windows_apply_rejects_invalid_path() {
+        // S7 (update-08): tests never touch a real firewall.
+        std::env::set_var("RAT_DRY_RUN", "1");
         let current = Blocklist::default();
         let wanted = Blocklist {
             paths: vec!["C:\\Program Files\\App\"; evil".to_string()],
