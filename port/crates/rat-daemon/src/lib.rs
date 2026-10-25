@@ -1,4 +1,5 @@
 pub mod core;
+pub mod fw_status;
 pub mod ipc;
 pub mod msg;
 pub mod rules_dir;
@@ -125,6 +126,11 @@ pub async fn run_components_trusted(
     let shutdown_ipc = shutdown_rx.resubscribe();
     let mut shutdown_wait = shutdown_rx.resubscribe();
 
+    // Silent-disable warning (Windows, production only): read-only watcher.
+    #[cfg(windows)]
+    let fw_task = fw_status::watch_enabled()
+        .then(|| fw_status::spawn_watch(snapshot_tx.clone(), shutdown_rx.resubscribe()));
+
     let mut core_task = tokio::spawn(run_pipeline(
         source,
         policy,
@@ -160,6 +166,11 @@ pub async fn run_components_trusted(
         },
     };
 
+    #[cfg(windows)]
+    if let Some(task) = &fw_task {
+        task.abort();
+    }
+
     match failure {
         Some(e) => {
             core_task.abort();
@@ -193,6 +204,7 @@ pub async fn run_daemon(shutdown_rx: tokio::sync::broadcast::Receiver<()>) -> st
         let source = rat_monitor_windows::WindowsMonitor::new();
         let backend = core::WindowsBackend::new();
         let rules_path = default_rules_path();
+        fw_status::enable_watch();
         // RAT_RULES_FILE is an explicit admin/test override; only the
         // built-in ProgramData location needs the trust gate.
         let trusted = std::env::var_os("RAT_RULES_FILE").is_some()

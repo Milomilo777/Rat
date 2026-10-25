@@ -266,11 +266,76 @@ pub mod windows_sys {
 pub mod process_info {
     use rat_types::ProcessInfo;
     use std::path::PathBuf;
+    use windows::core::PCWSTR;
     use windows::core::PWSTR;
-    use windows::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED};
-    use windows::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    use windows::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, HANDLE, PSID};
+    use windows::Win32::Security::{
+        GetTokenInformation, LookupAccountSidW, TokenUser, SID_NAME_USE, TOKEN_QUERY, TOKEN_USER,
     };
+    use windows::Win32::System::Threading::{
+        OpenProcess, OpenProcessToken, QueryFullProcessImageNameW,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    /// `DOMAIN\user` (or `user` when the domain is empty) of the process
+    /// token. `None` on access denied or any failed call: never a panic.
+    /// The token handle is always closed; `process` stays owned by the caller.
+    fn process_user(process: HANDLE) -> Option<String> {
+        let mut token = HANDLE::default();
+        unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) }.ok()?;
+        let user = token_user(token);
+        let _ = unsafe { CloseHandle(token) };
+        user
+    }
+
+    fn token_user(token: HANDLE) -> Option<String> {
+        let mut needed = 0u32;
+        // First call only sizes the buffer (fails with INSUFFICIENT_BUFFER).
+        let _ = unsafe { GetTokenInformation(token, TokenUser, None, 0, &mut needed) };
+        if needed == 0 || needed > 1 << 16 {
+            return None;
+        }
+        // u64 elements keep the TOKEN_USER header aligned.
+        let mut buf = vec![0u64; (needed as usize).div_ceil(8)];
+        unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                Some(buf.as_mut_ptr() as *mut core::ffi::c_void),
+                (buf.len() * 8) as u32,
+                &mut needed,
+            )
+        }
+        .ok()?;
+        let sid: PSID = unsafe { (*(buf.as_ptr() as *const TOKEN_USER)).User.Sid };
+
+        let mut name = [0u16; 256];
+        let mut domain = [0u16; 256];
+        let mut name_len = name.len() as u32;
+        let mut domain_len = domain.len() as u32;
+        let mut kind = SID_NAME_USE(0);
+        unsafe {
+            LookupAccountSidW(
+                PCWSTR::null(),
+                sid,
+                PWSTR(name.as_mut_ptr()),
+                &mut name_len,
+                PWSTR(domain.as_mut_ptr()),
+                &mut domain_len,
+                &mut kind,
+            )
+        }
+        .ok()?;
+        let name = String::from_utf16_lossy(&name[..name_len as usize]);
+        let domain = String::from_utf16_lossy(&domain[..domain_len as usize]);
+        if name.is_empty() {
+            None
+        } else if domain.is_empty() {
+            Some(name)
+        } else {
+            Some(format!("{domain}\\{name}"))
+        }
+    }
 
     pub fn get_process_info(pid: u32) -> ProcessInfo {
         if pid == 0 {
@@ -314,13 +379,15 @@ pub mod process_info {
 
                 let name = crate::extract_process_name_from_path(exe.as_deref());
 
+                let user = process_user(h);
+
                 let _ = unsafe { CloseHandle(h) };
 
                 ProcessInfo {
                     pid,
                     exe,
                     name,
-                    user: None,
+                    user,
                 }
             }
             Err(e) if e.code() == ERROR_ACCESS_DENIED.into() => {
@@ -1097,5 +1164,30 @@ mod edge_case_tests {
         // IPv4-mapped
         let ipv4_mapped = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 192, 168, 1, 1];
         assert!(convert_ipv6_addr(&ipv4_mapped).to_ipv4_mapped().is_some());
+    }
+}
+
+#[cfg(all(test, windows))]
+mod process_user_tests {
+    use super::process_info::get_process_info;
+
+    #[test]
+    fn test_process_user_current_process() {
+        let info = get_process_info(std::process::id());
+        let user = info.user.expect("own process user must be known");
+        assert!(!user.is_empty());
+        let env = std::env::var("USERNAME").expect("USERNAME set");
+        let user_part = user.rsplit('\\').next().unwrap();
+        assert!(user_part.eq_ignore_ascii_case(&env), "{user} vs {env}");
+    }
+
+    #[test]
+    fn test_process_user_denied_or_system_never_panics() {
+        for pid in [0u32, 4, 1, 0xFFFF_FFF0] {
+            let info = get_process_info(pid);
+            if let Some(u) = info.user {
+                assert!(!u.is_empty());
+            }
+        }
     }
 }

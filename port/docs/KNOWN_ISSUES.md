@@ -22,9 +22,10 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
   `sihost.exe`, `conhost.exe`, `rundll32.exe`, `WmiPrvSE.exe`); other such hosts are not on the list yet.
 - **`cleanup()` keeps in-memory state (low).** After `cleanup()` the enforcer's `current` set still lists the
   removed rules until the next reconcile.
-- **Silent disable (medium).** If Windows Defender Firewall is off, a profile is disabled, a third-party firewall
-  replaced it, or group policy ignores local rules, rules are added but have no effect; the daemon does not
-  report this yet.
+- **Silent disable (medium).** On Windows the daemon warns when Defender Firewall is off for a profile. It does
+  not detect a third-party firewall that replaced Defender, or group policy that ignores local rules; in those
+  cases rules are added but have no effect and nothing is reported. The warning is shown as the app's
+  connection detail text (a dedicated warning banner is not built). Linux has no such check.
 - **Port blocks outlive the socket (medium).** A local port blocked for a denied app stays blocked until the next
   tick; a new allowed app that reuses the same ephemeral port can be blocked meanwhile (also seen on Linux, E2E L4).
 
@@ -58,7 +59,8 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
   after each connection sample (every 1.5 s), so a new connection can get through briefly.
 - **Shared sockets and PID reuse (low).** A socket shared by several processes is attributed to the lowest PID;
   PID reuse and sockets without an inode are not handled yet.
-- **Windows process user (low).** The user of a process is not filled in on Windows yet.
+- **Windows process user (low).** The user is empty for processes whose token cannot be opened without admin
+  rights (system services, other users' processes).
 
 ## Desktop app (`port/app`)
 - Differences from the macOS app: the sidebar groups by service instead of by app; the inspector shows all
