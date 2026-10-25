@@ -59,7 +59,8 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
   after each connection sample (every 1.5 s), so a new connection can get through briefly.
 - **Shared sockets and PID reuse (low).** A socket shared by several processes is attributed to the lowest PID;
   PID reuse and sockets without an inode are not handled yet.
-- **Windows process user (low).** The user of a process is not filled in on Windows yet.
+- **Windows process user (low).** The user is empty for processes whose token cannot be opened without admin
+  rights (system services, other users' processes).
 
 ## Desktop app (`port/app`)
 - Differences from the macOS app: the sidebar groups by service instead of by app; the inspector shows all
