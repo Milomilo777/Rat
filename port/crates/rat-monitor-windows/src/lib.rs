@@ -350,7 +350,7 @@ pub mod stats {
         let mut data = vec![0u8; std::mem::size_of::<TCP_ESTATS_DATA_ROD_v0>()];
         let res = unsafe {
             GetPerTcp6ConnectionEStats(
-                row as *const _ as *const MIB_TCP6ROW,
+                &to_mib_tcp6_row(row),
                 TcpConnectionEstatsData,
                 None,
                 0,
@@ -366,6 +366,32 @@ pub mod stats {
             Ok((data_struct.DataBytesIn, data_struct.DataBytesOut))
         } else {
             Err(WIN32_ERROR(res))
+        }
+    }
+
+    /// M2 (update-09): `MIB_TCP6ROW_OWNER_PID` and `MIB_TCP6ROW` have
+    /// different layouts (State first vs. last, no PID field); casting one
+    /// to the other made the estats call read garbage fields. Build the
+    /// real row from the owner-pid row's fields.
+    pub fn to_mib_tcp6_row(row: &MIB_TCP6ROW_OWNER_PID) -> MIB_TCP6ROW {
+        use windows::Win32::NetworkManagement::IpHelper::MIB_TCP_STATE;
+        use windows::Win32::Networking::WinSock::{IN6_ADDR, IN6_ADDR_0};
+        MIB_TCP6ROW {
+            State: MIB_TCP_STATE(row.dwState as i32),
+            LocalAddr: IN6_ADDR {
+                u: IN6_ADDR_0 {
+                    Byte: row.ucLocalAddr,
+                },
+            },
+            dwLocalScopeId: row.dwLocalScopeId,
+            dwLocalPort: row.dwLocalPort,
+            RemoteAddr: IN6_ADDR {
+                u: IN6_ADDR_0 {
+                    Byte: row.ucRemoteAddr,
+                },
+            },
+            dwRemoteScopeId: row.dwRemoteScopeId,
+            dwRemotePort: row.dwRemotePort,
         }
     }
 }
@@ -674,6 +700,36 @@ mod vpn_tests {
 mod edge_case_tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn test_mib_tcp6_row_layouts_differ_and_copy_is_faithful() {
+        // M2 (update-09): the owner-pid row and the plain row have
+        // different layouts; the faithful copy must carry every field.
+        assert_ne!(
+            std::mem::size_of::<windows::Win32::NetworkManagement::IpHelper::MIB_TCP6ROW>(),
+            std::mem::size_of::<windows::Win32::NetworkManagement::IpHelper::MIB_TCP6ROW_OWNER_PID>(
+            ),
+            "layouts must not be conflated"
+        );
+        let owner = windows::Win32::NetworkManagement::IpHelper::MIB_TCP6ROW_OWNER_PID {
+            ucLocalAddr: [1; 16],
+            dwLocalScopeId: 7,
+            dwLocalPort: 0x1234,
+            ucRemoteAddr: [2; 16],
+            dwRemoteScopeId: 9,
+            dwRemotePort: 0x5678,
+            dwState: 5,
+            dwOwningPid: 42,
+        };
+        let plain = stats::to_mib_tcp6_row(&owner);
+        assert_eq!(plain.State.0, 5);
+        assert_eq!(unsafe { plain.LocalAddr.u.Byte }, [1; 16]);
+        assert_eq!(plain.dwLocalScopeId, 7);
+        assert_eq!(plain.dwLocalPort, 0x1234);
+        assert_eq!(unsafe { plain.RemoteAddr.u.Byte }, [2; 16]);
+        assert_eq!(plain.dwRemoteScopeId, 9);
+        assert_eq!(plain.dwRemotePort, 0x5678);
+    }
 
     #[test]
     fn test_extract_process_name_from_path() {
