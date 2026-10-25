@@ -11,6 +11,18 @@ pub struct WindowsEnforcer {
 pub struct WindowsPlan {
     pub add: Vec<String>,
     pub remove: Vec<String>,
+    /// review-01 R5: denied LOCAL ports to add as per-port rules — the
+    /// Windows mirror of the Linux backend's `rat_ports` nft set and the
+    /// macOS Ledger's local-port blocks (Ledger.swift:330-332). This is also
+    /// what a refused shared host's denied socket gets instead of a silent
+    /// no-op ("block by port instead").
+    pub add_ports: Vec<u16>,
+    pub remove_ports: Vec<u16>,
+    /// W2 (PROPOSALS #1): wanted whole-program blocks that were REFUSED
+    /// because the target is a shared service host (svchost.exe hosts DNS,
+    /// DHCP and more for the whole machine). The caller decides how to tell
+    /// the user; per-port rules below still apply.
+    pub refused: Vec<String>,
 }
 
 pub fn generate_windows_plan(current: &Blocklist, wanted: &Blocklist) -> WindowsPlan {
@@ -19,7 +31,15 @@ pub fn generate_windows_plan(current: &Blocklist, wanted: &Blocklist) -> Windows
     let wanted_set: HashSet<&String> = wanted.paths.iter().collect();
 
     let mut add = Vec::new();
+    let mut refused = Vec::new();
     for path in &wanted.paths {
+        if crate::is_shared_service_host(path) {
+            // W2: never block a shared service host per-program.
+            if !refused.contains(path) {
+                refused.push(path.clone());
+            }
+            continue;
+        }
         if !current_set.contains(path) {
             add.push(path.clone());
         }
@@ -32,15 +52,82 @@ pub fn generate_windows_plan(current: &Blocklist, wanted: &Blocklist) -> Windows
         }
     }
 
+    // review-01 R5: the port axis diffs like the path axis. Local ports are
+    // ephemeral, so their churn (denied socket opens/closes) is expected —
+    // the ledger's plan drops a closed socket's port from the wanted set and
+    // the diff removes the rule (PROPOSALS #3, Linux parity).
+    let current_ports: HashSet<u16> = current.local_ports.iter().copied().collect();
+    let wanted_ports: HashSet<u16> = wanted.local_ports.iter().copied().collect();
+    let mut add_ports: Vec<u16> = wanted
+        .local_ports
+        .iter()
+        .copied()
+        .filter(|p| !current_ports.contains(p))
+        .collect();
+    let mut remove_ports: Vec<u16> = current
+        .local_ports
+        .iter()
+        .copied()
+        .filter(|p| !wanted_ports.contains(p))
+        .collect();
+
     // Sort to make plan output deterministic
     add.sort();
     remove.sort();
+    refused.sort();
+    add_ports.sort();
+    add_ports.dedup();
+    remove_ports.sort();
+    remove_ports.dedup();
 
-    WindowsPlan { add, remove }
+    WindowsPlan {
+        add,
+        remove,
+        add_ports,
+        remove_ports,
+        refused,
+    }
 }
 
 pub fn format_rule_name(path: &str) -> String {
     format!("Rat:path:{}", path)
+}
+
+/// review-01 R5: per-port rules share one name per port so the delete path
+/// removes every variant at once.
+pub fn format_port_rule_name(port: u16) -> String {
+    format!("Rat:port:{}", port)
+}
+
+/// The netsh arguments for one per-port block rule. `localport=` needs a
+/// concrete protocol (netsh rejects port parameters with protocol=any), and
+/// the Linux backend blocks both tcp and udp in both directions
+/// (linux.rs drop_out sport / drop_in dport), so one port yields four rules
+/// that all share [`format_port_rule_name`].
+fn port_rule_args(port: u16, dir: &str, proto: &str) -> Vec<String> {
+    vec![
+        "advfirewall".to_string(),
+        "firewall".to_string(),
+        "add".to_string(),
+        "rule".to_string(),
+        format!("name={}", format_port_rule_name(port)),
+        format!("dir={dir}"),
+        "action=block".to_string(),
+        format!("protocol={proto}"),
+        format!("localport={port}"),
+    ]
+}
+
+/// The netsh arguments to remove every variant of one port's rules (name
+/// match covers all four directions/protocols).
+fn port_delete_args(port: u16) -> Vec<String> {
+    vec![
+        "advfirewall".to_string(),
+        "firewall".to_string(),
+        "delete".to_string(),
+        "rule".to_string(),
+        format!("name={}", format_port_rule_name(port)),
+    ]
 }
 
 /// S5 (update-08): resolve netsh from %SystemRoot% instead of PATH / the
@@ -108,6 +195,15 @@ impl Enforcer for WindowsEnforcer {
         let remove = validated(&plan.remove)?;
         let add = validated(&plan.add)?;
 
+        // W2 (PROPOSALS #1): plan() already refuses shared service hosts; a
+        // hand-built plan must not be able to smuggle one through — fail
+        // closed, also in dry-run.
+        if let Some(path) = add.iter().find(|p| crate::is_shared_service_host(p)) {
+            return Err(io::Error::other(format!(
+                "refusing whole-program block of shared service host {path} (would cut DNS/DHCP machine-wide); block by port instead"
+            )));
+        }
+
         let dry_run = crate::dry_run_enabled(env::var("RAT_DRY_RUN").ok().as_deref());
 
         for path in &remove {
@@ -157,6 +253,46 @@ impl Enforcer for WindowsEnforcer {
             }
         }
 
+        // review-01 R5: the port axis. One delete per port (removes all four
+        // variants), four adds per new port (out/in x TCP/UDP).
+        for port in &plan.remove_ports {
+            if dry_run {
+                println!(
+                    "netsh advfirewall firewall delete rule name=\"{}\"",
+                    format_port_rule_name(*port)
+                );
+            } else {
+                let status = Command::new(netsh_path()?)
+                    .args(port_delete_args(*port))
+                    .status()?;
+                if !status.success() {
+                    return Err(io::Error::other(format!(
+                        "Failed to delete firewall port rule {port}"
+                    )));
+                }
+            }
+        }
+
+        for port in &plan.add_ports {
+            for (dir, proto) in [("out", "TCP"), ("out", "UDP"), ("in", "TCP"), ("in", "UDP")] {
+                if dry_run {
+                    println!(
+                        "netsh advfirewall firewall add rule name=\"{}\" dir={dir} action=block protocol={proto} localport={port}",
+                        format_port_rule_name(*port)
+                    );
+                } else {
+                    let status = Command::new(netsh_path()?)
+                        .args(port_rule_args(*port, dir, proto))
+                        .status()?;
+                    if !status.success() {
+                        return Err(io::Error::other(format!(
+                            "Failed to add firewall port rule {port} dir={dir} protocol={proto}"
+                        )));
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -168,18 +304,12 @@ impl Enforcer for WindowsEnforcer {
 
         let dry_run = crate::dry_run_enabled(env::var("RAT_DRY_RUN").ok().as_deref());
         if dry_run {
-            println!(
-                "powershell: Get-NetFirewallRule -DisplayName 'Rat:path:*' | Remove-NetFirewallRule"
-            );
+            println!("powershell: {CLEANUP_RULES_QUERY}");
             return Ok(());
         }
 
         let status = Command::new(powershell_path()?)
-            .args([
-                "-NoProfile",
-                "-Command",
-                "Get-NetFirewallRule -DisplayName 'Rat:path:*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule",
-            ])
+            .args(["-NoProfile", "-Command", CLEANUP_RULES_QUERY])
             .status()?;
         if !status.success() {
             return Err(io::Error::other("Failed to clean up Rat firewall rules"));
@@ -187,6 +317,10 @@ impl Enforcer for WindowsEnforcer {
         Ok(())
     }
 }
+
+/// review-01 R5: the wildcard cleanup must remove BOTH rule families this
+/// daemon creates — per-program (`Rat:path:*`) and per-port (`Rat:port:*`).
+pub(crate) const CLEANUP_RULES_QUERY: &str = "Get-NetFirewallRule -DisplayName @('Rat:path:*','Rat:port:*') -ErrorAction SilentlyContinue | Remove-NetFirewallRule";
 
 #[cfg(test)]
 mod tests {
@@ -253,6 +387,122 @@ mod tests {
     }
 
     #[test]
+    fn test_windows_plan_refuses_shared_service_host() {
+        // W2 / PROPOSALS #1: svchost.exe must never become a program= rule;
+        // the refusal is reported, not silently dropped.
+        let wanted = Blocklist {
+            paths: vec![
+                r"C:\Apps\Denied\app.exe".to_string(),
+                r"C:\Windows\System32\svchost.exe".to_string(),
+            ],
+            local_ports: vec![],
+        };
+        let enforcer = WindowsEnforcer {
+            current: Blocklist::default(),
+        };
+        let plan = enforcer.plan(&wanted);
+        assert_eq!(plan.add, vec![r"C:\Apps\Denied\app.exe".to_string()]);
+        assert_eq!(
+            plan.refused,
+            vec![r"C:\Windows\System32\svchost.exe".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_windows_apply_refuses_shared_service_host_plan() {
+        // Fail closed even for a hand-built plan, also in dry-run.
+        std::env::set_var("RAT_DRY_RUN", "1");
+        let plan = WindowsPlan {
+            add: vec![r"C:\Windows\System32\svchost.exe".to_string()],
+            remove: vec![],
+            add_ports: vec![],
+            remove_ports: vec![],
+            refused: vec![],
+        };
+        let enforcer = WindowsEnforcer {
+            current: Blocklist::default(),
+        };
+        let err = enforcer.apply(&plan).unwrap_err();
+        assert!(
+            err.to_string().contains("shared service host"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_windows_plan_ports_diff() {
+        // review-01 R5: the port axis diffs like the path axis, sorted and
+        // deduplicated.
+        let current = Blocklist {
+            paths: vec![],
+            local_ports: vec![2, 1],
+        };
+        let wanted = Blocklist {
+            paths: vec![],
+            local_ports: vec![3, 2, 2],
+        };
+        let enforcer = WindowsEnforcer { current };
+        let plan = enforcer.plan(&wanted);
+        assert_eq!(plan.add_ports, vec![3]);
+        assert_eq!(plan.remove_ports, vec![1]);
+        assert!(plan.add.is_empty());
+        assert!(plan.remove.is_empty());
+    }
+
+    #[test]
+    fn test_windows_plan_refused_host_keeps_port_axis() {
+        // review-01 R5: a refused shared service host must not be a silent
+        // no-op — the denied socket's local port still becomes a per-port
+        // rule ("block by port instead").
+        let svchost = r"C:\Windows\System32\svchost.exe";
+        let wanted = Blocklist {
+            paths: vec![svchost.to_string()],
+            local_ports: vec![5353],
+        };
+        let enforcer = WindowsEnforcer {
+            current: Blocklist::default(),
+        };
+        let plan = enforcer.plan(&wanted);
+        assert_eq!(plan.refused, vec![svchost.to_string()]);
+        assert!(plan.add.is_empty(), "the shared host itself is never added");
+        assert_eq!(plan.add_ports, vec![5353]);
+    }
+
+    #[test]
+    fn test_windows_port_rule_args_shape() {
+        // The netsh command shape is pinned here because tests never run
+        // netsh for real (dry-run prints the same builders).
+        let args = port_rule_args(5300, "out", "TCP");
+        for want in [
+            "advfirewall",
+            "firewall",
+            "add",
+            "rule",
+            "name=Rat:port:5300",
+            "dir=out",
+            "action=block",
+            "protocol=TCP",
+            "localport=5300",
+        ] {
+            assert!(
+                args.iter().any(|a| a == want),
+                "missing {want:?} in {args:?}"
+            );
+        }
+        let del = port_delete_args(5300);
+        assert!(del.contains(&"delete".to_string()));
+        assert!(del.contains(&"name=Rat:port:5300".to_string()));
+    }
+
+    #[test]
+    fn test_windows_cleanup_covers_both_rule_families() {
+        // review-01 R5: cleanup must remove per-path AND per-port rules.
+        assert!(CLEANUP_RULES_QUERY.contains("'Rat:path:*'"));
+        assert!(CLEANUP_RULES_QUERY.contains("'Rat:port:*'"));
+        assert!(CLEANUP_RULES_QUERY.contains("Remove-NetFirewallRule"));
+    }
+
+    #[test]
     fn test_windows_plan_spaces_non_ascii() {
         let current = Blocklist {
             paths: vec!["C:\\Program Files\\App".to_string()],
@@ -314,7 +564,10 @@ mod tests {
 
         // Check if plan generation with 5000 rules diff takes less than 50ms
         // Note: Using a HashSet reduces this to ~5ms easily.
-        assert!(duration.as_millis() < 50);
+        assert!(
+            duration.as_millis() < 50,
+            "5000-path plan took {duration:?} (debug build, loaded-host flake documented in PROPOSALS #7)"
+        );
 
         // Memory usage bounds (string array pointers should be small, actual allocations too).
         assert!(plan.add.capacity() * std::mem::size_of::<String>() < 20_000_000);

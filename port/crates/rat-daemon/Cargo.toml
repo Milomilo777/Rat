@@ -5,6 +5,10 @@ edition = "2021"
 
 [dependencies]
 rat-types = { path = "../rat-types" }
+rat-core = { path = "../rat-core" }
+rat-ledger = { path = "../rat-ledger" }
+rat-enforcer = { path = "../rat-enforcer" }
+rat-names = { path = "../rat-names" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
@@ -13,15 +17,19 @@ futures = "0.3"
 thiserror = "2.0.21"
 
 [target.'cfg(windows)'.dependencies]
+rat-monitor-windows = { path = "../rat-monitor-windows" }
 windows-service = "0.8"
-windows-sys = { version = "0.59", features = ["Win32_Security_Authorization", "Win32_Security", "Win32_Foundation", "Win32_System_Memory", "Win32_System_SystemServices"] }
+windows-sys = { version = "0.59", features = ["Win32_Security_Authorization", "Win32_Security", "Win32_Foundation", "Win32_System_Memory", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_Pipes"] }
 
 [target."cfg(unix)".dependencies]
+rat-monitor-linux = { path = "../rat-monitor-linux" }
 libc = "0.2.191"
 
 [dev-dependencies]
 criterion = "0.5.1"
 proptest = "1.12.0"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
 
 [[bench]]
 name = "ipc_bench"

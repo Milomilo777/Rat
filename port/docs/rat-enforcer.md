@@ -71,7 +71,8 @@ The Linux backend drops outgoing and incoming connections based on the active lo
 ### Windows (Windows Defender Firewall)
 The Windows backend generates individual rules per application path using `netsh advfirewall`. It implements a diff mechanism to only add or remove rules that have changed.
 - **Requirements**: Needs Administrator privileges to run `netsh advfirewall`.
-- **Limits**: Only program path block rules are applied. Local ports are ignored for Windows since the firewall directly supports per-program rules.
+- **Port rules** (review-01 R5): the denied sockets' LOCAL ports are enforced too — one rule per (direction, protocol) per port (`dir=out|in`, `protocol=TCP|UDP`, `localport=N`), named `Rat:port:<n>` so one delete removes all four variants. This mirrors the Linux backend's `rat_ports` set (sport out / dport in) and the macOS Ledger's local-port blocks (Ledger.swift:330-332); it is also what a refused shared service host's denied socket gets instead of a silent no-op ("block by port instead").
+- **Limits**: Per-program rules do not follow Electron helpers or versioned install paths (review-01 product note); inbound blocks are by local port only.
 
 ### Safety Notes
 `apply` enforces for real by default (update-08 S7: a privileged enforcer that silently does nothing unless `RAT_ENFORCE=1` was set is its own misconfiguration). Tests and dry runs opt out explicitly with `RAT_DRY_RUN=1`, which makes `apply` print the commands instead of running them.

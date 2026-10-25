@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 
 /// One queued connection prompt (AlertCenter.swift:8-21). The dedup key is
 /// `app|registrableDomain(host)` (:20).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Alert {
     pub app: String,
     pub app_name: String,

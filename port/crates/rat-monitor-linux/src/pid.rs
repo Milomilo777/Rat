@@ -26,7 +26,20 @@ pub fn map_inodes_to_pids(proc_root: &Path) -> HashMap<u64, u32> {
                         if target_str.starts_with("socket:[") && target_str.ends_with(']') {
                             let inode_str = &target_str[8..target_str.len() - 1];
                             if let Ok(inode) = inode_str.parse::<u64>() {
-                                inode_to_pid.insert(inode, pid);
+                                // M8 (update-09): prefork servers share one
+                                // socket inode across processes; keep the
+                                // lowest pid so the mapping is deterministic
+                                // regardless of readdir order.
+                                match inode_to_pid.entry(inode) {
+                                    std::collections::hash_map::Entry::Vacant(v) => {
+                                        v.insert(pid);
+                                    }
+                                    std::collections::hash_map::Entry::Occupied(mut o) => {
+                                        if pid < *o.get() {
+                                            o.insert(pid);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -86,11 +99,13 @@ fn get_user_name(uid: u32) -> String {
         unsafe {
             let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
             let mut pwd_ptr = std::ptr::null_mut();
-            let mut buf = vec![0i8; 1024];
+            // M8 (update-09): c_char is u8 on aarch64 (and i8 on x86) - an
+            // i8 buffer does not compile there; use u8 and cast.
+            let mut buf = vec![0u8; 1024];
             let ret = libc::getpwuid_r(
                 uid,
                 pwd.as_mut_ptr(),
-                buf.as_mut_ptr(),
+                buf.as_mut_ptr() as *mut libc::c_char,
                 buf.len(),
                 &mut pwd_ptr,
             );
@@ -104,4 +119,23 @@ fn get_user_name(uid: u32) -> String {
     }
 
     uid.to_string()
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_shared_inode_maps_to_lowest_pid() {
+        // M8 (update-09): prefork servers expose the same socket inode via
+        // several processes' fd dirs; the mapping must be deterministic.
+        let root = tempfile::tempdir().unwrap();
+        for pid in [200u32, 100] {
+            let fd_dir = root.path().join(pid.to_string()).join("fd");
+            std::fs::create_dir_all(&fd_dir).unwrap();
+            std::os::unix::fs::symlink("socket:[42]", fd_dir.join("3")).unwrap();
+        }
+        let map = map_inodes_to_pids(root.path());
+        assert_eq!(map.get(&42), Some(&100));
+    }
 }

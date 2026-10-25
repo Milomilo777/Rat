@@ -5,8 +5,14 @@ use std::path::Path;
 pub fn is_vpn_address(proc_root: &Path, addr: IpAddr) -> bool {
     match addr {
         IpAddr::V4(v4) => {
+            // M6 (update-09): pick the LONGEST matching prefix over all
+            // routes, then answer by that route's interface - a tun0 default
+            // route must not mark LAN traffic as VPN when a more specific
+            // non-VPN route exists.
             let target_v4 = u32::from_ne_bytes(v4.octets());
             let path = proc_root.join("net/route");
+            let mut best_bits: i32 = -1;
+            let mut best_is_vpn = false;
             if let Ok(content) = fs::read_to_string(path) {
                 for line in content.lines().skip(1) {
                     let parts: Vec<&str> = line.split_whitespace().collect();
@@ -15,22 +21,26 @@ pub fn is_vpn_address(proc_root: &Path, addr: IpAddr) -> bool {
                     }
 
                     let iface = parts[0];
-                    if is_vpn_iface(iface) {
-                        if let (Ok(dest), Ok(mask)) = (
-                            u32::from_str_radix(parts[1], 16),
-                            u32::from_str_radix(parts[7], 16),
-                        ) {
-                            if (target_v4 & mask) == (dest & mask) {
-                                return true;
+                    if let (Ok(dest), Ok(mask)) = (
+                        u32::from_str_radix(parts[1], 16),
+                        u32::from_str_radix(parts[7], 16),
+                    ) {
+                        if (target_v4 & mask) == (dest & mask) {
+                            let bits = mask.count_ones() as i32;
+                            if bits > best_bits {
+                                best_bits = bits;
+                                best_is_vpn = is_vpn_iface(iface);
                             }
                         }
                     }
                 }
             }
-            false
+            best_is_vpn
         }
         IpAddr::V6(v6) => {
             let path = proc_root.join("net/ipv6_route");
+            let mut best_bits: i32 = -1;
+            let mut best_is_vpn = false;
             if let Ok(content) = fs::read_to_string(path) {
                 for line in content.lines() {
                     let parts: Vec<&str> = line.split_whitespace().collect();
@@ -42,7 +52,7 @@ pub fn is_vpn_address(proc_root: &Path, addr: IpAddr) -> bool {
                     let prefix_len_hex = parts[1];
                     let iface = parts[9];
 
-                    if is_vpn_iface(iface) && dest_hex.len() == 32 {
+                    if dest_hex.len() == 32 {
                         let mut dest_bytes = [0u8; 16];
                         let mut valid = true;
                         for i in 0..4 {
@@ -57,15 +67,22 @@ pub fn is_vpn_address(proc_root: &Path, addr: IpAddr) -> bool {
                         if valid {
                             if let Ok(prefix_len) = u32::from_str_radix(prefix_len_hex, 16) {
                                 let dest_ip = Ipv6Addr::from(dest_bytes);
-                                if match_ipv6(v6, dest_ip, prefix_len) {
-                                    return true;
+                                // M6 (update-09): longest prefix wins; a
+                                // malformed prefix above 128 never matches
+                                // (instead of indexing out of bounds).
+                                if prefix_len <= 128
+                                    && match_ipv6(v6, dest_ip, prefix_len)
+                                    && prefix_len as i32 > best_bits
+                                {
+                                    best_bits = prefix_len as i32;
+                                    best_is_vpn = is_vpn_iface(iface);
                                 }
                             }
                         }
                     }
                 }
             }
-            false
+            best_is_vpn
         }
     }
 }
@@ -122,6 +139,48 @@ tun0	00000A0A	00000000	0001	0	0	0	00FFFFFF	0	0	0
 
         let addr2: IpAddr = "192.168.0.1".parse().unwrap();
         assert!(!is_vpn_address(temp_dir.path(), addr2));
+    }
+
+    #[test]
+    fn test_vpn_default_route_does_not_shadow_specific_route() {
+        // M6 (update-09): tun0 owns the default route, eth0 the specific
+        // 10.0.0.0/8 route - the specific route must win.
+        let temp_dir = tempfile::tempdir().unwrap();
+        let net_dir = temp_dir.path().join("net");
+        fs::create_dir_all(&net_dir).unwrap();
+
+        let mut route_file = fs::File::create(net_dir.join("route")).unwrap();
+        let content = "Iface	Destination	Gateway	Flags	RefCnt	Use	Metric	Mask	MTU	Window	IRTT
+tun0	00000000	00000000	0003	0	0	0	00000000	0	0	0
+eth0	0000000A	00000000	0001	0	0	100	000000FF	0	0	0
+";
+        route_file.write_all(content.as_bytes()).unwrap();
+
+        let lan: IpAddr = "10.1.2.3".parse().unwrap();
+        assert!(
+            !is_vpn_address(temp_dir.path(), lan),
+            "specific eth0 /8 route must beat the tun0 default route"
+        );
+
+        let wan: IpAddr = "8.8.8.8".parse().unwrap();
+        assert!(is_vpn_address(temp_dir.path(), wan));
+    }
+
+    #[test]
+    fn test_v6_prefix_over_128_does_not_panic() {
+        // M6 (update-09): a malformed prefix length above 128 must be
+        // ignored, not index out of bounds.
+        let temp_dir = tempfile::tempdir().unwrap();
+        let net_dir = temp_dir.path().join("net");
+        fs::create_dir_all(&net_dir).unwrap();
+
+        let mut route_file = fs::File::create(net_dir.join("ipv6_route")).unwrap();
+        let content = "00000000000000000000000000000000 81 00000000000000000000000000000000 00 00000000000000000000000000000000 00000000 00000001 00000000 00000001 tun0
+";
+        route_file.write_all(content.as_bytes()).unwrap();
+
+        let addr: IpAddr = "2001:db8::1".parse().unwrap();
+        assert!(!is_vpn_address(temp_dir.path(), addr));
     }
 
     #[test]

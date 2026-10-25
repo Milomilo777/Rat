@@ -3,13 +3,19 @@
 //! Spec: ZCODE/specs/port-ledger.md.
 
 pub mod alerts;
+pub mod answers;
+pub mod chart;
 pub mod ingest;
+pub mod shared;
 
 pub use alerts::{Alert, AlertCenter, AlertCenterConfig};
+pub use answers::{rule_from_answer, AnswerScope};
+pub use chart::{chart_layout, ChartBar, ChartLayout, TimeRange};
 pub use ingest::{
     AppEntry, ConnectionDetails, EnforcementPlan, IngestSummary, Ledger, LedgerConfig, RemoteEntry,
     RemoteKey,
 };
+pub use shared::{is_shared_service, note as shared_service_note};
 
 use rat_core::Verdict;
 use std::net::SocketAddr;

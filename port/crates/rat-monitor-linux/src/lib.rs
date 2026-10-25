@@ -88,6 +88,12 @@ impl ConnectionSource for LinuxMonitor {
                                 (None, None)
                             };
 
+                            // M5 (update-09): classify by the best route
+                            // for the remote (no remote = not marked).
+                            let via_vpn = entry
+                                .remote
+                                .is_some_and(|r| route::is_vpn_address(&self.proc_root, r.ip()));
+
                             connections.push(Connection {
                                 process,
                                 protocol,
@@ -96,6 +102,7 @@ impl ConnectionSource for LinuxMonitor {
                                 listening: is_listening,
                                 bytes_in,
                                 bytes_out,
+                                via_vpn,
                             });
                         } else {
                             *vanished += 1;
