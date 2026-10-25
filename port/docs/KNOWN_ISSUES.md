@@ -24,7 +24,8 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
 - **Silent disable (medium).** On Windows the daemon warns when Defender Firewall is off for a profile. It does
   not detect a third-party firewall that replaced Defender, or group policy that ignores local rules; in those
   cases rules are added but have no effect and nothing is reported. The warning is shown as the app's
-  connection detail text (a dedicated warning banner is not built). Linux has no such check.
+  connection detail text (a dedicated warning banner is not built). The state is read every 5 minutes, so a
+  change shows up with that delay. Linux has no such check.
 - **Port blocks outlive the socket (medium).** A local port blocked for a denied app stays blocked until the next
   tick; a new allowed app that reuses the same ephemeral port can be blocked meanwhile (also seen on Linux, E2E L4).
 

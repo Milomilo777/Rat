@@ -97,6 +97,10 @@ pub struct Observation {
 #[derive(Debug, Default)]
 pub struct Tracker {
     last: Option<Result<Vec<String>, String>>,
+    /// Profiles that were off at the last SUCCESSFUL query (empty = none, or
+    /// no successful query yet). A failed query after an off warning must
+    /// tell the app the warning may be out of date.
+    last_off: Vec<String>,
 }
 
 impl Tracker {
@@ -105,6 +109,9 @@ impl Tracker {
         let changed = self.last.as_ref() != Some(&state);
         let first = self.last.is_none();
         self.last = Some(state.clone());
+        if let Ok(off) = &state {
+            self.last_off = off.clone();
+        }
         let mut obs = Observation::default();
         match state {
             Ok(off) if !off.is_empty() => {
@@ -129,6 +136,14 @@ impl Tracker {
             Err(e) => {
                 if changed {
                     obs.log = Some(format!("rat-daemon: cannot read the firewall state: {e}"));
+                }
+                // The app still shows the earlier "off" warning: replace it
+                // with "unknown" (repeated like the warning, for late clients).
+                if !self.last_off.is_empty() {
+                    obs.notify = Some(format!(
+                        "Could not check the Windows Firewall state. At the last successful check it was turned off for: {}.",
+                        self.last_off.join(", ")
+                    ));
                 }
             }
         }
@@ -163,11 +178,13 @@ pub fn watch_enabled() -> bool {
     WATCH_ENABLED.load(std::sync::atomic::Ordering::SeqCst)
 }
 
-/// How often the watcher looks again.
+/// How often the watcher looks again. Each look starts PowerShell (a few
+/// seconds of CPU), and nothing needs the answer faster: a firewall switched
+/// off is reported within 5 minutes.
 #[cfg(windows)]
-const WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+const WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// Spawn the watcher: queries now and then every minute, logs each change
+/// Spawn the watcher: queries now and then every 5 minutes, logs each change
 /// once and broadcasts the warning. Stops with `shutdown`.
 #[cfg(windows)]
 pub fn spawn_watch(
@@ -290,6 +307,36 @@ mod tests {
         let o = t.observe(on());
         assert!(o.log.is_some() && o.notify.is_some());
         assert_eq!(t.observe(on()), Observation::default());
+    }
+
+    #[test]
+    fn tracker_failed_query_after_off_says_unknown_instead_of_leaving_off() {
+        let mut t = Tracker::default();
+        let o = t.observe(parse_profiles(ONE_OFF));
+        assert!(o.notify.as_deref().unwrap().contains("turned off"));
+        // the next query fails: the app must not keep showing "off"
+        let o = t.observe(Err("timeout".into()));
+        let msg = o
+            .notify
+            .expect("a failed check after an off warning is announced");
+        assert!(msg.contains("Could not check"), "{msg}");
+        assert!(msg.contains("Public"), "names what was last known: {msg}");
+        assert!(o.log.as_deref().unwrap().contains("timeout"));
+        // still failing: repeated for late clients, logged once
+        let o = t.observe(Err("timeout".into()));
+        assert!(o.notify.is_some() && o.log.is_none());
+        // recovered and still off: the off warning is back
+        let o = t.observe(parse_profiles(ONE_OFF));
+        assert!(o.notify.as_deref().unwrap().contains("turned off"));
+        // off -> failed -> all on: cleared as usual, and a later failure is silent
+        let _ = t.observe(Err("timeout".into()));
+        let o = t.observe(parse_profiles(ALL_ON));
+        assert!(o.notify.as_deref().unwrap().contains("on for all"));
+        let o = t.observe(Err("again".into()));
+        assert!(
+            o.notify.is_none(),
+            "nothing to correct after an all-on look"
+        );
     }
 
     #[test]

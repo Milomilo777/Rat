@@ -158,11 +158,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   * The rules directory (`%ProgramData%\rat`) is created with a protected SYSTEM + Administrators DACL. An
     existing directory owned by SYSTEM or Administrators (and not a reparse point) gets the same protected DACL
     re-applied; if that fails, or the owner is anyone else, the directory is not used and rules are not saved.
-  * Silent-disable watch (`fw_status`): once a minute the daemon reads (never changes) the Defender Firewall
+  * Silent-disable watch (`fw_status`): every 5 minutes the daemon reads (never changes) the Defender Firewall
     profiles with `Get-NetFirewallProfile` as JSON (30 s tool timeout). A change is logged once; while a profile
     is off, an `Error` message "Windows Firewall is turned off for: ..." goes out on every pass so a client that
     connects later sees it too (the desktop app shows it as the connection detail), and a message follows when
-    all profiles are on again. A profile that policy leaves "not configured" is never reported as off.
+    all profiles are on again. When a query fails after an "off" warning, the message becomes "Could not check
+    the Windows Firewall state ... it was turned off for: ..." (repeated while the query keeps failing), so the app
+    does not keep showing an old "off". A profile that policy leaves "not configured" is never reported as off.
 * **Both**: a second daemon refuses to start while the endpoint is owned by a live one (Windows: it retries with
   backoff for `PIPE_RETRY_WINDOW`, 3 s, so a predecessor that is still shutting down can let go, then exits with an
   "owned by another process" error);
