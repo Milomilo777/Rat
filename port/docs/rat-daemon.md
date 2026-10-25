@@ -146,7 +146,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   * The rules directory (`%ProgramData%\rat`) is created with a protected SYSTEM + Administrators DACL. An
     existing directory owned by SYSTEM or Administrators (and not a reparse point) gets the same protected DACL
     re-applied; if that fails, or the owner is anyone else, the directory is not used and rules are not saved.
-* **Both**: a second daemon refuses to start while the endpoint is owned by a live one;
+* **Both**: a second daemon refuses to start while the endpoint is owned by a live one (Windows: it retries with
+  backoff for `PIPE_RETRY_WINDOW`, 3 s, so a predecessor that is still shutting down can let go, then exits with an
+  "owned by another process" error);
   concurrent clients are capped at 4; inbound lines cap at 64 KiB.
 
 ## Known Limits

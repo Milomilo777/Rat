@@ -41,8 +41,9 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
 - **Busy daemon (low).** At most 16 client commands wait for the daemon; queued `SetRules` lists are merged into
   the newest one. When the queue is full the client gets an Error reply and the command (also an alert answer)
   is dropped; the desktop app does not retry it yet.
-- **Pipe start-up (low).** If another process already owns `\\.\pipe\rat`, the daemon exits; there is no retry, and
-  the GUI does not verify the server's identity.
+- **Pipe identity (low).** The GUI does not verify that the process behind the pipe is the Rat service; a process
+  that creates the pipe before the service starts could answer the GUI. (The daemon retries for 3 s when the pipe
+  is still owned by a previous instance, then exits with an error.)
 - **First tick (low).** If the first connection sample fails, static rules are enforced only after a later
   successful sample or a GUI command.
 - **Read-back order (low).** Paths read back from existing firewall rules at startup are not sorted/deduplicated.

@@ -71,12 +71,15 @@ async fn spawn_server_with_write_timeout(
 
     let ep = endpoint.clone();
     tokio::spawn(async move {
-        let _ = rat_daemon::ipc::start_ipc_server_with_write_timeout(
+        let _ = rat_daemon::ipc::start_ipc_server_with_options(
             &ep,
             shutdown_rx,
             snapshot_rx,
             cmd_tx,
-            write_timeout,
+            rat_daemon::ipc::IpcOptions {
+                write_timeout,
+                ..Default::default()
+            },
         )
         .await;
     });
@@ -742,19 +745,33 @@ async fn test_second_daemon_cannot_steal_live_pipe() {
     assert!(ready, "first daemon never created its pipe");
     tokio::time::sleep(Duration::from_millis(200)).await;
 
+    let retry_window = Duration::from_millis(600);
+    let started = Instant::now();
     let second = tokio::time::timeout(
         Duration::from_secs(5),
-        rat_daemon::ipc::start_ipc_server(
+        rat_daemon::ipc::start_ipc_server_with_options(
             &pipe_name,
             shutdown_tx.subscribe(),
             snapshot_tx.subscribe(),
             tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY).0,
+            rat_daemon::ipc::IpcOptions {
+                pipe_retry_window: retry_window,
+                ..Default::default()
+            },
         ),
     )
     .await
     .expect("second start_ipc_server did not return");
     let err = second.expect_err("second daemon must be refused while the pipe is live");
     assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(
+        started.elapsed() >= retry_window,
+        "the second daemon must retry for the whole window before giving up"
+    );
+    assert!(
+        err.to_string().contains("owned by another process"),
+        "the error must say what is wrong: {err}"
+    );
 
     // the live daemon must still accept a client afterwards
     let client = ClientOptions::new()
@@ -1327,4 +1344,74 @@ async fn test_bad_client_message_gets_one_error_and_the_connection_closes() {
     }
 
     let _ = shutdown_tx.send(());
+}
+
+// A pipe still held by the previous daemon (it is shutting down) is not a
+// fatal start-up error: the new daemon retries with backoff and takes the
+// pipe over as soon as the old one lets go.
+#[cfg(windows)]
+#[tokio::test]
+async fn test_pipe_start_retries_until_the_previous_owner_lets_go() {
+    use tokio::net::windows::named_pipe::ClientOptions;
+
+    let pipe_name = format!(r"\\.\pipe\rat_it_retry_{}", std::process::id());
+
+    let (old_shutdown_tx, old_shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let (old_snapshot_tx, old_snapshot_rx) = tokio::sync::broadcast::channel(16);
+    let old_cmd_tx = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY).0;
+    let pn = pipe_name.clone();
+    let old = tokio::spawn(async move {
+        rat_daemon::ipc::start_ipc_server(&pn, old_shutdown_rx, old_snapshot_rx, old_cmd_tx).await
+    });
+    let mut ready = false;
+    for _ in 0..100 {
+        match ClientOptions::new().open(&pipe_name) {
+            Ok(client) => {
+                drop(client);
+                ready = true;
+                break;
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+    assert!(ready, "the old daemon never created its pipe");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let (new_shutdown_tx, new_shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let (_new_snapshot_tx, new_snapshot_rx) = tokio::sync::broadcast::channel(16);
+    let new_cmd_tx = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY).0;
+    let pn = pipe_name.clone();
+    let new = tokio::spawn(async move {
+        rat_daemon::ipc::start_ipc_server_with_options(
+            &pn,
+            new_shutdown_rx,
+            new_snapshot_rx,
+            new_cmd_tx,
+            rat_daemon::ipc::IpcOptions {
+                pipe_retry_window: Duration::from_secs(8),
+                ..Default::default()
+            },
+        )
+        .await
+    });
+
+    // The new daemon is blocked while the old one holds the pipe...
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        !new.is_finished(),
+        "the new daemon must keep retrying, not exit"
+    );
+
+    // ...and takes over once the old one is gone.
+    old_shutdown_tx.send(()).expect("old shutdown send");
+    drop(old_snapshot_tx);
+    old.await.expect("old join").expect("old clean shutdown");
+
+    // A client of the NEW daemon completes the handshake on the shared name.
+    let (reader, writer) = handshaked_client(&pipe_name).await;
+    drop((reader, writer));
+    assert!(!new.is_finished(), "the new daemon must be serving");
+
+    new_shutdown_tx.send(()).expect("new shutdown send");
+    new.await.expect("new join").expect("new clean shutdown");
 }

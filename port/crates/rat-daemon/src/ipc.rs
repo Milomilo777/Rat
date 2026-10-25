@@ -96,13 +96,14 @@ fn peer_allowed(uid: u32, gid: u32, pid: Option<i32>) -> bool {
 }
 
 #[cfg(unix)]
-pub async fn start_ipc_server_with_write_timeout(
+pub async fn start_ipc_server_with_options(
     socket_path: &str,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
     snapshot_rx: tokio::sync::broadcast::Receiver<ServerMessage>,
     commands: tokio::sync::mpsc::Sender<Command>,
-    write_timeout: std::time::Duration,
+    options: IpcOptions,
 ) -> std::io::Result<()> {
+    let write_timeout = options.write_timeout;
     use std::os::unix::fs::PermissionsExt;
     use tokio::net::UnixListener;
 
@@ -513,13 +514,14 @@ fn pipe_client_pid(server: &tokio::net::windows::named_pipe::NamedPipeServer) ->
 }
 
 #[cfg(windows)]
-pub async fn start_ipc_server_with_write_timeout(
+pub async fn start_ipc_server_with_options(
     pipe_name: &str,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
     snapshot_rx: tokio::sync::broadcast::Receiver<ServerMessage>,
     commands: tokio::sync::mpsc::Sender<Command>,
-    write_timeout: std::time::Duration,
+    options: IpcOptions,
 ) -> std::io::Result<()> {
+    let write_timeout = options.write_timeout;
     use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 
     let sd_guard = std::sync::Arc::new(security_descriptor()?);
@@ -533,6 +535,7 @@ pub async fn start_ipc_server_with_write_timeout(
     let mut first = true;
 
     loop {
+        let creating_first = first;
         if first {
             server_options.first_pipe_instance(true);
             first = false;
@@ -540,7 +543,7 @@ pub async fn start_ipc_server_with_write_timeout(
             server_options.first_pipe_instance(false);
         }
 
-        let server: std::io::Result<NamedPipeServer> = {
+        let create = || -> std::io::Result<NamedPipeServer> {
             let mut security_attributes = windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
                 nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>()
                     as u32,
@@ -553,6 +556,18 @@ pub async fn start_ipc_server_with_write_timeout(
                     &mut security_attributes as *mut _ as *mut _,
                 )
             }
+        };
+        // The FIRST instance fails while another process owns the pipe name
+        // (often the previous service instance, still shutting down): retry
+        // with backoff for a bounded time, then report it. Later instances
+        // are ours by then, so a failure there is final at once.
+        let server = if creating_first {
+            tokio::select! {
+                _ = shutdown.recv() => break,
+                created = create_with_retry(create, options.pipe_retry_window, pipe_name) => created,
+            }
+        } else {
+            create()
         };
 
         let server = match server {
@@ -624,20 +639,44 @@ pub const COMMAND_QUEUE_CAPACITY: usize = 16;
 /// GUI that stopped reading cannot hold one of the four client slots for ever.
 pub const CLIENT_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How long start-up keeps retrying when the daemon's pipe is still owned by
+/// another process (typically the previous service instance that is shutting
+/// down) before giving up with an error.
+pub const PIPE_RETRY_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Tunables of [`start_ipc_server_with_options`]; the defaults are what the
+/// daemon runs with, tests shorten them.
+#[derive(Debug, Clone, Copy)]
+pub struct IpcOptions {
+    /// See [`CLIENT_WRITE_TIMEOUT`].
+    pub write_timeout: std::time::Duration,
+    /// See [`PIPE_RETRY_WINDOW`] (Windows only).
+    pub pipe_retry_window: std::time::Duration,
+}
+
+impl Default for IpcOptions {
+    fn default() -> Self {
+        Self {
+            write_timeout: CLIENT_WRITE_TIMEOUT,
+            pipe_retry_window: PIPE_RETRY_WINDOW,
+        }
+    }
+}
+
 /// Serve clients on `endpoint` (unix socket path / Windows pipe name) with the
-/// default per-client write timeout.
+/// default options.
 pub async fn start_ipc_server(
     endpoint: &str,
     shutdown: tokio::sync::broadcast::Receiver<()>,
     snapshot_rx: tokio::sync::broadcast::Receiver<ServerMessage>,
     commands: tokio::sync::mpsc::Sender<Command>,
 ) -> std::io::Result<()> {
-    start_ipc_server_with_write_timeout(
+    start_ipc_server_with_options(
         endpoint,
         shutdown,
         snapshot_rx,
         commands,
-        CLIENT_WRITE_TIMEOUT,
+        IpcOptions::default(),
     )
     .await
 }
@@ -648,6 +687,37 @@ const ACCEPT_ERROR_BACKOFF: std::time::Duration = std::time::Duration::from_mill
 
 async fn back_off_after_accept_error() {
     tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
+}
+
+/// Run `create` until it succeeds, backing off 50 ms doubling to 1 s, for at
+/// most `window`; then fail with the last error's kind and a message that says
+/// the name is owned by another process.
+#[cfg_attr(not(windows), allow(dead_code))]
+async fn create_with_retry<T>(
+    mut create: impl FnMut() -> std::io::Result<T>,
+    window: std::time::Duration,
+    what: &str,
+) -> std::io::Result<T> {
+    let deadline = tokio::time::Instant::now() + window;
+    let mut delay = std::time::Duration::from_millis(50);
+    loop {
+        let err = match create() {
+            Ok(created) => return Ok(created),
+            Err(err) => err,
+        };
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(std::io::Error::new(
+                err.kind(),
+                format!(
+                    "{what} is still owned by another process after {window:?} ({err}); is another rat-daemon running?"
+                ),
+            ));
+        }
+        eprintln!("rat-daemon: cannot create {what} ({err}); retrying");
+        tokio::time::sleep(delay.min(deadline - now)).await;
+        delay = (delay * 2).min(std::time::Duration::from_secs(1));
+    }
 }
 
 /// The alert clients are currently asked about (the last `AlertRequest` not
@@ -1226,5 +1296,58 @@ mod backoff_tests {
             waited >= ACCEPT_ERROR_BACKOFF - std::time::Duration::from_millis(5),
             "returned after only {waited:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::create_with_retry;
+    use std::time::{Duration, Instant};
+
+    // A name that frees up within the window is taken over.
+    #[tokio::test]
+    async fn retries_until_the_creation_succeeds() {
+        let mut calls = 0;
+        let got = create_with_retry(
+            || {
+                calls += 1;
+                if calls < 4 {
+                    Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+                } else {
+                    Ok(calls)
+                }
+            },
+            Duration::from_secs(5),
+            "test pipe",
+        )
+        .await
+        .expect("must succeed once the owner is gone");
+        assert_eq!(got, 4);
+    }
+
+    // A name that stays owned ends in a clear error after the bounded window,
+    // keeping the error kind.
+    #[tokio::test]
+    async fn gives_up_after_the_window_with_a_clear_error() {
+        let window = Duration::from_millis(400);
+        let start = Instant::now();
+        let mut calls = 0;
+        let err = create_with_retry(
+            || -> std::io::Result<()> {
+                calls += 1;
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            },
+            window,
+            "test pipe",
+        )
+        .await
+        .expect_err("a pipe that stays owned must fail");
+        let waited = start.elapsed();
+        assert!(waited >= window, "gave up early after {waited:?}");
+        assert!(waited < window + Duration::from_secs(2), "took {waited:?}");
+        assert!(calls >= 3, "only {calls} attempts");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        let text = err.to_string();
+        assert!(text.contains("test pipe") && text.contains("owned by another process"));
     }
 }
