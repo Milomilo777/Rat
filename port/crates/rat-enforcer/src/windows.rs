@@ -32,8 +32,8 @@ pub struct WindowsPlan {
     pub add_ports: Vec<u16>,
     pub remove_ports: Vec<u16>,
     /// wanted whole-program blocks that were REFUSED
-    /// because the target is a shared service host (svchost.exe hosts DNS,
-    /// DHCP and more for the whole machine). The caller decides how to tell
+    /// because the target is a shared service host (svchost.exe, dllhost.exe
+    /// and friends run work for the whole machine). The caller decides how to tell
     /// the user; per-port rules below still apply.
     pub refused: Vec<String>,
     /// whole-program entries (from `wanted` or from `current`)
@@ -299,7 +299,7 @@ impl Enforcer for WindowsEnforcer {
         // closed, also in dry-run.
         if let Some(path) = add.iter().find(|p| crate::is_shared_service_host(p)) {
             return Err(io::Error::other(format!(
-                "refusing whole-program block of shared service host {path} (would cut DNS/DHCP machine-wide); block by port instead"
+                "refusing whole-program block of shared service host {path} (would cut shared system services machine-wide); block by port instead"
             )));
         }
 

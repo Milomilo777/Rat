@@ -1227,6 +1227,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "rat-core",
+ "rat-enforcer",
  "rat-types",
  "serde",
  "uuid",

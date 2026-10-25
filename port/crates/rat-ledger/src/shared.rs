@@ -26,11 +26,46 @@ const MACOS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Port-side equivalents on the other two platforms.
+/// Port-side equivalents on the other two platforms. Membership is
+/// rat-enforcer's `SHARED_SERVICE_HOSTS` — the ONE list every caller uses
+/// (the enforcer refuses whole-program blocks on it); this table adds the
+/// user-facing note per host and a test pins the two sets equal.
 const WINDOWS: &[(&str, &str)] = &[
     (
         "svchost.exe",
         "Windows services host: DNS (Dnscache), DHCP and many other services run here for every app; which app asked cannot be seen from the connection tables.",
+    ),
+    (
+        "dllhost.exe",
+        "COM Surrogate: hosts COM objects (thumbnail and shell-extension code) on behalf of apps; which app asked cannot be seen from the connection tables.",
+    ),
+    (
+        "RuntimeBroker.exe",
+        "Runtime Broker: checks Store apps' permissions and capabilities on behalf of every app that asks.",
+    ),
+    (
+        "taskhostw.exe",
+        "Task Host Window: hosts DLL-based scheduled tasks that run for any app or the system.",
+    ),
+    (
+        "backgroundTaskHost.exe",
+        "Background Task Host: runs Store apps' background tasks for many apps in one process.",
+    ),
+    (
+        "sihost.exe",
+        "Shell Infrastructure Host: shell services (Start, taskbar, notifications) for every session.",
+    ),
+    (
+        "conhost.exe",
+        "Console host: hosts console windows for every console program; a socket here belongs to no single app.",
+    ),
+    (
+        "rundll32.exe",
+        "Generic DLL host: runs DLL entry points on behalf of whichever caller asked; which app asked cannot be seen from the connection tables.",
+    ),
+    (
+        "WmiPrvSE.exe",
+        "WMI Provider Host: runs WMI providers answering queries from any process.",
     ),
 ];
 
@@ -116,6 +151,58 @@ mod tests {
         assert_eq!(
             note("avahi-daemon"),
             Some("mDNS/DNS-SD for every app; which app asked cannot be seen.")
+        );
+    }
+
+    #[test]
+    fn test_windows_broker_hosts_are_shared() {
+        // svchost.exe is not the only Windows shared host: COM activation,
+        // Store-app brokering, scheduled-task, console and WMI hosting also
+        // run one process for many apps, so the ledger must mark them too
+        // (and the enforcer refuses to block them per-program).
+        for name in [
+            "dllhost.exe",
+            "RuntimeBroker.exe",
+            "taskhostw.exe",
+            "backgroundTaskHost.exe",
+            "sihost.exe",
+            "conhost.exe",
+            "rundll32.exe",
+            "WmiPrvSE.exe",
+        ] {
+            assert!(
+                is_shared_service(&format!(r"C:\Windows\System32\{name}")),
+                "{name} should be classified shared"
+            );
+            assert!(
+                note(&format!(
+                    r"C:\Windows\SysWOW64\{}",
+                    name.to_ascii_uppercase()
+                ))
+                .is_some(),
+                "{name} needs a user-facing note"
+            );
+        }
+    }
+
+    #[test]
+    fn test_windows_table_is_the_enforcer_refusal_list() {
+        // ONE list: membership is rat-enforcer's refusal list; this table
+        // must cover exactly that set (every host a user-facing note, and
+        // nothing the enforcer would still allow blocking per-program).
+        let mut enforcer: Vec<String> = rat_enforcer::SHARED_SERVICE_HOSTS
+            .iter()
+            .map(|s| s.to_ascii_lowercase())
+            .collect();
+        let mut ledger: Vec<String> = WINDOWS
+            .iter()
+            .map(|(n, _)| n.to_ascii_lowercase())
+            .collect();
+        enforcer.sort();
+        ledger.sort();
+        assert_eq!(
+            enforcer, ledger,
+            "ledger WINDOWS notes and rat-enforcer SHARED_SERVICE_HOSTS must be the same set"
         );
     }
 }

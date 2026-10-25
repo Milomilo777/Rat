@@ -216,17 +216,41 @@ pub fn validate_path(path: &str) -> Result<String, &'static str> {
     }
 }
 
-/// svchost.exe hosts DNS
-/// (Dnscache), DHCP and many other services for the WHOLE machine — a
-/// per-program block rule for it cuts them all at once. Whole-program
-/// enforcement of shared service hosts is refused instead (see
+/// Windows hosts that run work for MANY apps at once — the services host
+/// (svchost.exe: DNS/Dnscache, DHCP and much more), COM activation
+/// (dllhost.exe), Store-app brokering (RuntimeBroker.exe,
+/// backgroundTaskHost.exe), scheduled-task hosting (taskhostw.exe), shell
+/// infrastructure (sihost.exe), console hosting (conhost.exe), generic DLL
+/// hosting (rundll32.exe) and WMI providers (WmiPrvSE.exe). A per-program
+/// block rule for any of them cuts them all at once, so whole-program
+/// enforcement of a shared host is refused instead (see
 /// `WindowsPlan::refused`); block by the denied sockets' local ports or a
-/// future per-service mechanism instead. Kept local and minimal so the crate
-/// stays std-only; the cross-platform classification table lives in
-/// rat-ledger's `shared` module.
+/// future per-service mechanism instead. Matching is on the executable
+/// FILE NAME, case-insensitive (Windows reports `SVCHOST.EXE` as often as
+/// `svchost.exe`), so full System32/SysWOW64 paths match. This is the ONE
+/// list: rat-ledger's `shared` classification keys its notes to it
+/// (test-pinned set equality), so every caller sees the same membership.
+/// The crate stays std-only; macOS/Linux equivalents and the
+/// human-readable notes live in rat-ledger's `shared` module.
+pub const SHARED_SERVICE_HOSTS: &[&str] = &[
+    "svchost.exe",
+    "dllhost.exe",
+    "runtimebroker.exe",
+    "taskhostw.exe",
+    "backgroundtaskhost.exe",
+    "sihost.exe",
+    "conhost.exe",
+    "rundll32.exe",
+    "wmiprvse.exe",
+];
+
+/// True when the path names a shared service host (see
+/// [`SHARED_SERVICE_HOSTS`]): whole-program enforcement of it is refused.
 pub fn is_shared_service_host(path: &str) -> bool {
     let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
-    name.eq_ignore_ascii_case("svchost.exe")
+    SHARED_SERVICE_HOSTS
+        .iter()
+        .any(|host| name.eq_ignore_ascii_case(host))
 }
 
 #[cfg(test)]
@@ -250,6 +274,52 @@ mod tests {
         assert!(!is_shared_service_host("C:\\Windows\\System32\\netsh.exe"));
         assert!(!is_shared_service_host("/usr/bin/curl"));
         assert!(!is_shared_service_host("mysvchost.exe.fake"));
+    }
+
+    #[test]
+    fn test_shared_service_host_list_covers_windows_brokers() {
+        // svchost.exe is not the only host that runs work for MANY apps at
+        // once: COM activation (dllhost), Store-app brokering
+        // (RuntimeBroker, backgroundTaskHost), scheduled-task and console
+        // hosting, rundll32 and WMI providers all share one process across
+        // apps — a per-program block on any of them would cut them all.
+        // Matching stays on the executable file name, case-insensitive, so
+        // full System32/SysWOW64 paths and Windows-cased spellings match.
+        for host in [
+            "dllhost.exe",
+            "RuntimeBroker.exe",
+            "taskhostw.exe",
+            "backgroundTaskHost.exe",
+            "sihost.exe",
+            "conhost.exe",
+            "rundll32.exe",
+            "WmiPrvSE.exe",
+        ] {
+            assert!(
+                is_shared_service_host(&format!(r"C:\Windows\System32\{host}")),
+                "full System32 path must match: {host}"
+            );
+            assert!(
+                is_shared_service_host(&format!(
+                    r"C:\Windows\SysWOW64\{}",
+                    host.to_ascii_uppercase()
+                )),
+                "uppercased SysWOW64 path must match: {host}"
+            );
+            assert!(
+                is_shared_service_host(host),
+                "bare file name must match: {host}"
+            );
+        }
+        // look-alike names that work for themselves stay blockable
+        for not in [
+            "mydllhost.exe.fake",
+            "rundll32x.exe",
+            "conhost2.exe",
+            r"C:\Windows\System32\netsh.exe",
+        ] {
+            assert!(!is_shared_service_host(not), "{not} works for itself");
+        }
     }
 
     use proptest::prelude::*;
