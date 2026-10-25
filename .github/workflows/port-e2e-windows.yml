@@ -18,6 +18,8 @@ jobs:
         run: cargo build -p rat-daemon --release
       - name: Run E2E Tests
         working-directory: port/e2e/windows
+        env:
+          RAT_DAEMON_EXE: ${{ github.workspace }}\port\target\release\rat-daemon.exe
         run: cargo run --release
       - name: Verify host firewall has no rat leftovers
         if: always()

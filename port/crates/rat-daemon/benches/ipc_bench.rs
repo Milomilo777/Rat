@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use rat_daemon::msg::Message;
+use rat_daemon::msg::ServerMessage;
 use rat_types::{Connection, ProcessInfo, Protocol};
 use std::hint::black_box;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -32,7 +32,7 @@ fn generate_connections(count: usize) -> Vec<Connection> {
 
 fn bench_serialization(c: &mut Criterion) {
     let connections = generate_connections(2000);
-    let msg = Message::Snapshot { connections };
+    let msg = ServerMessage::Snapshot { connections };
 
     c.bench_function("serialize_2000_snapshot", |b| {
         b.iter(|| {

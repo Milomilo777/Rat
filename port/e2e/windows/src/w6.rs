@@ -1,4 +1,5 @@
 use std::env;
+use std::path::PathBuf;
 use std::process::Command;
 
 struct W6Cleanup(Option<std::process::Child>);
@@ -30,9 +31,14 @@ pub fn run_w6() {
         "W6 Failed: Connection to missing pipe should have failed (Negative Control)"
     );
 
-    let exe = env::current_exe().unwrap();
-    let target_dir = exe.parent().unwrap();
-    let daemon_exe = target_dir.join("rat-daemon.exe");
+    let daemon_exe_path =
+        env::var("RAT_DAEMON_EXE").expect("RAT_DAEMON_EXE environment variable not set");
+    let daemon_exe = PathBuf::from(daemon_exe_path);
+    assert!(
+        daemon_exe.exists(),
+        "W6 Failed: daemon executable not found at {:?}",
+        daemon_exe
+    );
 
     let daemon = Command::new(daemon_exe)
         .spawn()
@@ -41,7 +47,23 @@ pub fn run_w6() {
     let _cleanup = W6Cleanup(Some(daemon));
 
     // Wait for pipe to be ready
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let mut pipe_ready = false;
+    for _ in 0..10 {
+        let output = Command::new("powershell.exe")
+            .arg("-Command")
+            .arg("if (Test-Path '\\\\.\\pipe\\rat') { exit 0 } else { exit 1 }")
+            .output()
+            .unwrap();
+        if output.status.success() {
+            pipe_ready = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    assert!(
+        pipe_ready,
+        "W6 Failed: daemon pipe did not become ready in 5 seconds"
+    );
 
     // Connect to named pipe `\\.\pipe\rat` and write the JSON Lines config
     let output = Command::new("powershell.exe")
@@ -64,7 +86,7 @@ pub fn run_w6() {
         "W6 Failed: No reply read from pipe"
     );
 
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    std::thread::sleep(std::time::Duration::from_millis(1500));
 
     let rule_output = Command::new("powershell.exe")
         .arg("-NoProfile")

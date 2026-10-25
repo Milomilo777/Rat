@@ -24,7 +24,7 @@ impl Default for LedgerConfig {
 /// v1.2.0 per-connection details (Ledger.swift:31-48): the process behind the
 /// socket (an app's helper or the system service), the network owner from the
 /// ASN database, VPN/proxy route marks and the usual service on the port.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionDetails {
     pub process: Option<String>,
     pub service_name: Option<String>,

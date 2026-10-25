@@ -1,4 +1,5 @@
 use std::env;
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -50,9 +51,14 @@ fn wait_for_service_state(state: &str) {
 pub fn run_w4() {
     println!("Starting W4 Daemon Service test");
 
-    let exe = env::current_exe().unwrap();
-    let target_dir = exe.parent().unwrap();
-    let daemon_exe = target_dir.join("rat-daemon.exe");
+    let daemon_exe_path =
+        env::var("RAT_DAEMON_EXE").expect("RAT_DAEMON_EXE environment variable not set");
+    let daemon_exe = PathBuf::from(daemon_exe_path);
+    assert!(
+        daemon_exe.exists(),
+        "W4 Failed: daemon executable not found at {:?}",
+        daemon_exe
+    );
 
     let _cleanup = W4Cleanup;
 
@@ -85,6 +91,16 @@ pub fn run_w4() {
     );
 
     wait_for_service_state("RUNNING");
+
+    // Negative control: Check pipe existence with dummy pipe to ensure we can catch absence.
+    let output = Command::new("powershell.exe")
+        .arg("-Command")
+        .arg("if (Test-Path '\\\\.\\pipe\\rat_missing_dummy') { (Get-Acl -Path '\\\\.\\pipe\\rat_missing_dummy').AccessToString } else { exit 1 }")
+        .output().unwrap();
+    assert!(
+        !output.status.success(),
+        "W4 Failed: Negative control for pipe existence failed."
+    );
 
     // Check pipe existence. If the pipe is absent, Get-Acl will error.
     let output = Command::new("powershell.exe")
