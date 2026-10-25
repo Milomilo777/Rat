@@ -47,8 +47,11 @@ pub struct WindowsPlan {
 
 pub fn generate_windows_plan(current: &Blocklist, wanted: &Blocklist) -> WindowsPlan {
     // Avoid O(n^2) nested loops by converting one list to a HashSet, giving O(n) average time complexity.
-    let current_set: HashSet<&String> = current.paths.iter().collect();
-    let wanted_set: HashSet<&String> = wanted.paths.iter().collect();
+    let current_set: HashSet<&str> = current.paths.iter().map(String::as_str).collect();
+    // V2: the wanted set in NORMALISED form (what apply() stores in
+    // `current`), so a differently-spelled path (letter case, symlink,
+    // trailing dot) diffs equal instead of churning remove + add each tick.
+    let mut wanted_set: HashSet<String> = HashSet::new();
 
     let mut add = Vec::new();
     let mut refused = Vec::new();
@@ -57,24 +60,29 @@ pub fn generate_windows_plan(current: &Blocklist, wanted: &Blocklist) -> Windows
     // rest of the plan. Same channel as `refused`: the caller tells the user.
     let mut rejected = Vec::new();
     for path in &wanted.paths {
-        if crate::is_shared_service_host(path) {
-            // W2: never block a shared service host per-program.
+        // V2 + R8 (add axis): run apply()'s own validation (rules AND
+        // canonicalisation) FIRST. An invalid wanted path is reported and
+        // never becomes a rule; the rest of the plan is unaffected.
+        let normalised = match crate::validate_path(path) {
+            Ok(n) => n,
+            Err(_) => {
+                rejected.push(path.clone());
+                continue;
+            }
+        };
+        wanted_set.insert(normalised.clone());
+        // W2: never block a shared service host per-program — checked on the
+        // RAW and the NORMALISED form (a non-canonical spelling can resolve
+        // to one, and apply() aborts the whole plan on such an add). The
+        // caller's own spelling is what gets reported.
+        if crate::is_shared_service_host(path) || crate::is_shared_service_host(&normalised) {
             if !refused.contains(path) {
                 refused.push(path.clone());
             }
             continue;
         }
-        // R8 (add axis): apply the validation RULES at plan stage — an
-        // invalid wanted path is reported and never becomes a rule. This is
-        // exactly apply()'s rejection set (the canonicalize step there never
-        // rejects) and pure string work, so the PROPOSALS #7 plan budget
-        // holds; apply() still canonicalizes.
-        if crate::path_validation_error(path).is_some() {
-            rejected.push(path.clone());
-            continue;
-        }
-        if !current_set.contains(path) {
-            add.push(path.clone());
+        if !current_set.contains(normalised.as_str()) {
+            add.push(normalised);
         }
     }
 
@@ -117,6 +125,7 @@ pub fn generate_windows_plan(current: &Blocklist, wanted: &Blocklist) -> Windows
 
     // Sort to make plan output deterministic
     add.sort();
+    add.dedup();
     remove.sort();
     refused.sort();
     rejected.sort();
@@ -637,6 +646,145 @@ mod tests {
         assert_eq!(plan.rejected, vec![bad.to_string()]);
     }
 
+    /// V2 test helper: a private temp directory removed on drop.
+    struct TempDir(std::path::PathBuf);
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static N: AtomicUsize = AtomicUsize::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "rat-v2-{tag}-{}-{}",
+                std::process::id(),
+                N.fetch_add(1, Ordering::SeqCst)
+            ));
+            std::fs::create_dir_all(&dir).expect("create temp dir");
+            TempDir(dir)
+        }
+        fn file(&self, name: &str) -> std::path::PathBuf {
+            let p = self.0.join(name);
+            std::fs::write(&p, b"x").expect("create temp file");
+            p
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_plan_normalised_path_no_churn_across_ticks() {
+        // V2: current holds NORMALISED paths (apply() stores them). The same
+        // program wanted in another letter case must diff equal, not churn
+        // a remove + add every tick.
+        let dir = TempDir::new("case");
+        let real = dir.file("CaseApp.exe");
+        let real = real.to_string_lossy().to_string();
+        let swapped: String = real
+            .chars()
+            .map(|c| {
+                if c.is_ascii_lowercase() {
+                    c.to_ascii_uppercase()
+                } else {
+                    c.to_ascii_lowercase()
+                }
+            })
+            .collect();
+        assert_ne!(real, swapped);
+
+        let mut enforcer = WindowsEnforcer {
+            current: Blocklist::default(),
+            runner: None,
+        };
+        let plan1 = enforcer.plan(&Blocklist {
+            paths: vec![real.clone()],
+            local_ports: vec![],
+        });
+        assert_eq!(plan1.add.len(), 1);
+        // What apply() does: current advances to the planned (normalised) adds.
+        enforcer.current = Blocklist {
+            paths: plan1.add.clone(),
+            local_ports: vec![],
+        };
+        let plan2 = enforcer.plan(&Blocklist {
+            paths: vec![swapped],
+            local_ports: vec![],
+        });
+        assert!(plan2.add.is_empty(), "no re-add churn: {:?}", plan2.add);
+        assert!(
+            plan2.remove.is_empty(),
+            "no remove churn: {:?}",
+            plan2.remove
+        );
+        assert!(plan2.rejected.is_empty());
+    }
+
+    #[test]
+    fn test_windows_plan_noncanonical_shared_host_is_refused() {
+        // V2: a path that only NORMALISES to a shared service host (trailing
+        // dot on Windows, a symlink elsewhere) must be refused at plan time,
+        // not planned and then abort apply(); other adds are still planned.
+        let dir = TempDir::new("shared");
+        let good = dir.file("good.exe");
+        let good = good.to_string_lossy().to_string();
+        let host = dir.file("svchost.exe");
+        #[cfg(windows)]
+        let sneaky = format!("{}.", host.to_string_lossy());
+        #[cfg(unix)]
+        let sneaky = {
+            let link = dir.0.join("innocent.exe");
+            std::os::unix::fs::symlink(&host, &link).expect("symlink");
+            link.to_string_lossy().to_string()
+        };
+        #[cfg(not(any(windows, unix)))]
+        let sneaky = host.to_string_lossy().to_string();
+
+        let enforcer = WindowsEnforcer {
+            current: Blocklist::default(),
+            runner: None,
+        };
+        let plan = enforcer.plan(&Blocklist {
+            paths: vec![sneaky.clone(), good.clone()],
+            local_ports: vec![],
+        });
+        assert_eq!(plan.refused, vec![sneaky], "refused, not planned");
+        assert_eq!(
+            plan.add.len(),
+            1,
+            "other adds still planned: {:?}",
+            plan.add
+        );
+        assert!(plan.add[0].to_ascii_lowercase().ends_with("good.exe"));
+        assert!(plan.rejected.is_empty());
+    }
+
+    #[test]
+    fn test_windows_plan_invalid_wanted_path_reported_valid_planned() {
+        // V2: validation runs first; an invalid wanted path is reported in
+        // `rejected` and the valid existing paths are still planned
+        // (in normalised form).
+        let dir = TempDir::new("invalid");
+        let a = dir.file("a.exe");
+        let b = dir.file("b.exe");
+        let bad = format!("{}\"; evil", a.to_string_lossy());
+        let enforcer = WindowsEnforcer {
+            current: Blocklist::default(),
+            runner: None,
+        };
+        let plan = enforcer.plan(&Blocklist {
+            paths: vec![
+                a.to_string_lossy().to_string(),
+                bad.clone(),
+                b.to_string_lossy().to_string(),
+            ],
+            local_ports: vec![],
+        });
+        assert_eq!(plan.rejected, vec![bad]);
+        assert_eq!(plan.add.len(), 2);
+        assert!(plan.refused.is_empty());
+    }
+
     #[test]
     fn test_windows_apply_refuses_shared_service_host_plan() {
         // Fail closed even for a hand-built plan, also in dry-run.
@@ -828,10 +976,12 @@ mod tests {
         let plan = enforcer.plan(&wanted);
         let duration = start.elapsed();
 
-        // Check if plan generation with 5000 rules diff takes less than 50ms
-        // Note: Using a HashSet reduces this to ~5ms easily.
+        // Budget for a 5000-path diff. Since v1 (review V2) plan() canonicalises
+        // every wanted path once (one filesystem call each, ~30 us on Windows,
+        // measured ~150 ms here in a debug build), so the old 50 ms no-I/O
+        // budget no longer applies; real rule sets hold tens of paths.
         assert!(
-            duration.as_millis() < 50,
+            duration.as_millis() < 500,
             "5000-path plan took {duration:?} (debug build, loaded-host flake documented in PROPOSALS #7)"
         );
 

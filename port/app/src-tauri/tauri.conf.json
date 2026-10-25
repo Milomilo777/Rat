@@ -1,5 +1,5 @@
 {
-  "productName": "app",
+  "productName": "Rat",
   "version": "0.0.0",
   "identifier": "com.rat.app",
   "build": {
@@ -10,7 +10,7 @@
   "app": {
     "windows": [
       {
-        "title": "app",
+        "title": "Rat",
         "width": 900,
         "height": 600
       }
