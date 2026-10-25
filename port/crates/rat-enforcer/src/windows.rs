@@ -79,13 +79,20 @@ impl Enforcer for WindowsEnforcer {
         use std::env;
         use std::process::Command;
 
-        for path in plan.add.iter().chain(plan.remove.iter()) {
-            crate::validate_path(path).map_err(io::Error::other)?;
-        }
+        // S6 (update-08): validate AND canonicalize every path before use,
+        // so rule names and program= targets always name the real binary.
+        let validated = |paths: &[String]| -> io::Result<Vec<String>> {
+            paths
+                .iter()
+                .map(|p| crate::validate_path(p).map_err(io::Error::other))
+                .collect()
+        };
+        let remove = validated(&plan.remove)?;
+        let add = validated(&plan.add)?;
 
         let dry_run = env::var("RAT_ENFORCE").map(|v| v != "1").unwrap_or(true);
 
-        for path in &plan.remove {
+        for path in &remove {
             let name = format_rule_name(path);
             if dry_run {
                 println!("netsh advfirewall firewall delete rule name=\"{}\"", name);
@@ -105,7 +112,7 @@ impl Enforcer for WindowsEnforcer {
             }
         }
 
-        for path in &plan.add {
+        for path in &add {
             let name = format_rule_name(path);
             if dry_run {
                 println!(
