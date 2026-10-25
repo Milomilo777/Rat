@@ -18,3 +18,7 @@
 ## Unverified / Decisions
 
 - **Push / CI Results**: Tests failed execution inside the VM because github actions workflow lacked authentication for push. Did not run actual tests on GitHub CI, therefore marked all as `NOT RUN` as per the verification contract rule.
+
+## CI Findings
+- **Port CI (ubuntu-latest)**: https://github.com/Milomilo777/Rat/actions/runs/40175785180/job/121116047432 - Failed on `test_cleanup_runs_on_start_and_shutdown` (assertion `left == right` failed: exactly one shutdown cleanup, left: 1, right: 2) in `crates/rat-daemon/tests/pipeline.rs`.
+- **Port CI (windows-latest)**: https://github.com/Milomilo777/Rat/actions/runs/40175785180/job/121116047375 - Failed on `test_cleanup_runs_on_start_and_shutdown` (assertion `left == right` failed: exactly one shutdown cleanup, left: 1, right: 2) in `crates\rat-daemon\tests\pipeline.rs`.

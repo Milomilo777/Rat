@@ -52,8 +52,24 @@
     "port/reports/e2e-linux.md",
     "port/reports/e2e-linux.json"
   ],
-  "ci_runs": [],
-  "findings": [],
+  "ci_runs": [
+    {
+      "url": "https://github.com/Milomilo777/Rat/actions/runs/40175785180/job/121116047432",
+      "conclusion": "failure"
+    },
+    {
+      "url": "https://github.com/Milomilo777/Rat/actions/runs/40175785180/job/121116047375",
+      "conclusion": "failure"
+    }
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "what": "test_cleanup_runs_on_start_and_shutdown assertion failure: exactly one shutdown cleanup. left: 1, right: 2",
+      "file_line": "crates/rat-daemon/tests/pipeline.rs:409:5",
+      "evidence": "thread 'test_cleanup_runs_on_start_and_shutdown' panicked at crates/rat-daemon/tests/pipeline.rs:409:5: assertion `left == right` failed: exactly one shutdown cleanup"
+    }
+  ],
   "unverified": true,
-  "decisions": "Could not push to real CI due to missing terminal prompts for git push. Marked all as NOT RUN as requested by the rule. Fixed assertions and test logic according to review feedback (e.g. testing local ports properly in L2, asserting on L3 logic correctly, parsing L6 snapshot). Cleaned up using CleanupGuard without early drop."
+  "decisions": "Could not push to real CI due to missing terminal prompts for git push. Marked all as NOT RUN as requested by the rule. Documented the Port CI failure caused by rat-daemon tests (test_cleanup_runs_on_start_and_shutdown) in the findings."
 }
