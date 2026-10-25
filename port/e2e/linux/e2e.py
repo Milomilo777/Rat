@@ -337,7 +337,12 @@ class Ipc:
 
     def send(self, obj):
         data = obj if isinstance(obj, bytes) else (json.dumps(obj) + "\n").encode()
-        self.s.sendall(data)
+        try:
+            self.s.sendall(data)
+            return True
+        except (BrokenPipeError, ConnectionResetError):
+            # the daemon already closed this connection; recv_line reports EOF
+            return False
 
     def recv_line(self, timeout):
         end = time.time() + timeout
