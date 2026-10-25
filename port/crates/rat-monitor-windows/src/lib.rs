@@ -523,6 +523,10 @@ impl ConnectionSource for WindowsMonitor {
             self.enabled_rows.clear();
         }
 
+        // M5 (update-09): one adapter scan per sample feeds the per-row VPN
+        // classification.
+        let vpn_adapters = crate::list_adapter_descriptions();
+
         // TCP IPv4
         if let Ok(table) = windows_sys::get_tcp_table_v4() {
             for row in table {
@@ -572,6 +576,9 @@ impl ConnectionSource for WindowsMonitor {
                     }
                 }
 
+                let via_vpn =
+                    remote.is_some_and(|r| routes::is_vpn_route_with(&vpn_adapters, r.ip()));
+
                 connections.push(Connection {
                     process: process_info::get_process_info(row.dwOwningPid),
                     protocol: Protocol::Tcp,
@@ -580,6 +587,7 @@ impl ConnectionSource for WindowsMonitor {
                     listening: is_listening_state(row.dwState),
                     bytes_in,
                     bytes_out,
+                    via_vpn,
                 });
             }
         }
@@ -643,6 +651,9 @@ impl ConnectionSource for WindowsMonitor {
                     }
                 }
 
+                let via_vpn =
+                    remote.is_some_and(|r| routes::is_vpn_route_with(&vpn_adapters, r.ip()));
+
                 connections.push(Connection {
                     process: process_info::get_process_info(row.dwOwningPid),
                     protocol: Protocol::Tcp,
@@ -651,6 +662,7 @@ impl ConnectionSource for WindowsMonitor {
                     listening: is_listening_state(row.dwState),
                     bytes_in,
                     bytes_out,
+                    via_vpn,
                 });
             }
         }
@@ -670,6 +682,7 @@ impl ConnectionSource for WindowsMonitor {
                     listening: true, // Listening
                     bytes_in: None,
                     bytes_out: None,
+                    via_vpn: false,
                 });
             }
         }
@@ -689,6 +702,7 @@ impl ConnectionSource for WindowsMonitor {
                     listening: true,
                     bytes_in: None,
                     bytes_out: None,
+                    via_vpn: false,
                 });
             }
         }
@@ -705,7 +719,17 @@ pub mod routes {
     use windows::Win32::NetworkManagement::IpHelper::GetBestInterfaceEx;
     use windows::Win32::NetworkManagement::Ndis::NET_LUID_LH;
 
+    /// M5 (update-09): variant for hot loops - the adapter list is scanned
+    /// once per sample and reused per connection.
+    pub fn is_vpn_route_with(adapters: &[(u64, String, u32)], remote: IpAddr) -> bool {
+        is_vpn_route_inner(adapters, remote)
+    }
+
     pub fn is_vpn_route(remote: IpAddr) -> bool {
+        is_vpn_route_inner(&crate::list_adapter_descriptions(), remote)
+    }
+
+    fn is_vpn_route_inner(adapters: &[(u64, String, u32)], remote: IpAddr) -> bool {
         let mut index = 0;
         let mut sockaddr_storage: [u8; 128] = [0; 128]; // Minimal representation of SOCKADDR_INET
 
@@ -767,9 +791,9 @@ pub mod routes {
         // M4 (update-09): decide from the adapter's tunnel type + DESCRIPTION;
         // the user-editable alias and IF_TYPE_PROP_VIRTUAL alone produce
         // false positives (Hyper-V vSwitch, WSL vEthernet are type 53 too).
-        for (adapter_luid, description, if_type) in crate::list_adapter_descriptions() {
-            if adapter_luid == unsafe { luid.Value } {
-                return crate::check_is_vpn_interface(if_type, &description);
+        for (adapter_luid, description, if_type) in adapters {
+            if *adapter_luid == unsafe { luid.Value } {
+                return crate::check_is_vpn_interface(*if_type, description);
             }
         }
         false

@@ -54,6 +54,7 @@ mod tests {
                 listening: true,
                 bytes_in: Some(100),
                 bytes_out: Some(200),
+                via_vpn: false,
             }],
         };
         let serialized = snapshot.to_string().expect("Serialize Snapshot failed");

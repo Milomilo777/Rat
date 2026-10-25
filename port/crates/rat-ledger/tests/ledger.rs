@@ -31,6 +31,7 @@ fn conn(pid: u32, exe: &str, local: SocketAddr, remote: SocketAddr) -> Connectio
         listening: false,
         bytes_in: None,
         bytes_out: None,
+        via_vpn: false,
     }
 }
 

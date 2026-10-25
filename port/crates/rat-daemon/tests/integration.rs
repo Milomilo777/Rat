@@ -22,6 +22,7 @@ impl ConnectionSource for MockSource {
             listening: true,
             bytes_in: Some(100),
             bytes_out: Some(200),
+            via_vpn: false,
         }])
     }
 }
@@ -208,6 +209,7 @@ fn test_edge_cases_msg_roundtrip() {
             listening: false,
             bytes_in: None,
             bytes_out: None,
+            via_vpn: false,
         }],
     };
 
