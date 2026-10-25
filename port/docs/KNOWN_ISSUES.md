@@ -4,17 +4,15 @@ This is the first release of the Windows and Linux port. The items below are kno
 versions. Severity is our own estimate. Reports and fixes are welcome.
 
 ## Enforcement (`rat-enforcer`)
-- **Outbound only for app rules (medium).** Per-program rules block outbound traffic; inbound connections to a
-  listening blocked app are only blocked when a local-port rule covers them (port rules block both directions).
 - **Apps that change their executable (medium).** Rules match one executable path. Electron/Chromium helper
   executables, packaged (Store/UWP) apps and auto-updaters that install into versioned folders (`app-1.2.3\`) are
   not followed; after an update the block may stop applying. A renamed or copied executable is not blocked.
-- **Short gap on re-add (low).** Re-adding a rule deletes the old one first, so there is a brief window without a
-  block while netsh runs.
+- **Leftover temporary rule (low).** A re-added rule is swapped in under a temporary name (`Rat:tmp:...`) so there
+  is never a moment without a block. If the daemon dies halfway, that temporary rule keeps blocking until the next
+  add of the same program or port, or until cleanup. The swap's `netsh advfirewall firewall set rule ... new name=`
+  step is tested against a simulation only; it has not been run against a real firewall.
 - **Firewall tool time limit (low).** netsh, PowerShell and nft are killed after 30 seconds. On Windows the kill
   does not reach processes the tool itself started, and a failed netsh add or delete reports no tool output.
-- **Long paths (low).** Rule names embed the full path (`Rat:path:<path>`); very long paths may exceed netsh's
-  name limit.
 - **Ownership marker (low).** Cleanup removes every rule whose display name starts with `Rat:path:` /
   `Rat:port:`; rules are not tagged with a firewall group yet.
 - **Shared-host list (low).** Whole-program blocks are refused for a fixed list of Windows hosts that work for
@@ -46,7 +44,6 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
 - **Pipe identity (low).** The GUI does not verify that the process behind the pipe is the Rat service; a process
   that creates the pipe before the service starts could answer the GUI. (The daemon retries for 3 s when the pipe
   is still owned by a previous instance, then exits with an error.)
-- **Read-back order (low).** Paths read back from existing firewall rules at startup are not sorted/deduplicated.
 - **Untested hardening (low).** The pause after a failed accept is tested on its own helper, not on a real accept
   error (none can be provoked); the Unix peer check relies on platform tests.
 

@@ -682,7 +682,7 @@ impl rat_types::ConnectionSource for MockSource {
 struct NoopBackend;
 
 impl rat_daemon::core::EnforcementBackend for NoopBackend {
-    fn cleanup(&self) -> std::io::Result<()> {
+    fn cleanup(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 

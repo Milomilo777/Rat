@@ -257,8 +257,8 @@ pub fn default_rules_path() -> std::path::PathBuf {
 /// exit. Wired to `rat-daemon --cleanup` in main.rs.
 pub fn run_cleanup() -> std::io::Result<()> {
     #[cfg(windows)]
-    let backend = core::WindowsBackend::new();
+    let mut backend = core::WindowsBackend::new();
     #[cfg(not(windows))]
-    let backend = core::LinuxBackend::new();
+    let mut backend = core::LinuxBackend::new();
     backend.cleanup()
 }

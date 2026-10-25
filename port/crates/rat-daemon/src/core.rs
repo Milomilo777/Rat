@@ -61,7 +61,7 @@ pub trait EnforcementBackend: Send {
     /// (`rat-daemon --cleanup`): startup reconciles instead and a clean
     /// stop keeps the rules (macOS
     /// persistent-anchor parity).
-    fn cleanup(&self) -> io::Result<()>;
+    fn cleanup(&mut self) -> io::Result<()>;
     /// Read back the rules this backend currently holds, so a restart can
     /// RECONCILE against them instead of wiping (read existing, diff
     /// with the saved plan, remove extras, add missing — a wanted rule is
@@ -107,7 +107,7 @@ impl WindowsBackend {
 
 #[cfg(windows)]
 impl EnforcementBackend for WindowsBackend {
-    fn cleanup(&self) -> io::Result<()> {
+    fn cleanup(&mut self) -> io::Result<()> {
         use rat_enforcer::Enforcer;
         self.enforcer.cleanup()
     }
@@ -198,7 +198,7 @@ impl LinuxBackend {
 
 #[cfg(not(windows))]
 impl EnforcementBackend for LinuxBackend {
-    fn cleanup(&self) -> io::Result<()> {
+    fn cleanup(&mut self) -> io::Result<()> {
         use rat_enforcer::Enforcer;
         self.enforcer.cleanup()
     }
@@ -339,9 +339,10 @@ fn existing_rules_query() -> &'static str {
 const PORTS_MARKER: &str = "---RATPORTS---";
 
 /// Splits the read-back output into paths (before the marker) and local
-/// ports (after it). A `Rat:port:*` port exists as FOUR netsh rules (out/in x
-/// TCP/UDP), so the same LocalPort arrives once per rule — dedup here keeps
-/// the reconcile diff from removing one port three times. Non-numeric port
+/// ports (after it), both sorted and deduplicated. A `Rat:port:*` port exists
+/// as FOUR netsh rules (out/in x TCP/UDP) and a program as two (out/in), so
+/// the same value arrives once per rule — dedup here keeps the reconcile diff
+/// from removing one entry several times. Non-numeric port
 /// lines (Get-NetFirewallPortFilter can report "Any") are not ours to
 /// reconcile and are skipped.
 #[cfg(windows)]
@@ -366,6 +367,8 @@ fn parse_existing_output(stdout: &str) -> rat_enforcer::Blocklist {
             paths.push(line.to_string());
         }
     }
+    paths.sort();
+    paths.dedup();
     local_ports.sort();
     local_ports.dedup();
     rat_enforcer::Blocklist { paths, local_ports }
@@ -794,6 +797,21 @@ mod tests {
         assert!(!q.to_lowercase().contains("add"));
     }
 
+    // A long path's rule has a hashed display name (`Rat:path:#<hash>`), so
+    // the read-back must take the path from the program field, never parse
+    // it out of the name, and its wildcard must still match the hashed form.
+    #[cfg(windows)]
+    #[test]
+    fn existing_rules_query_reads_the_program_field_not_the_name() {
+        let q = existing_rules_query();
+        assert!(q.contains("Get-NetFirewallApplicationFilter"));
+        assert!(q.contains("Select-Object -ExpandProperty Program"));
+        assert!(
+            rat_enforcer::windows::format_rule_name(&format!(r"C:\{}\a.exe", "d".repeat(300)))
+                .starts_with("Rat:path:")
+        );
+    }
+
     // The read-back parse separates the path and port sections,
     // dedups the per-variant port lines (4 rules per port), and skips
     // non-numeric lines.
@@ -807,5 +825,19 @@ mod tests {
             vec![r"C:\a\app.exe".to_string(), r"C:\b\tool.exe".to_string()]
         );
         assert_eq!(b.local_ports, vec![4443, 5300]);
+    }
+
+    // Read-back paths come out sorted and without duplicates (a program
+    // with several rules, e.g. one per direction, arrives once per rule).
+    #[cfg(windows)]
+    #[test]
+    fn parse_existing_output_sorts_and_dedups_paths() {
+        let out =
+            "C:\\z\\last.exe\nC:\\a\\app.exe\nC:\\z\\last.exe\nC:\\a\\app.exe\n---RATPORTS---\n";
+        let b = parse_existing_output(out);
+        assert_eq!(
+            b.paths,
+            vec![r"C:\a\app.exe".to_string(), r"C:\z\last.exe".to_string()]
+        );
     }
 }
