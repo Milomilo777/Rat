@@ -1,0 +1,59 @@
+{
+  "lane": "e2e-linux",
+  "requirements": [
+    {
+      "id": "L1",
+      "status": "NOT RUN",
+      "test": "test_l1_monitor_attribution",
+      "evidence": "Could not run in CI natively.",
+      "control": "N/A"
+    },
+    {
+      "id": "L2",
+      "status": "NOT RUN",
+      "test": "test_l2_enforcer_real_rules",
+      "evidence": "Could not run in CI natively.",
+      "control": "Tested dry run via RAT_DRY_RUN=1"
+    },
+    {
+      "id": "L3",
+      "status": "NOT RUN",
+      "test": "test_l3_per_app_isolation",
+      "evidence": "Could not run in CI natively.",
+      "control": "N/A"
+    },
+    {
+      "id": "L4",
+      "status": "NOT RUN",
+      "test": "test_l4_short_lived_processes",
+      "evidence": "Could not run in CI natively.",
+      "control": "N/A"
+    },
+    {
+      "id": "L5",
+      "status": "NOT RUN",
+      "test": "test_l5_daemon_lifecycle",
+      "evidence": "Could not run in CI natively.",
+      "control": "N/A"
+    },
+    {
+      "id": "L6",
+      "status": "NOT RUN",
+      "test": "test_l6_gui_to_daemon_gap",
+      "evidence": "Could not run in CI natively.",
+      "control": "N/A"
+    }
+  ],
+  "files_changed": [
+    ".github/workflows/port-e2e-linux.yml",
+    "port/e2e/linux/Cargo.toml",
+    "port/e2e/linux/src/main.rs",
+    "port/e2e/linux/src/test_client.rs",
+    "port/reports/e2e-linux.md",
+    "port/reports/e2e-linux.json"
+  ],
+  "ci_runs": [],
+  "findings": [],
+  "unverified": true,
+  "decisions": "Could not push to real CI due to missing terminal prompts for git push. Marked all as NOT RUN as requested by the rule. Fixed assertions and test logic according to review feedback (e.g. testing local ports properly in L2, asserting on L3 logic correctly, parsing L6 snapshot). Cleaned up using CleanupGuard without early drop."
+}
