@@ -189,8 +189,10 @@ mod client_auth {
     //! C2 (PROPOSALS #5/#10, gate-fix-S2): per-client identity on the named
     //! pipe. The S1 DACL admits every Interactive User, so before a
     //! connection reaches the handler the daemon checks the CLIENT process's
-    //! primary token: the same user as the daemon, or a member of the Builtin
-    //! Administrators group. Every error fails CLOSED (connection dropped) —
+    //! primary token: the same user as the daemon, or a Builtin Administrator
+    //! whose admin group is ENABLED / whose token is elevated (I6 — a token
+    //! that merely LISTS the group, as an unelevated admin's filtered token
+    //! does, is refused). Every error fails CLOSED (connection dropped) —
     //! this is the token check gate-fix-S2 deferred to "when the handshake
     //! lands".
 
@@ -229,8 +231,13 @@ mod client_auth {
         (ok != 0).then_some(buf)
     }
 
-    /// (user SID, group SIDs) of the process's primary token.
-    pub fn process_token_sids(pid: u32) -> Option<(Vec<u8>, Vec<Vec<u8>>)> {
+    /// One token group: (SID bytes, SE_GROUP_* attributes). I6 needs the
+    /// attributes to tell an ENABLED Administrators membership from a
+    /// deny-only one.
+    pub type TokenGroup = (Vec<u8>, u32);
+
+    /// (user SID, groups) of the process's primary token.
+    pub fn process_token_sids(pid: u32) -> Option<(Vec<u8>, Vec<TokenGroup>)> {
         // SAFETY: all FFI below uses out-pointers into owned buffers and
         // handles guarded by HandleGuard; token buffers are only read back
         // as TOKEN_USER/TOKEN_GROUPS as produced by GetTokenInformation.
@@ -293,11 +300,14 @@ mod client_auth {
             let group_sids = attrs
                 .iter()
                 .filter_map(
-                    |SID_AND_ATTRIBUTES { Sid, .. }| {
+                    |SID_AND_ATTRIBUTES {
+                         Sid,
+                         Attributes: attrs,
+                     }| {
                         if Sid.is_null() {
                             None
                         } else {
-                            copy_sid(*Sid)
+                            copy_sid(*Sid).map(|sid| (sid, *attrs))
                         }
                     },
                 )
@@ -347,16 +357,55 @@ mod client_auth {
         let _ = CACHE.set(sid.clone());
         Ok(sid)
     }
+
+    #[cfg(windows)]
+    /// I6 belt-and-braces: an elevated token admits even when the group walk
+    /// above came up empty. Any error fails closed.
+    pub(super) fn token_elevated(pid: u32) -> bool {
+        use windows_sys::Win32::Security::{TokenElevation, TOKEN_ELEVATION};
+
+        // SAFETY: out-pointers into owned buffers; handles guarded by HandleGuard.
+        unsafe {
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if process.is_null() {
+                return false;
+            }
+            let _process_guard = HandleGuard(process);
+            let mut token: HANDLE = std::ptr::null_mut();
+            if OpenProcessToken(process, TOKEN_QUERY, &mut token) == 0 {
+                return false;
+            }
+            let _token_guard = HandleGuard(token);
+            let mut needed = 0u32;
+            let _ =
+                GetTokenInformation(token, TokenElevation, std::ptr::null_mut(), 0, &mut needed);
+            if needed < std::mem::size_of::<TOKEN_ELEVATION>() as u32 {
+                return false;
+            }
+            let mut buf = vec![0u8; needed as usize];
+            if GetTokenInformation(
+                token,
+                TokenElevation,
+                buf.as_mut_ptr() as *mut std::ffi::c_void,
+                needed,
+                &mut needed,
+            ) == 0
+            {
+                return false;
+            }
+            let elevation = &*(buf.as_ptr() as *const TOKEN_ELEVATION);
+            elevation.TokenIsElevated != 0
+        }
+    }
 }
 
 #[cfg(windows)]
 /// C2: may the client process behind this pipe connection set rules? Same
-/// user as the daemon, or a Builtin Administrator; anything else — and every
-/// error — is refused.
+/// user as the daemon, or a Builtin Administrator whose admin group is
+/// ENABLED (not deny-only) / whose token is elevated; anything else — and
+/// every error — is refused.
 fn client_pid_allowed(pid: u32) -> bool {
-    use windows_sys::Win32::Security::{
-        EqualSid, IsWellKnownSid, WinBuiltinAdministratorsSid, PSID,
-    };
+    use windows_sys::Win32::Security::{EqualSid, PSID};
 
     let Some((user, groups)) = client_auth::process_token_sids(pid) else {
         return false;
@@ -364,15 +413,37 @@ fn client_pid_allowed(pid: u32) -> bool {
     let Ok(daemon_sid) = client_auth::daemon_user_sid() else {
         return false;
     };
-    // SAFETY: all three buffers were produced by CopySid and are valid SIDs.
+    // SAFETY: both buffers were produced by CopySid and are valid SIDs.
     unsafe {
         if EqualSid(user.as_ptr() as PSID, daemon_sid.as_ptr() as PSID) != 0 {
             return true;
         }
-        groups
-            .iter()
-            .any(|g| IsWellKnownSid(g.as_ptr() as PSID, WinBuiltinAdministratorsSid) != 0)
     }
+    // I6: listing Builtin Administrators is not enough — the group must be
+    // enabled (an unelevated admin's filtered token carries it deny-only), or
+    // the token must be elevated outright.
+    admin_group_enabled(&groups) || client_auth::token_elevated(pid)
+}
+
+#[cfg(windows)]
+/// I6: does any group in this token ADMIT via Builtin Administrators? The old
+/// check accepted a token that merely LISTS the group — an unelevated admin
+/// process runs on a filtered token where the group is deny-only. Only an
+/// ENABLED membership (deny-only clear) counts here.
+fn admin_group_enabled(groups: &[(Vec<u8>, u32)]) -> bool {
+    use windows_sys::Win32::Security::{IsWellKnownSid, WinBuiltinAdministratorsSid, PSID};
+    use windows_sys::Win32::System::SystemServices::{
+        SE_GROUP_ENABLED, SE_GROUP_USE_FOR_DENY_ONLY,
+    };
+
+    groups.iter().any(|(sid, attrs)| {
+        // SAFETY: sid is a CopySid-produced buffer.
+        let is_admins =
+            unsafe { IsWellKnownSid(sid.as_ptr() as PSID, WinBuiltinAdministratorsSid) != 0 };
+        is_admins
+            && attrs & SE_GROUP_ENABLED as u32 != 0
+            && attrs & SE_GROUP_USE_FOR_DENY_ONLY as u32 == 0
+    })
 }
 
 #[cfg(windows)]
@@ -703,7 +774,31 @@ mod sddl_tests {
 
 #[cfg(all(test, windows))]
 mod client_auth_tests {
-    use super::client_pid_allowed;
+    use super::{admin_group_enabled, client_pid_allowed};
+
+    /// S-1-5-32-544 (Builtin\Administrators) / S-1-5-32-545 (Builtin\Users),
+    /// hand-encoded; the tests below re-check each encoding with
+    /// IsWellKnownSid so a typo in the helper fails the test, not the check.
+    fn builtin_sid(last_rid: u32) -> Vec<u8> {
+        vec![
+            1, // revision
+            2, // sub-authority count
+            0,
+            0,
+            0,
+            0,
+            0,
+            5, // NT authority
+            32,
+            0,
+            0,
+            0, // SECURITY_BUILTIN_DOMAIN_RID
+            last_rid.to_le_bytes()[0],
+            last_rid.to_le_bytes()[1],
+            last_rid.to_le_bytes()[2],
+            last_rid.to_le_bytes()[3],
+        ]
+    }
 
     #[test]
     fn test_client_pid_allowed_own_process() {
@@ -723,6 +818,67 @@ mod client_auth_tests {
             !client_pid_allowed(ghost),
             "an unopenable pid must fail closed"
         );
+    }
+
+    // I6 (review-02): an unelevated admin's filtered token still LISTS Builtin
+    // Administrators, but the group is deny-only there. Only an ENABLED
+    // membership (deny-only clear) may admit.
+    #[test]
+    fn test_admin_group_attribute_check() {
+        use windows_sys::Win32::Security::{IsWellKnownSid, WinBuiltinAdministratorsSid, PSID};
+        use windows_sys::Win32::System::SystemServices::{
+            SE_GROUP_ENABLED, SE_GROUP_ENABLED_BY_DEFAULT, SE_GROUP_USE_FOR_DENY_ONLY,
+        };
+
+        let admins = builtin_sid(544);
+        let users = builtin_sid(545);
+        // SAFETY: both vectors are hand-built SIDs of valid layout.
+        unsafe {
+            assert!(
+                IsWellKnownSid(admins.as_ptr() as PSID, WinBuiltinAdministratorsSid) != 0,
+                "helper must build the real Builtin Administrators SID"
+            );
+            assert!(
+                IsWellKnownSid(users.as_ptr() as PSID, WinBuiltinAdministratorsSid) == 0,
+                "helper must NOT encode Users as Administrators"
+            );
+        }
+
+        // An enabled admin group admits.
+        assert!(
+            admin_group_enabled(&[(admins.clone(), SE_GROUP_ENABLED as u32)]),
+            "an enabled Administrators group must be accepted"
+        );
+        // THE defect case: deny-only (filtered token of an unelevated admin)
+        // must be refused.
+        assert!(
+            !admin_group_enabled(&[(admins.clone(), SE_GROUP_USE_FOR_DENY_ONLY as u32)]),
+            "a deny-only Administrators group must be refused"
+        );
+        // Deny wins even when ENABLED is also present.
+        assert!(
+            !admin_group_enabled(&[(
+                admins.clone(),
+                (SE_GROUP_ENABLED | SE_GROUP_USE_FOR_DENY_ONLY) as u32
+            )]),
+            "deny-only must win over ENABLED when both are set"
+        );
+        // Listed by default but not currently enabled: refused.
+        assert!(
+            !admin_group_enabled(&[(admins.clone(), SE_GROUP_ENABLED_BY_DEFAULT as u32)]),
+            "a listed-but-disabled Administrators group must be refused"
+        );
+        assert!(
+            !admin_group_enabled(&[(admins.clone(), 0)]),
+            "attribute-less Administrators membership must be refused"
+        );
+        // An enabled NON-admin group never admits.
+        assert!(
+            !admin_group_enabled(&[(users, SE_GROUP_ENABLED as u32)]),
+            "an enabled non-admin group must be refused"
+        );
+        // No groups: no admission.
+        assert!(!admin_group_enabled(&[]), "no groups must be refused");
     }
 }
 
