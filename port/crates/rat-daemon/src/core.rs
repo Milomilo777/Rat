@@ -27,6 +27,8 @@ pub enum Command {
         scope: rat_ledger::AnswerScope,
         lifetime: Lifetime,
     },
+    /// Broadcast the current rule set as `ServerMessage::Rules`.
+    GetRules,
 }
 
 /// What [`EnforcementBackend::enforce`] did.
@@ -472,6 +474,14 @@ pub async fn run_pipeline(
                             eprintln!("rat-daemon: ignoring stale AlertAnswer id {id}");
                         }
                     }
+                    Some(Command::GetRules) => {
+                        // Answered from the live engine, never from the
+                        // rules file (which may be untrusted and unread).
+                        // A broadcast with no receiver is not an error.
+                        let _ = snapshot_tx.send(ServerMessage::Rules {
+                            rules: policy.0.rule_set().rules,
+                        });
+                    }
                     // Every IPC command sender is gone (server ended): wind down.
                     None => break,
                 }
@@ -532,7 +542,9 @@ pub async fn run_pipeline(
             }
             Some(_) => {}
             None => {
-                current_alert_id = None;
+                if let Some(id) = current_alert_id.take() {
+                    let _ = snapshot_tx.send(ServerMessage::AlertCleared { id });
+                }
                 sent_alert_key = None;
             }
         }

@@ -1011,3 +1011,123 @@ fn test_linux_backend_enforces_and_skips_unchanged() {
         .expect("dry-run enforce");
     assert!(outcome.applied, "port removal re-applies the ruleset");
 }
+
+/// Wait for the next broadcast that `pick` accepts.
+async fn wait_for_msg<T>(
+    rx: &mut tokio::sync::broadcast::Receiver<ServerMessage>,
+    mut pick: impl FnMut(ServerMessage) -> Option<T>,
+) -> T {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(Instant::now() < deadline, "expected message never arrived");
+        let msg = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("no broadcast at all")
+            .expect("broadcast channel closed");
+        if let Some(v) = pick(msg) {
+            return v;
+        }
+    }
+}
+
+// GetRules is answered from the pipeline's in-memory rule set: empty at
+// start, and the exact set after SetRules (ids included), never from a file.
+#[tokio::test]
+async fn test_get_rules_answers_the_current_in_memory_set() {
+    let app = test_app();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let (snapshot_tx, mut rx) = tokio::sync::broadcast::channel(64);
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let policy = RuleEnginePolicy(rat_core::RuleEngine::new());
+    let ledger = Ledger::new(LedgerConfig { warmup_ms: 0 }, AlertCenterConfig::default());
+    let task = tokio::spawn(rat_daemon::core::run_pipeline(
+        ScriptedSource { conns: vec![] },
+        policy,
+        ledger,
+        RecorderBackend::default(),
+        None::<Arc<RuleStore>>,
+        cmd_rx,
+        snapshot_tx,
+        shutdown_rx,
+    ));
+
+    cmd_tx.send(Command::GetRules).unwrap();
+    let first = wait_for_msg(&mut rx, |m| match m {
+        ServerMessage::Rules { rules } => Some(rules),
+        _ => None,
+    })
+    .await;
+    assert!(first.is_empty());
+
+    let rule = deny_rule(app);
+    cmd_tx
+        .send(Command::SetRules {
+            rules: vec![rule.clone()],
+        })
+        .unwrap();
+    cmd_tx.send(Command::GetRules).unwrap();
+    let second = wait_for_msg(&mut rx, |m| match m {
+        ServerMessage::Rules { rules } => Some(rules),
+        _ => None,
+    })
+    .await;
+    assert_eq!(second, vec![rule]);
+
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("pipeline must end on shutdown")
+        .unwrap();
+}
+
+// The daemon tells clients when the alert it asked about is gone, so the app
+// can keep a local alert until the daemon confirms it was handled.
+#[tokio::test]
+async fn test_alert_cleared_is_sent_after_the_answer() {
+    let app = test_app();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let (snapshot_tx, mut rx) = tokio::sync::broadcast::channel(64);
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let policy = RuleEnginePolicy(rat_core::RuleEngine::new());
+    let ledger = Ledger::new(LedgerConfig { warmup_ms: 0 }, AlertCenterConfig::default());
+    let task = tokio::spawn(rat_daemon::core::run_pipeline(
+        ScriptedSource {
+            conns: vec![conn(app, "evil", 443, 54321)],
+        },
+        policy,
+        ledger,
+        RecorderBackend::default(),
+        dummy_store(),
+        cmd_rx,
+        snapshot_tx,
+        shutdown_rx,
+    ));
+
+    let id = wait_for_msg(&mut rx, |m| match m {
+        ServerMessage::AlertRequest { id, .. } => Some(id),
+        _ => None,
+    })
+    .await;
+    cmd_tx
+        .send(Command::AlertAnswer {
+            id,
+            verdict: Verdict::Deny,
+            scope: rat_ledger::AnswerScope::Any,
+            lifetime: Lifetime::Forever,
+        })
+        .unwrap();
+    let cleared = wait_for_msg(&mut rx, |m| match m {
+        ServerMessage::AlertCleared { id } => Some(id),
+        _ => None,
+    })
+    .await;
+    assert_eq!(cleared, id);
+
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("pipeline must end on shutdown")
+        .unwrap();
+}

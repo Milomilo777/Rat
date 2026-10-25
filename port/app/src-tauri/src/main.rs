@@ -4,8 +4,8 @@ mod daemon;
 mod rules;
 mod update;
 
-use daemon::{ConnState, DaemonStatus, Event, PendingAlert, Shared};
-use rat_core::{Lifetime, Rule, RuleStore, Verdict};
+use daemon::{ConnState, DaemonStatus, Event, Outgoing, PendingAlert, Shared, IO_TIMEOUT};
+use rat_core::{Lifetime, Rule, Verdict};
 use rat_daemon::msg::ClientMessage;
 use rat_ledger::{Alert, AnswerScope, ConnectionDetails};
 use rat_types::{Connection, ProcessInfo, Protocol};
@@ -13,6 +13,7 @@ use rules::{NewRule, RuleView};
 use serde::Serialize;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
@@ -93,22 +94,18 @@ pub fn view_from(conn: Connection) -> ConnectionView {
 
 pub struct DaemonDataSource {
     shared: Arc<Shared>,
-    cmd_tx: UnboundedSender<ClientMessage>,
-    rules_path: PathBuf,
+    cmd_tx: UnboundedSender<Outgoing>,
     /// Serializes read-modify-send of the rule list.
     rules_lock: Mutex<()>,
 }
 
+const NOT_CONNECTED: &str = "The Rat service is not connected";
+
 impl DaemonDataSource {
-    pub fn new(
-        shared: Arc<Shared>,
-        cmd_tx: UnboundedSender<ClientMessage>,
-        rules_path: PathBuf,
-    ) -> Self {
+    pub fn new(shared: Arc<Shared>, cmd_tx: UnboundedSender<Outgoing>) -> Self {
         Self {
             shared,
             cmd_tx,
-            rules_path,
             rules_lock: Mutex::new(()),
         }
     }
@@ -121,17 +118,37 @@ impl DaemonDataSource {
         }
     }
 
-    fn load_rules(&self) -> Result<Vec<Rule>, String> {
-        RuleStore::new(self.rules_path.clone())
-            .load()
-            .map_err(|e| format!("cannot read the rules file: {e}"))
+    /// Serialize `msg` (refused when over the daemon's line limit, nothing
+    /// is sent then), queue it and wait until the session has really written
+    /// it to the daemon, or failed to.
+    fn send_and_confirm(&self, msg: &ClientMessage) -> Result<(), String> {
+        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+        let out = Outgoing::with_ack(msg, ack_tx)?;
+        self.cmd_tx
+            .send(out)
+            .map_err(|_| NOT_CONNECTED.to_string())?;
+        match ack_rx.recv_timeout(IO_TIMEOUT) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(format!("could not send to the Rat service: {e}")),
+            // The session dropped the command unwritten (connection lost).
+            Err(RecvTimeoutError::Disconnected) => Err(NOT_CONNECTED.to_string()),
+            Err(RecvTimeoutError::Timeout) => {
+                Err("The Rat service did not accept the request in time".to_string())
+            }
+        }
+    }
+
+    /// The daemon is the only source of rules: ask it over the pipe. The
+    /// rules file is never read here (the daemon may have refused it).
+    fn fetch_rules(&self) -> Result<Vec<Rule>, String> {
+        let gen = self.shared.rules_generation();
+        self.send_and_confirm(&ClientMessage::GetRules)?;
+        self.shared.wait_rules_after(gen, IO_TIMEOUT)
     }
 
     fn send_rules(&self, rules: Vec<Rule>) -> Result<Vec<RuleView>, String> {
         let views = rules.iter().map(rules::view_of).collect();
-        self.cmd_tx
-            .send(ClientMessage::SetRules { rules })
-            .map_err(|_| "The Rat service is not connected".to_string())?;
+        self.send_and_confirm(&ClientMessage::SetRules { rules })?;
         Ok(views)
     }
 }
@@ -160,14 +177,16 @@ impl DataSource for DaemonDataSource {
     }
 
     fn get_rules(&self) -> Result<Vec<RuleView>, String> {
-        Ok(self.load_rules()?.iter().map(rules::view_of).collect())
+        self.require_connected()?;
+        let _guard = self.rules_lock.lock().map_err(|_| "rules lock poisoned")?;
+        Ok(self.fetch_rules()?.iter().map(rules::view_of).collect())
     }
 
     fn add_rule(&self, new: NewRule) -> Result<Vec<RuleView>, String> {
         self.require_connected()?;
         let rule = rules::build_rule(&new)?;
         let _guard = self.rules_lock.lock().map_err(|_| "rules lock poisoned")?;
-        let mut all = self.load_rules()?;
+        let mut all = self.fetch_rules()?;
         all.push(rule);
         self.send_rules(all)
     }
@@ -175,7 +194,7 @@ impl DataSource for DaemonDataSource {
     fn delete_rule(&self, id: &str) -> Result<Vec<RuleView>, String> {
         self.require_connected()?;
         let _guard = self.rules_lock.lock().map_err(|_| "rules lock poisoned")?;
-        let mut all = self.load_rules()?;
+        let mut all = self.fetch_rules()?;
         rules::remove_rule(&mut all, id)?;
         self.send_rules(all)
     }
@@ -200,15 +219,14 @@ impl DataSource for DaemonDataSource {
             Some(a) if a.id == id => {}
             _ => return Err("This alert is no longer pending".to_string()),
         }
-        self.cmd_tx
-            .send(ClientMessage::AlertAnswer {
-                id,
-                verdict,
-                scope,
-                lifetime,
-            })
-            .map_err(|_| "The Rat service is not connected".to_string())?;
-        self.shared.clear_alert(id);
+        self.send_and_confirm(&ClientMessage::AlertAnswer {
+            id,
+            verdict,
+            scope,
+            lifetime,
+        })?;
+        // The alert stays on record until the daemon confirms it is gone.
+        self.shared.mark_answered(id);
         Ok(())
     }
 }
@@ -367,7 +385,7 @@ impl DataSource for FakeDataSource {
 // ---------------------------------------------------------------------------
 
 pub struct AppState {
-    data_source: Box<dyn DataSource>,
+    data_source: Arc<dyn DataSource>,
 }
 
 type AppStateHandle<'a> = State<'a, Mutex<AppState>>;
@@ -376,8 +394,28 @@ fn with_source<T>(
     state: &AppStateHandle<'_>,
     f: impl FnOnce(&dyn DataSource) -> Result<T, String>,
 ) -> Result<T, String> {
-    let app_state = state.lock().map_err(|_| "Failed to lock state")?;
-    f(app_state.data_source.as_ref())
+    let source = state
+        .lock()
+        .map_err(|_| "Failed to lock state")?
+        .data_source
+        .clone();
+    f(source.as_ref())
+}
+
+/// Run a data source call that waits for the daemon (rules, answers) on a
+/// blocking thread, so neither the UI thread nor the async runtime stalls.
+async fn with_source_blocking<T: Send + 'static>(
+    state: &AppStateHandle<'_>,
+    f: impl FnOnce(&dyn DataSource) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let source = state
+        .lock()
+        .map_err(|_| "Failed to lock state")?
+        .data_source
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || f(source.as_ref()))
+        .await
+        .map_err(|e| format!("background task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -409,18 +447,18 @@ fn evaluate_update(
 }
 
 #[tauri::command]
-fn get_rules(state: AppStateHandle<'_>) -> Result<Vec<RuleView>, String> {
-    with_source(&state, |s| s.get_rules())
+async fn get_rules(state: AppStateHandle<'_>) -> Result<Vec<RuleView>, String> {
+    with_source_blocking(&state, |s| s.get_rules()).await
 }
 
 #[tauri::command]
-fn add_rule(state: AppStateHandle<'_>, rule: NewRule) -> Result<Vec<RuleView>, String> {
-    with_source(&state, |s| s.add_rule(rule))
+async fn add_rule(state: AppStateHandle<'_>, rule: NewRule) -> Result<Vec<RuleView>, String> {
+    with_source_blocking(&state, move |s| s.add_rule(rule)).await
 }
 
 #[tauri::command]
-fn delete_rule(state: AppStateHandle<'_>, id: String) -> Result<Vec<RuleView>, String> {
-    with_source(&state, |s| s.delete_rule(&id))
+async fn delete_rule(state: AppStateHandle<'_>, id: String) -> Result<Vec<RuleView>, String> {
+    with_source_blocking(&state, move |s| s.delete_rule(&id)).await
 }
 
 #[tauri::command]
@@ -437,7 +475,7 @@ fn get_pending_alert(state: AppStateHandle<'_>) -> Result<Option<PendingAlert>, 
 /// "allow" | "deny", scope "any" | "domain" | "host" | "port", lifetime
 /// "once" | "untilQuit" | "forever". The alert window closes on success.
 #[tauri::command]
-fn answer_alert(
+async fn answer_alert(
     app: tauri::AppHandle,
     state: AppStateHandle<'_>,
     id: u64,
@@ -451,7 +489,10 @@ fn answer_alert(
     }
     let scope: AnswerScope = rules::parse_enum("scope", &scope)?;
     let lifetime: Lifetime = rules::parse_enum("lifetime", &lifetime)?;
-    with_source(&state, |s| s.answer_alert(id, verdict, scope, lifetime))?;
+    with_source_blocking(&state, move |s| {
+        s.answer_alert(id, verdict, scope, lifetime)
+    })
+    .await?;
     close_alert_window(&app);
     Ok(())
 }
@@ -472,6 +513,19 @@ fn open_alert_window(app: &tauri::AppHandle) -> Result<(), String> {
         let _ = w.set_focus();
         return Ok(());
     }
+    build_alert_window(app)
+}
+
+/// An alert is still unanswered: bring the window back if it was closed.
+/// An open window is left alone (no focus stealing on every snapshot).
+fn reopen_alert_window(app: &tauri::AppHandle) -> Result<(), String> {
+    if app.get_webview_window("alert").is_some() {
+        return Ok(());
+    }
+    build_alert_window(app)
+}
+
+fn build_alert_window(app: &tauri::AppHandle) -> Result<(), String> {
     WebviewWindowBuilder::new(app, "alert", WebviewUrl::App("src/alert.html".into()))
         .title("Connection Alert")
         .inner_size(450.0, 250.0)
@@ -496,8 +550,8 @@ fn demo_requested() -> bool {
 }
 
 fn main() {
-    let (data_source, events): (Box<dyn DataSource>, _) = if demo_requested() {
-        (Box::new(FakeDataSource::new(false)), None)
+    let (data_source, events): (Arc<dyn DataSource>, _) = if demo_requested() {
+        (Arc::new(FakeDataSource::new(false)), None)
     } else {
         let shared = Arc::new(Shared::new());
         let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -513,14 +567,7 @@ fn main() {
             )
             .await;
         });
-        (
-            Box::new(DaemonDataSource::new(
-                shared,
-                cmd_tx,
-                rat_daemon::default_rules_path(),
-            )),
-            Some(ev_rx),
-        )
+        (Arc::new(DaemonDataSource::new(shared, cmd_tx)), Some(ev_rx))
     };
 
     tauri::Builder::default()
@@ -529,8 +576,12 @@ fn main() {
             if let Some(mut ev_rx) = events {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    while let Some(Event::Alert(_)) = ev_rx.recv().await {
-                        if let Err(e) = open_alert_window(&handle) {
+                    while let Some(event) = ev_rx.recv().await {
+                        let opened = match event {
+                            Event::Alert(_) => open_alert_window(&handle),
+                            Event::AlertPending(_) => reopen_alert_window(&handle),
+                        };
+                        if let Err(e) = opened {
                             eprintln!("rat-app: {e}");
                         }
                     }
@@ -634,39 +685,53 @@ mod tests {
         assert_eq!(v.vpn_mark.as_deref(), Some("VPN"));
     }
 
-    // ---- DaemonDataSource against a temp rules file and a fake channel ----
+    // ---- DaemonDataSource against an in-memory fake daemon (real session) ----
+
+    use crate::daemon::fake::{serve, FakeDaemon};
+    use crate::daemon::run_session;
 
     struct Fixture {
-        src: DaemonDataSource,
+        src: Arc<DaemonDataSource>,
         shared: Arc<Shared>,
-        cmd_rx: tokio::sync::mpsc::UnboundedReceiver<ClientMessage>,
-        dir: PathBuf,
+        daemon: Arc<FakeDaemon>,
     }
 
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            // Only the unique temp dir this fixture created.
-            let _ = std::fs::remove_dir_all(&self.dir);
-        }
-    }
-
-    fn fixture(tag: &str) -> Fixture {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir =
-            std::env::temp_dir().join(format!("rat-app-test-{tag}-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+    /// Connected session over an in-memory pipe to a fake daemon.
+    async fn fixture() -> Fixture {
+        let (client_io, daemon_io) = tokio::io::duplex(1 << 20);
         let shared = Arc::new(Shared::new());
-        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
-        let src = DaemonDataSource::new(shared.clone(), cmd_tx, dir.join("rules.json"));
-        Fixture {
-            src,
-            shared,
-            cmd_rx,
-            dir,
+        let daemon = Arc::new(FakeDaemon::default());
+        let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<Outgoing>();
+        let (ev_tx, _ev_rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(serve(daemon_io, daemon.clone()));
+        let s = shared.clone();
+        tokio::spawn(async move {
+            let _keep = _ev_rx;
+            run_session(client_io, &s, &mut cmd_rx, &ev_tx).await;
+        });
+        for _ in 0..200 {
+            if shared.status().code == ConnState::Connected {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+        assert_eq!(shared.status().code, ConnState::Connected);
+        Fixture {
+            src: Arc::new(DaemonDataSource::new(shared.clone(), cmd_tx)),
+            shared,
+            daemon,
+        }
+    }
+
+    /// Run a blocking data source call off the runtime threads.
+    async fn run<T: Send + 'static>(
+        f: &Fixture,
+        call: impl FnOnce(&DaemonDataSource) -> T + Send + 'static,
+    ) -> T {
+        let src = f.src.clone();
+        tokio::task::spawn_blocking(move || call(&src))
+            .await
+            .unwrap()
     }
 
     fn new_rule(app: &str, action: &str) -> NewRule {
@@ -677,88 +742,171 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rule_changes_need_a_connected_daemon() {
-        let mut f = fixture("offline");
-        assert!(f.src.add_rule(new_rule("/a", "allow")).is_err());
-        assert!(f.src.delete_rule("x").is_err());
-        assert!(f.cmd_rx.try_recv().is_err(), "nothing may be sent");
+    /// Wait (bounded) until the fake daemon holds `n` rules: the write ack
+    /// means "written", the daemon applies it a moment later.
+    async fn daemon_has_rules(f: &Fixture, n: usize) -> Vec<Rule> {
+        for _ in 0..200 {
+            let rules = f.daemon.rules.lock().unwrap().clone();
+            if rules.len() == n {
+                return rules;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("the daemon never reached {n} rules");
     }
 
-    #[test]
-    fn add_rule_sends_the_whole_list_including_existing_rules() {
-        let mut f = fixture("add");
-        // An existing rule (e.g. created by the daemon from an alert answer).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rule_changes_need_a_connected_daemon() {
+        let shared = Arc::new(Shared::new());
+        let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let src = DaemonDataSource::new(shared, cmd_tx);
+        assert!(src.add_rule(new_rule("/a", "allow")).is_err());
+        assert!(src.delete_rule("x").is_err());
+        assert!(src.get_rules().is_err());
+        assert!(cmd_rx.try_recv().is_err(), "nothing may be sent");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rules_come_from_the_daemon_and_changes_keep_existing_rules() {
+        let f = fixture().await;
+        // A rule only the daemon knows (e.g. created from an alert answer).
         let existing = rules::build_rule(&new_rule("/existing", "deny")).unwrap();
-        RuleStore::new(f.dir.join("rules.json"))
-            .save(vec![existing.clone()])
-            .unwrap();
-        f.shared.mark_connected_for_test();
+        f.daemon.rules.lock().unwrap().push(existing.clone());
 
-        let views = f.src.add_rule(new_rule("/new", "allow")).unwrap();
+        let listed = run(&f, |s| s.get_rules()).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].app, "/existing");
+
+        let views = run(&f, |s| s.add_rule(new_rule("/new", "allow")))
+            .await
+            .unwrap();
         assert_eq!(views.len(), 2);
-        match f.cmd_rx.try_recv().unwrap() {
-            ClientMessage::SetRules { rules } => {
-                assert_eq!(rules.len(), 2);
-                assert_eq!(rules[0], existing);
-                assert_eq!(rules[1].process_path.as_deref(), Some("/new"));
-            }
-            other => panic!("unexpected message {other:?}"),
-        }
-        // Delete the existing one: the rest is sent.
+        let daemon_rules = daemon_has_rules(&f, 2).await;
+        assert_eq!(daemon_rules[0], existing);
+        assert_eq!(daemon_rules[1].process_path.as_deref(), Some("/new"));
+
         let id = existing.id.to_string();
-        let views = f.src.delete_rule(&id).unwrap();
-        assert!(views.is_empty());
-        match f.cmd_rx.try_recv().unwrap() {
-            ClientMessage::SetRules { rules } => assert!(rules.is_empty()),
-            other => panic!("unexpected message {other:?}"),
-        }
+        let views = run(&f, move |s| s.delete_rule(&id)).await.unwrap();
+        assert_eq!(views.len(), 1);
+        let daemon_rules = daemon_has_rules(&f, 1).await;
+        assert_eq!(daemon_rules[0].process_path.as_deref(), Some("/new"));
     }
 
-    #[test]
-    fn unreadable_rules_file_is_an_error_not_an_empty_list() {
-        let mut f = fixture("corrupt");
-        std::fs::write(f.dir.join("rules.json"), b"{ truncated").unwrap();
-        f.shared.mark_connected_for_test();
-        assert!(f.src.get_rules().is_err());
-        assert!(f.src.add_rule(new_rule("/a", "allow")).is_err());
-        assert!(
-            f.cmd_rx.try_recv().is_err(),
-            "must not replace rules with an empty set"
-        );
-    }
-
-    #[test]
-    fn answer_alert_checks_the_id_and_clears_it() {
-        let mut f = fixture("answer");
-        f.shared.mark_connected_for_test();
-        f.shared.set_alert_for_test(7);
-        assert!(f
-            .src
-            .answer_alert(8, Verdict::Allow, AnswerScope::Any, Lifetime::Forever)
-            .is_err());
-        f.src
-            .answer_alert(7, Verdict::Deny, AnswerScope::Domain, Lifetime::Once)
-            .unwrap();
-        assert!(f.src.pending_alert().is_none());
-        match f.cmd_rx.try_recv().unwrap() {
-            ClientMessage::AlertAnswer {
-                id,
-                verdict,
-                scope,
-                lifetime,
-            } => {
-                assert_eq!(
-                    (id, verdict, scope, lifetime),
-                    (7, Verdict::Deny, AnswerScope::Domain, Lifetime::Once)
-                );
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_oversized_rule_list_is_an_error_and_nothing_is_sent() {
+        let f = fixture().await;
+        {
+            let mut g = f.daemon.rules.lock().unwrap();
+            for i in 0..600 {
+                g.push(rules::build_rule(&new_rule(&format!("/opt/app/{i}"), "deny")).unwrap());
             }
-            other => panic!("unexpected message {other:?}"),
         }
+        let err = run(&f, |s| s.add_rule(new_rule("/one/more", "allow")))
+            .await
+            .unwrap_err();
+        assert!(err.starts_with("too many rules for one update: "), "{err}");
+        assert!(err.ends_with("bytes, limit 65536"), "{err}");
+        // Nothing was written, the daemon kept its set, the session lives.
+        assert!(!f
+            .daemon
+            .received()
+            .iter()
+            .any(|m| matches!(m, ClientMessage::SetRules { .. })));
+        assert_eq!(f.daemon.rules.lock().unwrap().len(), 600);
+        assert!(!f
+            .daemon
+            .dropped_session
+            .load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(f.shared.status().code, ConnState::Connected);
+        // Deleting one rule still works: the session was not dropped.
+        let id = f.daemon.rules.lock().unwrap()[0].id.to_string();
+        // (600 rules are still over the limit; the error is the same, clear.)
+        let err = run(&f, move |s| s.delete_rule(&id)).await.unwrap_err();
+        assert!(err.starts_with("too many rules for one update"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn answer_alert_checks_the_id_and_waits_for_the_daemon() {
+        let f = fixture().await;
+        f.shared.set_alert_for_test(7);
+        assert!(run(&f, |s| s.answer_alert(
+            8,
+            Verdict::Allow,
+            AnswerScope::Any,
+            Lifetime::Forever
+        ))
+        .await
+        .is_err());
+        run(&f, |s| {
+            s.answer_alert(7, Verdict::Deny, AnswerScope::Domain, Lifetime::Once)
+        })
+        .await
+        .unwrap();
+        // Not offered again, but the local record goes only when the daemon
+        // confirms (the fake daemon answers AlertCleared).
+        assert!(f.src.pending_alert().is_none());
+        for _ in 0..200 {
+            if !f.shared.has_alert_record() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(!f.shared.has_alert_record());
+        assert!(f.daemon.received().iter().any(|m| matches!(
+            m,
+            ClientMessage::AlertAnswer {
+                id: 7,
+                verdict: Verdict::Deny,
+                scope: AnswerScope::Domain,
+                lifetime: Lifetime::Once
+            }
+        )));
         // A second answer for the same alert is stale.
-        assert!(f
-            .src
-            .answer_alert(7, Verdict::Deny, AnswerScope::Domain, Lifetime::Once)
+        assert!(run(&f, |s| s.answer_alert(
+            7,
+            Verdict::Deny,
+            AnswerScope::Domain,
+            Lifetime::Once
+        ))
+        .await
+        .is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_answer_keeps_the_alert_pending() {
+        // No session runs: the command can never be written.
+        let shared = Arc::new(Shared::new());
+        shared.mark_connected_for_test();
+        shared.set_alert_for_test(7);
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        drop(cmd_rx);
+        let src = DaemonDataSource::new(shared.clone(), cmd_tx);
+        assert!(src
+            .answer_alert(7, Verdict::Deny, AnswerScope::Any, Lifetime::Once)
             .is_err());
+        assert_eq!(shared.alert().unwrap().id, 7);
+    }
+
+    // The rules file is the daemon's business only.
+    #[test]
+    fn the_app_never_reads_the_rules_file() {
+        let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for entry in std::fs::read_dir(here).unwrap() {
+            let path = entry.unwrap().path();
+            let text = std::fs::read_to_string(&path).unwrap();
+            // Built from pieces so this test does not match itself.
+            for needle in [
+                ["rules", ".json"].concat(),
+                ["default_rules", "_path"].concat(),
+                ["Rule", "Store"].concat(),
+            ] {
+                let hits: Vec<&str> = text
+                    .lines()
+                    .filter(|l| l.contains(needle.as_str()))
+                    .filter(|l| !l.trim_start().starts_with("//"))
+                    .collect();
+                assert!(hits.is_empty(), "{}: {needle}: {hits:?}", path.display());
+            }
+        }
     }
 }

@@ -37,8 +37,16 @@ Client -> server:
 ```json
 {"Hello":{"protocol_version":1}}
 {"SetRules":{"rules":[ ...rat-core v2 rule objects (camelCase)... ]}}
+"GetRules"
 {"AlertAnswer":{"id":7,"verdict":"deny","scope":"any","lifetime":"forever"}}
 ```
+* `GetRules` (a plain string, no fields) asks for the current in-memory rule set. The daemon answers with
+  `Rules`, taken from the pipeline's rule engine, never from the rules file; so a client does not need (and must
+  not use) read access to the rules directory. Session rules (once / until quit) are included. The answer goes
+  out on the same broadcast as snapshots, so every handshaked client sees it. Additive: protocol version stays 1,
+  existing messages are unchanged.
+* A client line is limited to 64 KiB (65536 bytes); a longer line (for example a very large `SetRules`) makes the
+  daemon drop that connection. Clients check the size before sending.
 * `SetRules` replaces the daemon's rule set wholesale; the rules are the same JSON the Swift app persists
   (`rat_core::Rule`, camelCase).
 * `AlertAnswer` answers the `AlertRequest` with the matching `id` (stale ids are ignored). `scope` is one of
@@ -52,7 +60,12 @@ Server -> client:
 {"Snapshot":{"connections":[ ...rat-types Connections... ]}}
 {"AlertRequest":{"id":7,"alert":{"app":"...","app_name":"...","host":"...","remote":"203.0.113.9:443", ...}}}
 {"Error":{"message":"..."}}
+{"Rules":{"rules":[ ...rat-core v2 rule objects... ]}}
+{"AlertCleared":{"id":7}}
 ```
+* `Rules` answers `GetRules`. `AlertCleared` is pushed when the alert with that `id` is no longer pending
+  (answered, or gone); a client may keep showing an alert it answered until this arrives. Both are new server
+  messages: a client that cannot parse them must ignore unknown lines (the desktop app does).
 * `Snapshot` is pushed after every sampling pass (1.5 s) and after every applied command.
 * `AlertRequest` goes out once per NEW current alert (one prompt per app|domain key until answered, AlertCenter
   parity); the id must be echoed back in `AlertAnswer`.

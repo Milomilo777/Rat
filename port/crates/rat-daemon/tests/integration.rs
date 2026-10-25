@@ -35,6 +35,19 @@ async fn spawn_server(
     tokio::sync::broadcast::Sender<ServerMessage>,
     tokio::sync::broadcast::Sender<()>,
 ) {
+    // Commands are dropped here: most IPC scenarios never set rules.
+    let (endpoint, snapshot_tx, shutdown_tx, _cmd_rx) = spawn_server_with_commands(test).await;
+    (endpoint, snapshot_tx, shutdown_tx)
+}
+
+async fn spawn_server_with_commands(
+    test: &str,
+) -> (
+    String,
+    tokio::sync::broadcast::Sender<ServerMessage>,
+    tokio::sync::broadcast::Sender<()>,
+    tokio::sync::mpsc::UnboundedReceiver<rat_daemon::core::Command>,
+) {
     #[cfg(unix)]
     let endpoint = format!("/tmp/rat_it_{test}_{}.sock", std::process::id());
     #[cfg(windows)]
@@ -42,8 +55,7 @@ async fn spawn_server(
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
     let (snapshot_tx, snapshot_rx) = tokio::sync::broadcast::channel(16);
-    // Commands are dropped here: the IPC scenarios below never set rules.
-    let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
 
     let ep = endpoint.clone();
     tokio::spawn(async move {
@@ -80,7 +92,7 @@ async fn spawn_server(
         }
     }
 
-    (endpoint, snapshot_tx, shutdown_tx)
+    (endpoint, snapshot_tx, shutdown_tx, cmd_rx)
 }
 
 #[cfg(unix)]
@@ -301,6 +313,42 @@ where
 }
 
 // ------------------------------------------------------------ tests
+
+// GetRules crosses the IPC layer as a pipeline command, and the Rules reply
+// the pipeline broadcasts reaches the handshaked client.
+#[tokio::test]
+async fn test_get_rules_is_forwarded_and_the_reply_delivered() {
+    let (endpoint, snapshot_tx, shutdown_tx, mut cmd_rx) =
+        spawn_server_with_commands("get_rules").await;
+    let (r, w) = tokio::io::split(connect_ep(&endpoint).await);
+    let mut reader = FramedRead::new(r, LinesCodec::new());
+    let mut writer = FramedWrite::new(w, LinesCodec::new());
+    send_client(
+        &mut writer,
+        &ClientMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    )
+    .await;
+    assert!(matches!(
+        read_server(&mut reader, READ_TIMEOUT).await,
+        Some(ServerMessage::HelloAck { .. })
+    ));
+
+    send_client(&mut writer, &ClientMessage::GetRules).await;
+    let cmd = tokio::time::timeout(READ_TIMEOUT, cmd_rx.recv())
+        .await
+        .expect("no command forwarded")
+        .expect("command channel closed");
+    assert_eq!(cmd, rat_daemon::core::Command::GetRules);
+
+    let _ = snapshot_tx.send(ServerMessage::Rules { rules: vec![] });
+    assert_eq!(
+        read_server(&mut reader, READ_TIMEOUT).await,
+        Some(ServerMessage::Rules { rules: vec![] })
+    );
+    let _ = shutdown_tx.send(());
+}
 
 #[tokio::test]
 async fn test_hello_ack() {

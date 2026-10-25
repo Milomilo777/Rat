@@ -17,8 +17,19 @@ pub trait DataSource: Send + Sync {
 
 #### Usage Example
 `DaemonDataSource` (src-tauri/src/daemon.rs) is the real implementation: it speaks the daemon's IPC protocol v1
-(Hello/HelloAck, Snapshot, SetRules, AlertRequest/AlertAnswer), keeps the latest snapshot in a background task and
-reconnects with backoff. `FakeDataSource` serves fixed demo data and is used only when `RAT_DEMO=1` is set:
+(Hello/HelloAck, Snapshot, GetRules/Rules, SetRules, AlertRequest/AlertAnswer/AlertCleared), keeps the latest
+snapshot in a background task and reconnects with backoff.
+
+Rules: the daemon is the single source. `get_rules`, `add_rule` and `delete_rule` ask the daemon with `GetRules`,
+change the list and send it back with `SetRules`; the app never reads the rules file (the daemon may have refused
+that file). The message is serialized first: over the daemon's 64 KiB line limit the command fails with "too many
+rules for one update: N bytes, limit 65536" and nothing is written. The commands wait (5 s) until the session
+wrote the line, so a failed write is reported to the UI. They run on a blocking thread.
+
+Alerts: answering waits for the write; the alert stays on record (not offered to the UI again) until the daemon
+sends `AlertCleared`. A pending alert whose window was closed is reopened with the next snapshot (an open window is
+not touched).
+ `FakeDataSource` serves fixed demo data and is used only when `RAT_DEMO=1` is set:
 ```rust
 let source = FakeDataSource;
 match source.get_connections() {

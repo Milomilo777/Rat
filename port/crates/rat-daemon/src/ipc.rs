@@ -737,6 +737,9 @@ async fn handle_connection<S>(
                                 // which owns the rule engine and enforcer.
                                 let _ = commands.send(Command::SetRules { rules });
                             }
+                            Ok(ClientMessage::GetRules) => {
+                                let _ = commands.send(Command::GetRules);
+                            }
                             Ok(ClientMessage::AlertAnswer { id, verdict, scope, lifetime }) => {
                                 let _ = commands.send(Command::AlertAnswer {
                                     id,

@@ -62,9 +62,12 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
   is empty with the demo data.
 - Debug builds open a console window next to the app (release builds do not). Debug builds also lack the
   administrator manifest, so on Windows run them from an elevated terminal to reach the daemon.
-- The app reads the current rules from the daemon's rules file (the protocol has no "get rules" message yet) and
-  sends the whole list back with SetRules; temporary rules (once / until quit) are not in that file and are
-  dropped when the app changes the rules.
+- The app gets the current rules from the daemon (`GetRules`) and sends the whole list back with SetRules, so it
+  never reads the rules file itself. The IPC line limit for one client message is 64 KiB (65536 bytes): a rule
+  update larger than that (a few hundred rules) is refused by the app with "too many rules for one update:
+  N bytes, limit 65536" and nothing is sent. The limit was not raised on purpose; a chunked update is not built.
+- The app waits for the write of a rule change or an alert answer to the daemon, not for the daemon to apply it.
+  A closed alert window is reopened with the next snapshot until the alert is answered.
 - The rule form takes a full program path; a bare name such as `firefox` does not match.
 - The app's connection to a real daemon is covered by unit tests against an in-memory daemon, not yet by the
   real-OS end-to-end suites; the browser-based accessibility (axe) checks were not re-run for the new rule form

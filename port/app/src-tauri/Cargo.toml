@@ -27,4 +27,4 @@ tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros", "time", "io-util", "sync", "test-util"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "io-util", "sync", "test-util"] }

@@ -1,13 +1,11 @@
 //! Rule list handling for the app.
 //!
-//! The daemon protocol has no "get rules" message: `SetRules` replaces the
-//! whole set and the daemon persists it to its rules file. So the app reads
-//! that file (the daemon's `RuleStore`, same parser) for the list, applies one
-//! change to it and sends the full list back with `SetRules`. Reading the
-//! file fresh before every change also keeps rules the daemon created from
-//! alert answers. Session rules (lifetime once / until quit) are not in the
-//! file, so a `SetRules` from the app drops them; that is documented in
-//! docs for the app and accepted for v1.
+//! The daemon is the single source of rules. The app asks it for the current
+//! set with `GetRules`, applies one change and sends the full list back with
+//! `SetRules` (which replaces the set). Asking fresh before every change keeps
+//! rules the daemon created from alert answers, session rules (once / until
+//! quit) included. The app never reads the rules file itself: the daemon may
+//! have refused that file, and an elevated app must not push its content back.
 
 use rat_core::{Rule, Verdict};
 use serde::{Deserialize, Serialize};

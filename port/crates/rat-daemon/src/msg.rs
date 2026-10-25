@@ -28,17 +28,39 @@ pub enum ClientMessage {
         scope: AnswerScope,
         lifetime: Lifetime,
     },
+    /// Ask for the daemon's current in-memory rule set; answered with
+    /// `ServerMessage::Rules`. The daemon is the single source of rules: a
+    /// client must not read the rules file itself.
+    GetRules,
 }
 
 /// everything the DAEMON sends. No ServerMessage reaches a
 /// client before its Hello completed (#15).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ServerMessage {
-    HelloAck { protocol_version: u32 },
-    Snapshot { connections: Vec<Connection> },
+    HelloAck {
+        protocol_version: u32,
+    },
+    Snapshot {
+        connections: Vec<Connection>,
+    },
     // Boxed: Alert dwarfs the other variants; serde serializes it unchanged.
-    AlertRequest { id: u64, alert: Box<Alert> },
-    Error { message: String },
+    AlertRequest {
+        id: u64,
+        alert: Box<Alert>,
+    },
+    Error {
+        message: String,
+    },
+    /// The answer to `GetRules`: the whole current rule set, session rules
+    /// (once / until quit) included.
+    Rules {
+        rules: Vec<Rule>,
+    },
+    /// The alert `id` is no longer pending (answered, timed out or gone).
+    AlertCleared {
+        id: u64,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -102,6 +124,7 @@ mod tests {
                 protocol_version: PROTOCOL_VERSION,
             },
             ClientMessage::SetRules { rules: vec![] },
+            ClientMessage::GetRules,
             ClientMessage::AlertAnswer {
                 id: 7,
                 verdict: Verdict::Deny,
@@ -142,6 +165,8 @@ mod tests {
             ServerMessage::Error {
                 message: "bad".to_string(),
             },
+            ServerMessage::Rules { rules: vec![] },
+            ServerMessage::AlertCleared { id: 3 },
         ];
         for msg in msgs {
             let serialized = msg.to_string().expect("serialize server message");
@@ -162,6 +187,38 @@ mod tests {
         assert!(err.is_err());
         let err2 = ServerMessage::from_json_str(r#"{"BadVariant": 123}"#);
         assert!(err2.is_err());
+    }
+
+    // The new messages are additive: the wire shapes are fixed, and the
+    // existing messages keep their exact encoding.
+    #[test]
+    fn test_get_rules_wire_shapes() {
+        assert_eq!(
+            ClientMessage::GetRules.to_string().unwrap(),
+            r#""GetRules""#
+        );
+        assert_eq!(
+            ServerMessage::Rules { rules: vec![] }.to_string().unwrap(),
+            r#"{"Rules":{"rules":[]}}"#
+        );
+        assert_eq!(
+            ServerMessage::AlertCleared { id: 3 }.to_string().unwrap(),
+            r#"{"AlertCleared":{"id":3}}"#
+        );
+        assert_eq!(
+            ClientMessage::SetRules { rules: vec![] }
+                .to_string()
+                .unwrap(),
+            r#"{"SetRules":{"rules":[]}}"#
+        );
+        assert_eq!(
+            ClientMessage::Hello {
+                protocol_version: 1
+            }
+            .to_string()
+            .unwrap(),
+            r#"{"Hello":{"protocol_version":1}}"#
+        );
     }
 
     // the split must be real — a client message type must not
