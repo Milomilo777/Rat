@@ -79,6 +79,14 @@ impl Drop for SdGuard {
 }
 
 #[cfg(windows)]
+// S1 (update-08): SYSTEM and Administrators get GENERIC_ALL; Interactive
+// Users only read/write (0x12019b = FILE_GENERIC_READ | FILE_GENERIC_WRITE)
+// so a local app cannot create rogue pipe instances or rewrite the DACL
+// (GA for IU would include FILE_CREATE_PIPE_INSTANCE and WRITE_DAC).
+// D:P makes the DACL protected against inherited ACE reordering.
+const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12019b;;;IU)\0";
+
+#[cfg(windows)]
 pub async fn start_ipc_server(
     pipe_name: &str,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
@@ -90,7 +98,7 @@ pub async fn start_ipc_server(
     const SDDL_REVISION_1: u32 = 1;
 
     let sd_val = {
-        let sddl = b"D:(A;;GA;;;IU)(A;;GA;;;BA)\0";
+        let sddl = PIPE_SDDL.as_bytes();
         let mut sd_ptr_inner: *mut std::ffi::c_void = std::ptr::null_mut();
         let mut sd_size = 0;
 
@@ -218,5 +226,32 @@ where
                 }
             }
         }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod sddl_tests {
+    use super::PIPE_SDDL;
+
+    // S1 (update-08): the pipe DACL must never hand GENERIC_ALL to
+    // Interactive Users (that includes FILE_CREATE_PIPE_INSTANCE and
+    // WRITE_DAC), while SYSTEM/Administrators stay full-control and the
+    // DACL itself is protected.
+    #[test]
+    fn test_pipe_sddl_restricts_interactive_users() {
+        assert!(PIPE_SDDL.starts_with("D:P("), "DACL must be protected");
+        assert!(PIPE_SDDL.contains("(A;;GA;;;SY)"), "SYSTEM full control");
+        assert!(
+            PIPE_SDDL.contains("(A;;GA;;;BA)"),
+            "Administrators full control"
+        );
+        let iu = PIPE_SDDL
+            .split('(')
+            .find(|ace| ace.starts_with("A;;") && ace.contains(";;;IU)"))
+            .expect("an Interactive Users ACE");
+        assert!(
+            !iu.contains("GA"),
+            "Interactive Users must not get GENERIC_ALL: {iu}"
+        );
     }
 }
