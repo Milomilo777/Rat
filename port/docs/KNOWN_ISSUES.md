@@ -30,9 +30,9 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
 
 ## Daemon and IPC (`rat-daemon`)
 - **Whole-list replace remains (low).** `SetRules` still replaces the daemon's whole rule set; a client that
-  uses it (the desktop app still does for single edits) can overwrite a rule the daemon created in between. Single-rule
-  edits go through `AddRule` / `RemoveRule`. A daemon older than this change closes the connection on those
-  messages (unknown variant), so app and daemon must be updated together.
+  uses it can overwrite a rule the daemon created in between. The desktop app edits single rules with
+  `AddRule` / `RemoveRule`. A daemon older than this change closes the connection on those messages (unknown
+  variant), so app and daemon must be updated together.
 - **IPC access (medium, Windows).** The named pipe admits only elevated administrators and SYSTEM, so the desktop
   app must run elevated.
 - **No installer or uninstaller (medium).** The service is installed by hand (see the install guides). Rules and
@@ -66,10 +66,10 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
   is empty with the demo data.
 - Debug builds open a console window next to the app (release builds do not). Debug builds also lack the
   administrator manifest, so on Windows run them from an elevated terminal to reach the daemon.
-- The app gets the current rules from the daemon (`GetRules`) and sends the whole list back with SetRules, so it
-  never reads the rules file itself. The IPC line limit for one client message is 64 KiB (65536 bytes): a rule
-  update larger than that (a few hundred rules) is refused by the app with "too many rules for one update:
-  N bytes, limit 65536" and nothing is sent. The limit was not raised on purpose; a chunked update is not built.
+- The app gets the current rules from the daemon (`GetRules`) and never reads the rules file itself. A single
+  add or remove is one `AddRule` / `RemoveRule` message, so it fits the IPC line limit of 64 KiB (65536 bytes)
+  whatever the list size. Only a whole-list `SetRules` over that limit is refused ("too many rules for one
+  update: N bytes, limit 65536", nothing sent); the app does not send one.
 - The app waits for the write of a rule change or an alert answer to the daemon, not for the daemon to apply it.
   A closed alert window is reopened with the next snapshot until the alert is answered.
 - The rule form takes a full program path; a bare name such as `firefox` does not match.
