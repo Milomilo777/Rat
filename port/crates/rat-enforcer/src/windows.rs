@@ -308,7 +308,9 @@ impl Enforcer for WindowsEnforcer {
         let runner = self.runner.clone();
         // One netsh invocation. An injected runner (tests) owns execution;
         // otherwise RAT_DRY_RUN=1 prints the same command and succeeds, or
-        // the real child is spawned and its exit status decides.
+        // the real child is spawned under the shared timeout helper — a hung
+        // netsh is killed at TOOL_TIMEOUT with an error naming tool+limit
+        // instead of stalling the pipeline forever.
         let run = |args: &[String], dry_line: String| -> io::Result<bool> {
             if let Some(runner) = &runner {
                 runner(&netsh, args)
@@ -316,7 +318,13 @@ impl Enforcer for WindowsEnforcer {
                 println!("{dry_line}");
                 Ok(true)
             } else {
-                Ok(Command::new(&netsh).args(args).status()?.success())
+                let mut cmd = Command::new(&netsh);
+                cmd.args(args);
+                Ok(
+                    crate::run_with_timeout(cmd, "netsh", crate::TOOL_TIMEOUT, None)?
+                        .status
+                        .success(),
+                )
             }
         };
         // the reconcile remove loops' delete of
@@ -341,7 +349,13 @@ impl Enforcer for WindowsEnforcer {
                 if let Some(runner) = &runner {
                     runner(&netsh, a)
                 } else {
-                    Ok(Command::new(&netsh).args(a).output()?.status.success())
+                    let mut cmd = Command::new(&netsh);
+                    cmd.args(a);
+                    Ok(
+                        crate::run_with_timeout(cmd, "netsh", crate::TOOL_TIMEOUT, None)?
+                            .status
+                            .success(),
+                    )
                 }
             };
             if run_netsh(args)? {
@@ -477,10 +491,10 @@ impl Enforcer for WindowsEnforcer {
             return Ok(());
         }
 
-        let status = Command::new(powershell_path()?)
-            .args(["-NoProfile", "-Command", CLEANUP_RULES_QUERY])
-            .status()?;
-        if !status.success() {
+        let mut cmd = Command::new(powershell_path()?);
+        cmd.args(["-NoProfile", "-Command", CLEANUP_RULES_QUERY]);
+        let out = crate::run_with_timeout(cmd, "powershell", crate::TOOL_TIMEOUT, None)?;
+        if !out.status.success() {
             return Err(io::Error::other("Failed to clean up Rat firewall rules"));
         }
         Ok(())

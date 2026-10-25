@@ -104,10 +104,13 @@ impl EnforcementBackend for WindowsBackend {
     fn existing(&self) -> io::Result<rat_enforcer::Blocklist> {
         use std::process::Command;
         // Read-only query; blocking is fine here because this runs once at
-        // startup, before the IPC server exists. Child process timeouts are not handled yet.
-        let out = Command::new(rat_enforcer::windows::powershell_path()?)
-            .args(["-NoProfile", "-Command", existing_rules_query()])
-            .output()?;
+        // startup, before the IPC server exists — and it goes through the
+        // shared run_with_timeout, so a hung PowerShell is killed at
+        // TOOL_TIMEOUT instead of stalling the startup read-back forever.
+        let mut cmd = Command::new(rat_enforcer::windows::powershell_path()?);
+        cmd.args(["-NoProfile", "-Command", existing_rules_query()]);
+        let out =
+            rat_enforcer::run_with_timeout(cmd, "powershell", rat_enforcer::TOOL_TIMEOUT, None)?;
         if !out.status.success() {
             return Err(io::Error::other(format!(
                 "firewall read-back failed: {}",

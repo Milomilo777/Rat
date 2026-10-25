@@ -38,10 +38,10 @@ impl Enforcer for LinuxEnforcer {
             return Ok(());
         }
 
-        let status = Command::new(nft_path()?)
-            .args(["delete", "table", "inet", "rat"])
-            .status()?;
-        if !status.success() {
+        let mut cmd = Command::new(nft_path()?);
+        cmd.args(["delete", "table", "inet", "rat"]);
+        let out = crate::run_with_timeout(cmd, "nft", crate::TOOL_TIMEOUT, None)?;
+        if !out.status.success() {
             return Err(io::Error::other("failed to delete nft table inet rat"));
         }
         Ok(())
@@ -54,23 +54,15 @@ impl Enforcer for LinuxEnforcer {
             println!("nft -f - <<EOF\n{}EOF", plan);
             Ok(())
         } else {
-            let mut child = Command::new(nft_path()?)
-                .arg("-f")
-                .arg("-")
-                .stdin(std::process::Stdio::piped())
-                .spawn()?;
-
-            use std::io::Write;
-            // remember the write result but ALWAYS reap the
-            // child, so a failed write cannot leave a zombie behind.
-            let mut write_result = Ok(());
-            if let Some(mut stdin) = child.stdin.take() {
-                write_result = stdin.write_all(plan.as_bytes());
-            }
-
-            let status = child.wait()?;
-            write_result?;
-            if !status.success() {
+            // the script goes in through run_with_timeout's writer thread and
+            // a hung nft is killed at TOOL_TIMEOUT; a FAILED write still
+            // fails the apply (the helper propagates it after the wait, like
+            // the old inline write did) and the child is always reaped.
+            let mut cmd = Command::new(nft_path()?);
+            cmd.arg("-f").arg("-");
+            let out =
+                crate::run_with_timeout(cmd, "nft", crate::TOOL_TIMEOUT, Some(plan.as_bytes()))?;
+            if !out.status.success() {
                 return Err(io::Error::other("nftables command failed"));
             }
             Ok(())
