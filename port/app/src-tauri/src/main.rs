@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod update;
+
 use rat_types::{Connection, ProcessInfo, Protocol};
 use serde::Serialize;
 use std::path::PathBuf;
@@ -70,6 +72,7 @@ impl DataSource for FakeDataSource {
                     listening: false,
                     bytes_in: Some(1024),
                     bytes_out: Some(2048),
+                    via_vpn: true,
                 },
                 process_behind: Some("via helper-process".to_string()),
                 network_owner: Some("Cloudflare, Inc. (ASN 13335)".to_string()),
@@ -91,6 +94,7 @@ impl DataSource for FakeDataSource {
                     listening: false,
                     bytes_in: Some(512),
                     bytes_out: Some(512),
+                    via_vpn: false,
                 },
                 process_behind: None,
                 network_owner: Some("Google LLC".to_string()),
@@ -137,6 +141,24 @@ fn get_connections(state: State<'_, Mutex<AppState>>) -> Result<Vec<ConnectionVi
 fn get_geoip_databases(state: State<'_, Mutex<AppState>>) -> Result<Vec<String>, String> {
     let app_state = state.lock().map_err(|_| "Failed to lock state")?;
     app_state.data_source.get_geoip_databases()
+}
+
+/// Update check (UpdateChecker.swift): the frontend fetches the GitHub
+/// `releases` body (the webview owns HTTP), Rust picks the newest release
+/// and compares it with the running version. `Ok(None)` = up to date.
+#[tauri::command]
+fn evaluate_update(
+    releases_json: String,
+    current_version: String,
+    include_pre_releases: bool,
+) -> Result<Option<update::Release>, String> {
+    let release = update::newest_release(&releases_json, include_pre_releases)
+        .ok_or_else(|| "no published releases found".to_string())?;
+    Ok(if update::is_newer(&release.tag, &current_version) {
+        Some(release)
+    } else {
+        None
+    })
 }
 
 #[tauri::command]
@@ -191,7 +213,8 @@ fn main() {
             get_connections,
             get_geoip_databases,
             get_rules,
-            simulate_alert
+            simulate_alert,
+            evaluate_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

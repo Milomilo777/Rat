@@ -8,3 +8,5 @@ license = "MIT"
 rat-types = { path = "../rat-types" }
 rat-core = { path = "../rat-core" }
 serde = { version = "1", features = ["derive"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }

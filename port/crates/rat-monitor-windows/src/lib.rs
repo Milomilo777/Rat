@@ -91,12 +91,19 @@ pub mod windows_sys {
 
     pub fn get_tcp_table_v4() -> std::io::Result<Vec<MIB_TCPROW_OWNER_PID>> {
         let mut size = 0;
-        let mut buffer = Vec::new();
+        // M10 (update-09): u32-aligned storage for the table cast (a Vec<u8>
+        // is only 1-aligned), and the size query passes NULL, not a dangling
+        // non-null pointer.
+        let mut buffer: Vec<u32> = Vec::new();
 
         loop {
             let res = unsafe {
                 GetExtendedTcpTable(
-                    Some(buffer.as_mut_ptr() as *mut c_void),
+                    if buffer.is_empty() {
+                        None
+                    } else {
+                        Some(buffer.as_mut_ptr() as *mut c_void)
+                    },
                     &mut size,
                     false,
                     AF_INET.0 as u32,
@@ -108,7 +115,7 @@ pub mod windows_sys {
             if res == WIN32_ERROR(0).0 {
                 break;
             } else if res == ERROR_INSUFFICIENT_BUFFER.0 {
-                buffer.resize(size as usize, 0);
+                buffer.resize((size as usize).div_ceil(4), 0);
             } else {
                 return Err(std::io::Error::from_raw_os_error(res as i32));
             }
@@ -127,12 +134,19 @@ pub mod windows_sys {
 
     pub fn get_tcp_table_v6() -> std::io::Result<Vec<MIB_TCP6ROW_OWNER_PID>> {
         let mut size = 0;
-        let mut buffer = Vec::new();
+        // M10 (update-09): u32-aligned storage for the table cast (a Vec<u8>
+        // is only 1-aligned), and the size query passes NULL, not a dangling
+        // non-null pointer.
+        let mut buffer: Vec<u32> = Vec::new();
 
         loop {
             let res = unsafe {
                 GetExtendedTcpTable(
-                    Some(buffer.as_mut_ptr() as *mut c_void),
+                    if buffer.is_empty() {
+                        None
+                    } else {
+                        Some(buffer.as_mut_ptr() as *mut c_void)
+                    },
                     &mut size,
                     false,
                     AF_INET6.0 as u32,
@@ -144,7 +158,7 @@ pub mod windows_sys {
             if res == WIN32_ERROR(0).0 {
                 break;
             } else if res == ERROR_INSUFFICIENT_BUFFER.0 {
-                buffer.resize(size as usize, 0);
+                buffer.resize((size as usize).div_ceil(4), 0);
             } else {
                 return Err(std::io::Error::from_raw_os_error(res as i32));
             }
@@ -163,12 +177,19 @@ pub mod windows_sys {
 
     pub fn get_udp_table_v4() -> std::io::Result<Vec<MIB_UDPROW_OWNER_PID>> {
         let mut size = 0;
-        let mut buffer = Vec::new();
+        // M10 (update-09): u32-aligned storage for the table cast (a Vec<u8>
+        // is only 1-aligned), and the size query passes NULL, not a dangling
+        // non-null pointer.
+        let mut buffer: Vec<u32> = Vec::new();
 
         loop {
             let res = unsafe {
                 GetExtendedUdpTable(
-                    Some(buffer.as_mut_ptr() as *mut c_void),
+                    if buffer.is_empty() {
+                        None
+                    } else {
+                        Some(buffer.as_mut_ptr() as *mut c_void)
+                    },
                     &mut size,
                     false,
                     AF_INET.0 as u32,
@@ -180,7 +201,7 @@ pub mod windows_sys {
             if res == WIN32_ERROR(0).0 {
                 break;
             } else if res == ERROR_INSUFFICIENT_BUFFER.0 {
-                buffer.resize(size as usize, 0);
+                buffer.resize((size as usize).div_ceil(4), 0);
             } else {
                 return Err(std::io::Error::from_raw_os_error(res as i32));
             }
@@ -199,12 +220,19 @@ pub mod windows_sys {
 
     pub fn get_udp_table_v6() -> std::io::Result<Vec<MIB_UDP6ROW_OWNER_PID>> {
         let mut size = 0;
-        let mut buffer = Vec::new();
+        // M10 (update-09): u32-aligned storage for the table cast (a Vec<u8>
+        // is only 1-aligned), and the size query passes NULL, not a dangling
+        // non-null pointer.
+        let mut buffer: Vec<u32> = Vec::new();
 
         loop {
             let res = unsafe {
                 GetExtendedUdpTable(
-                    Some(buffer.as_mut_ptr() as *mut c_void),
+                    if buffer.is_empty() {
+                        None
+                    } else {
+                        Some(buffer.as_mut_ptr() as *mut c_void)
+                    },
                     &mut size,
                     false,
                     AF_INET6.0 as u32,
@@ -216,7 +244,7 @@ pub mod windows_sys {
             if res == WIN32_ERROR(0).0 {
                 break;
             } else if res == ERROR_INSUFFICIENT_BUFFER.0 {
-                buffer.resize(size as usize, 0);
+                buffer.resize((size as usize).div_ceil(4), 0);
             } else {
                 return Err(std::io::Error::from_raw_os_error(res as i32));
             }
@@ -314,17 +342,38 @@ pub mod process_info {
     }
 }
 
+/// M3 (update-09): API-level conditions that disable estats for the whole
+/// process (no admin rights / OS support) - but only for rows a real
+/// process owns: kernel rows (pid 0, e.g. TIME_WAIT) answer NOT_SUPPORTED
+/// for row-class reasons, which is per-row, not global. Takes the raw
+/// Win32 error code so the rule is testable on every platform (ci-04).
+pub fn estats_error_is_global(win32_error: u32, owning_pid: u32) -> bool {
+    const ERROR_ACCESS_DENIED: u32 = 5;
+    const ERROR_NOT_SUPPORTED: u32 = 50;
+    owning_pid != 0 && (win32_error == ERROR_ACCESS_DENIED || win32_error == ERROR_NOT_SUPPORTED)
+}
+
 #[cfg(windows)]
 pub mod stats {
     use windows::Win32::Foundation::WIN32_ERROR;
     use windows::Win32::NetworkManagement::IpHelper::{
-        GetPerTcp6ConnectionEStats, GetPerTcpConnectionEStats, TCP_ESTATS_DATA_ROD_v0,
+        GetPerTcp6ConnectionEStats, GetPerTcpConnectionEStats, SetPerTcp6ConnectionEStats,
+        SetPerTcpConnectionEStats, TCP_ESTATS_DATA_ROD_v0, TCP_ESTATS_DATA_RW_v0,
         TcpConnectionEstatsData, MIB_TCP6ROW, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_LH,
         MIB_TCPROW_OWNER_PID,
     };
 
     pub fn get_tcp_estats_v4(row: &MIB_TCPROW_OWNER_PID) -> Result<(u64, u64), WIN32_ERROR> {
-        let mut data = vec![0u8; std::mem::size_of::<TCP_ESTATS_DATA_ROD_v0>()];
+        // M10 (update-09): the ROD carries u64 counters; read it through
+        // 8-aligned storage instead of an align-1 Vec<u8>.
+        let mut data_storage =
+            vec![0u64; std::mem::size_of::<TCP_ESTATS_DATA_ROD_v0>().div_ceil(8)];
+        let mut data = unsafe {
+            std::slice::from_raw_parts_mut(
+                data_storage.as_mut_ptr() as *mut u8,
+                data_storage.len() * 8,
+            )
+        };
         let res = unsafe {
             GetPerTcpConnectionEStats(
                 row as *const _ as *const MIB_TCPROW_LH,
@@ -347,7 +396,16 @@ pub mod stats {
     }
 
     pub fn get_tcp_estats_v6(row: &MIB_TCP6ROW_OWNER_PID) -> Result<(u64, u64), WIN32_ERROR> {
-        let mut data = vec![0u8; std::mem::size_of::<TCP_ESTATS_DATA_ROD_v0>()];
+        // M10 (update-09): the ROD carries u64 counters; read it through
+        // 8-aligned storage instead of an align-1 Vec<u8>.
+        let mut data_storage =
+            vec![0u64; std::mem::size_of::<TCP_ESTATS_DATA_ROD_v0>().div_ceil(8)];
+        let mut data = unsafe {
+            std::slice::from_raw_parts_mut(
+                data_storage.as_mut_ptr() as *mut u8,
+                data_storage.len() * 8,
+            )
+        };
         let res = unsafe {
             GetPerTcp6ConnectionEStats(
                 &to_mib_tcp6_row(row),
@@ -398,15 +456,94 @@ pub mod stats {
     /// M3 (update-09): API-level conditions that disable estats for the
     /// whole process (no admin rights / OS support); anything else is a
     /// per-row error.
-    pub fn estats_error_is_global(e: &WIN32_ERROR) -> bool {
-        *e == windows::Win32::Foundation::ERROR_ACCESS_DENIED
-            || *e == windows::Win32::Foundation::ERROR_NOT_SUPPORTED
+    fn estats_rw_bytes(rw: &TCP_ESTATS_DATA_RW_v0) -> &[u8] {
+        unsafe {
+            std::slice::from_raw_parts(
+                rw as *const _ as *const u8,
+                std::mem::size_of::<TCP_ESTATS_DATA_RW_v0>(),
+            )
+        }
+    }
+
+    /// M1 (update-09): byte counters stay zero until data collection is
+    /// enabled for the individual connection; call once per established row.
+    pub fn enable_tcp_estats_v4(row: &MIB_TCPROW_OWNER_PID) -> WIN32_ERROR {
+        let rw = TCP_ESTATS_DATA_RW_v0 {
+            EnableCollection: windows::Win32::Foundation::BOOLEAN(1),
+        };
+        WIN32_ERROR(unsafe {
+            SetPerTcpConnectionEStats(
+                row as *const _ as *const MIB_TCPROW_LH,
+                TcpConnectionEstatsData,
+                estats_rw_bytes(&rw),
+                0,
+                0,
+            )
+        })
+    }
+
+    pub fn enable_tcp_estats_v6(row: &MIB_TCP6ROW_OWNER_PID) -> WIN32_ERROR {
+        let rw = TCP_ESTATS_DATA_RW_v0 {
+            EnableCollection: windows::Win32::Foundation::BOOLEAN(1),
+        };
+        WIN32_ERROR(unsafe {
+            SetPerTcp6ConnectionEStats(
+                &to_mib_tcp6_row(row),
+                TcpConnectionEstatsData,
+                estats_rw_bytes(&rw),
+                0,
+                0,
+            )
+        })
+    }
+}
+
+#[cfg(windows)]
+#[derive(Hash, Eq, PartialEq, Clone, Copy)]
+struct EstatsRowKey {
+    local: u128,
+    local_port: u32,
+    remote: u128,
+    remote_port: u32,
+    pid: u32,
+}
+
+#[cfg(windows)]
+fn estats_row_key_v4(
+    row: &windows::Win32::NetworkManagement::IpHelper::MIB_TCPROW_OWNER_PID,
+) -> EstatsRowKey {
+    EstatsRowKey {
+        local: row.dwLocalAddr as u128,
+        local_port: row.dwLocalPort,
+        remote: row.dwRemoteAddr as u128,
+        remote_port: row.dwRemotePort,
+        pid: row.dwOwningPid,
+    }
+}
+
+#[cfg(windows)]
+fn estats_row_key_v6(
+    row: &windows::Win32::NetworkManagement::IpHelper::MIB_TCP6ROW_OWNER_PID,
+) -> EstatsRowKey {
+    let mut local = [0u8; 16];
+    local.copy_from_slice(&row.ucLocalAddr);
+    let mut remote = [0u8; 16];
+    remote.copy_from_slice(&row.ucRemoteAddr);
+    EstatsRowKey {
+        local: u128::from_be_bytes(local),
+        local_port: row.dwLocalPort,
+        remote: u128::from_be_bytes(remote),
+        remote_port: row.dwRemotePort,
+        pid: row.dwOwningPid,
     }
 }
 
 #[cfg(windows)]
 pub struct WindowsMonitor {
     estats_supported: bool,
+    /// M1 (update-09): connections whose estats collection was already
+    /// enabled (never on LISTEN rows).
+    enabled_rows: std::collections::HashSet<EstatsRowKey>,
 }
 
 #[cfg(windows)]
@@ -421,6 +558,7 @@ impl WindowsMonitor {
     pub fn new() -> Self {
         Self {
             estats_supported: true,
+            enabled_rows: std::collections::HashSet::new(),
         }
     }
 }
@@ -429,6 +567,16 @@ impl WindowsMonitor {
 impl ConnectionSource for WindowsMonitor {
     fn sample(&mut self) -> std::io::Result<Vec<Connection>> {
         let mut connections = Vec::new();
+
+        // M1 (update-09): bound the enabled-connection set; re-enabling a
+        // still-live connection is harmless, so a plain clear suffices.
+        if self.enabled_rows.len() > 8192 {
+            self.enabled_rows.clear();
+        }
+
+        // M5 (update-09): one adapter scan per sample feeds the per-row VPN
+        // classification.
+        let vpn_adapters = crate::list_adapter_descriptions();
 
         // TCP IPv4
         if let Ok(table) = windows_sys::get_tcp_table_v4() {
@@ -454,18 +602,33 @@ impl ConnectionSource for WindowsMonitor {
                 // vanished between the table snapshot and the stats call)
                 // leaves that row at None without affecting the others.
                 if self.estats_supported && !is_listening_state(row.dwState) {
+                    // M1 (update-09): enable collection once per connection.
+                    let key = estats_row_key_v4(&row);
+                    if !self.enabled_rows.contains(&key) {
+                        let rc = stats::enable_tcp_estats_v4(&row);
+                        if rc == windows::Win32::Foundation::WIN32_ERROR(0) {
+                            self.enabled_rows.insert(key);
+                        } else if crate::estats_error_is_global(rc.0, row.dwOwningPid) {
+                            self.estats_supported = false;
+                        }
+                    }
+                }
+                if self.estats_supported && !is_listening_state(row.dwState) {
                     match stats::get_tcp_estats_v4(&row) {
                         Ok((bin, bout)) => {
                             bytes_in = Some(bin);
                             bytes_out = Some(bout);
                         }
                         Err(e) => {
-                            if stats::estats_error_is_global(&e) {
+                            if crate::estats_error_is_global(e.0, row.dwOwningPid) {
                                 self.estats_supported = false;
                             }
                         }
                     }
                 }
+
+                let via_vpn =
+                    remote.is_some_and(|r| routes::is_vpn_route_with(&vpn_adapters, r.ip()));
 
                 connections.push(Connection {
                     process: process_info::get_process_info(row.dwOwningPid),
@@ -475,6 +638,7 @@ impl ConnectionSource for WindowsMonitor {
                     listening: is_listening_state(row.dwState),
                     bytes_in,
                     bytes_out,
+                    via_vpn,
                 });
             }
         }
@@ -513,18 +677,33 @@ impl ConnectionSource for WindowsMonitor {
                 // vanished between the table snapshot and the stats call)
                 // leaves that row at None without affecting the others.
                 if self.estats_supported && !is_listening_state(row.dwState) {
+                    // M1 (update-09): enable collection once per connection.
+                    let key = estats_row_key_v6(&row);
+                    if !self.enabled_rows.contains(&key) {
+                        let rc = stats::enable_tcp_estats_v6(&row);
+                        if rc == windows::Win32::Foundation::WIN32_ERROR(0) {
+                            self.enabled_rows.insert(key);
+                        } else if crate::estats_error_is_global(rc.0, row.dwOwningPid) {
+                            self.estats_supported = false;
+                        }
+                    }
+                }
+                if self.estats_supported && !is_listening_state(row.dwState) {
                     match stats::get_tcp_estats_v6(&row) {
                         Ok((bin, bout)) => {
                             bytes_in = Some(bin);
                             bytes_out = Some(bout);
                         }
                         Err(e) => {
-                            if stats::estats_error_is_global(&e) {
+                            if crate::estats_error_is_global(e.0, row.dwOwningPid) {
                                 self.estats_supported = false;
                             }
                         }
                     }
                 }
+
+                let via_vpn =
+                    remote.is_some_and(|r| routes::is_vpn_route_with(&vpn_adapters, r.ip()));
 
                 connections.push(Connection {
                     process: process_info::get_process_info(row.dwOwningPid),
@@ -534,6 +713,7 @@ impl ConnectionSource for WindowsMonitor {
                     listening: is_listening_state(row.dwState),
                     bytes_in,
                     bytes_out,
+                    via_vpn,
                 });
             }
         }
@@ -553,6 +733,7 @@ impl ConnectionSource for WindowsMonitor {
                     listening: true, // Listening
                     bytes_in: None,
                     bytes_out: None,
+                    via_vpn: false,
                 });
             }
         }
@@ -562,7 +743,13 @@ impl ConnectionSource for WindowsMonitor {
             for row in table {
                 let local_ip = convert_ipv6_addr(&row.ucLocalAddr);
                 let local_port = parse_port(row.dwLocalPort);
-                let local = SocketAddr::V6(SocketAddrV6::new(local_ip, local_port, 0, 0));
+                // M10 (update-09): scope id from the row, not hard-coded 0.
+                let local = SocketAddr::V6(SocketAddrV6::new(
+                    local_ip,
+                    local_port,
+                    0,
+                    get_ipv6_scope_id(row.dwLocalScopeId),
+                ));
 
                 connections.push(Connection {
                     process: process_info::get_process_info(row.dwOwningPid),
@@ -572,6 +759,7 @@ impl ConnectionSource for WindowsMonitor {
                     listening: true,
                     bytes_in: None,
                     bytes_out: None,
+                    via_vpn: false,
                 });
             }
         }
@@ -584,15 +772,21 @@ impl ConnectionSource for WindowsMonitor {
 pub mod routes {
     use std::net::IpAddr;
     use windows::Win32::Foundation::WIN32_ERROR;
-    use windows::Win32::NetworkManagement::IpHelper::{
-        ConvertInterfaceIndexToLuid, ConvertInterfaceLuidToAlias,
-    };
-    use windows::Win32::NetworkManagement::IpHelper::{
-        GetBestInterfaceEx, IF_TYPE_PROP_VIRTUAL, IF_TYPE_TUNNEL,
-    };
+    use windows::Win32::NetworkManagement::IpHelper::ConvertInterfaceIndexToLuid;
+    use windows::Win32::NetworkManagement::IpHelper::GetBestInterfaceEx;
     use windows::Win32::NetworkManagement::Ndis::NET_LUID_LH;
 
+    /// M5 (update-09): variant for hot loops - the adapter list is scanned
+    /// once per sample and reused per connection.
+    pub fn is_vpn_route_with(adapters: &[(u64, String, u32)], remote: IpAddr) -> bool {
+        is_vpn_route_inner(adapters, remote)
+    }
+
     pub fn is_vpn_route(remote: IpAddr) -> bool {
+        is_vpn_route_inner(&crate::list_adapter_descriptions(), remote)
+    }
+
+    fn is_vpn_route_inner(adapters: &[(u64, String, u32)], remote: IpAddr) -> bool {
         let mut index = 0;
         let mut sockaddr_storage: [u8; 128] = [0; 128]; // Minimal representation of SOCKADDR_INET
 
@@ -651,39 +845,86 @@ pub mod routes {
             return false;
         }
 
-        let mut alias = [0u16; 257]; // NDIS_IF_MAX_STRING_SIZE + 1
-        if unsafe { ConvertInterfaceLuidToAlias(&luid, &mut alias).is_err() } {
-            return false;
+        // M4 (update-09): decide from the adapter's tunnel type + DESCRIPTION;
+        // the user-editable alias and IF_TYPE_PROP_VIRTUAL alone produce
+        // false positives (Hyper-V vSwitch, WSL vEthernet are type 53 too).
+        for (adapter_luid, description, if_type) in adapters {
+            if *adapter_luid == unsafe { luid.Value } {
+                return crate::check_is_vpn_interface(*if_type, description);
+            }
         }
-
-        let alias_str = String::from_utf16_lossy(&alias).to_lowercase();
-
-        // Check if interface type is virtual or tunnel by checking the high bits of luid Info
-        let if_type = unsafe { luid.Info._bitfield >> 48 } as u32;
-        if if_type == IF_TYPE_PROP_VIRTUAL || if_type == IF_TYPE_TUNNEL {
-            return true;
-        }
-
-        if alias_str.contains("wintun") || alias_str.contains("wireguard") {
-            return true;
-        }
-
         false
     }
 }
 
-pub fn check_is_vpn_interface_type(if_type: u32, alias: &str) -> bool {
-    // 53 is IF_TYPE_PROP_VIRTUAL, 131 is IF_TYPE_TUNNEL
-    if if_type == 53 || if_type == 131 {
+/// (luid, description, if_type) for every adapter. M4 (update-09): the
+/// DESCRIPTION is the driver-provided string, unlike the editable alias.
+#[cfg(windows)]
+pub fn list_adapter_descriptions() -> Vec<(u64, String, u32)> {
+    use windows::Win32::NetworkManagement::IpHelper::{
+        GetAdaptersAddresses, GAA_FLAG_INCLUDE_ALL_INTERFACES, GAA_FLAG_SKIP_ANYCAST,
+        GAA_FLAG_SKIP_MULTICAST, GAA_FLAG_SKIP_UNICAST, IP_ADAPTER_ADDRESSES_LH,
+    };
+
+    const AF_UNSPEC: u32 = 0;
+    let flags = GAA_FLAG_INCLUDE_ALL_INTERFACES
+        | GAA_FLAG_SKIP_UNICAST
+        | GAA_FLAG_SKIP_ANYCAST
+        | GAA_FLAG_SKIP_MULTICAST;
+
+    let mut size: u32 = 16 * 1024;
+    for _ in 0..4 {
+        let mut buffer = vec![0u8; size as usize];
+        let rc = unsafe {
+            GetAdaptersAddresses(
+                AF_UNSPEC,
+                flags,
+                None,
+                Some(buffer.as_mut_ptr() as *mut IP_ADAPTER_ADDRESSES_LH),
+                &mut size,
+            )
+        };
+        if rc != 0 {
+            if rc == 111
+            /* ERROR_MORE_DATA */
+            {
+                continue;
+            }
+            return Vec::new();
+        }
+
+        let mut out = Vec::new();
+        let mut current = buffer.as_ptr() as *const IP_ADAPTER_ADDRESSES_LH;
+        while !current.is_null() {
+            let adapter = unsafe { &*current };
+            let description = unsafe {
+                let mut len = 0usize;
+                while *adapter.Description.as_ptr().add(len) != 0 {
+                    len += 1;
+                }
+                String::from_utf16_lossy(std::slice::from_raw_parts(
+                    adapter.Description.as_ptr(),
+                    len,
+                ))
+            };
+            out.push((unsafe { adapter.Luid.Value }, description, adapter.IfType));
+            current = adapter.Next;
+        }
+        return out;
+    }
+    Vec::new()
+}
+
+pub fn check_is_vpn_interface(if_type: u32, description: &str) -> bool {
+    // M4 (update-09): 131 (IF_TYPE_TUNNEL) is authoritative. 53
+    // (IF_TYPE_PROP_VIRTUAL) is NOT - Hyper-V vSwitch and WSL vEthernet
+    // adapters report it too - so it needs a matching driver DESCRIPTION.
+    if if_type == 131 {
         return true;
     }
 
-    let lower_alias = alias.to_lowercase();
-    if lower_alias.contains("wintun") || lower_alias.contains("wireguard") {
-        return true;
-    }
-
-    false
+    let lower = description.to_lowercase();
+    lower.contains("wintun") || lower.contains("wireguard") || lower.contains("tap-")
 }
 
 #[cfg(test)]
@@ -691,12 +932,39 @@ mod vpn_tests {
     use super::*;
 
     #[test]
-    fn test_check_is_vpn_interface_type() {
-        assert!(check_is_vpn_interface_type(53, "eth0"));
-        assert!(check_is_vpn_interface_type(131, "tun0"));
-        assert!(check_is_vpn_interface_type(6, "Wintun Userspace Tunnel"));
-        assert!(check_is_vpn_interface_type(6, "wireguard1"));
-        assert!(!check_is_vpn_interface_type(6, "Ethernet"));
+    fn test_check_is_vpn_interface_description_semantics() {
+        // M4 (update-09): tunnel type is authoritative...
+        assert!(check_is_vpn_interface(131, "anything"));
+        // ...but PROP_VIRTUAL alone is not (Hyper-V vSwitch / WSL vEthernet)
+        assert!(!check_is_vpn_interface(
+            53,
+            "Hyper-V Virtual Ethernet Adapter"
+        ));
+        assert!(!check_is_vpn_interface(53, "vEthernet (WSL)"));
+        // ...wintun/wireguard/tap drivers are VPNs regardless of type
+        assert!(check_is_vpn_interface(6, "Wintun Userspace Tunnel"));
+        assert!(check_is_vpn_interface(53, "Wintun Userspace Tunnel"));
+        assert!(check_is_vpn_interface(6, "WireGuard Tunnel"));
+        assert!(check_is_vpn_interface(6, "TAP-Windows Adapter V9"));
+        assert!(!check_is_vpn_interface(
+            6,
+            "Intel(R) Ethernet Connection I219-V"
+        ));
+        assert!(!check_is_vpn_interface(
+            53,
+            "Microsoft Wi-Fi Direct Virtual Adapter"
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_list_adapter_descriptions_smoke() {
+        let adapters = list_adapter_descriptions();
+        assert!(!adapters.is_empty(), "host has at least one adapter");
+        for (_, description, if_type) in &adapters {
+            assert!(!description.is_empty(), "descriptions are populated");
+            assert!(*if_type > 0);
+        }
     }
 }
 
@@ -707,13 +975,52 @@ mod edge_case_tests {
 
     #[cfg(windows)]
     #[test]
+    fn test_estats_enablement_live_loopback_counts_bytes() {
+        // M1 (update-09): without SetPerTcpConnectionEStats the Get side
+        // reports zeros; enablement must happen once per connection. Two
+        // samples: the first enables, traffic flows, the second reads.
+        use rat_types::Protocol;
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let mut server = listener.accept().unwrap().0;
+        client.write_all(&vec![b'x'; 1024]).unwrap();
+        let mut drain = [0u8; 16];
+        let _ = server.read(&mut drain);
+
+        let mut monitor = WindowsMonitor::new();
+        let _ = monitor.sample().expect("first sample (enables estats)");
+
+        client.write_all(&vec![b'y'; 64 * 1024]).unwrap();
+        client.flush().unwrap();
+        let mut probe = [0u8; 1];
+        let _ = server.read(&mut probe);
+
+        let conns = monitor.sample().expect("second sample");
+        let row = conns
+            .iter()
+            .find(|c| c.protocol == Protocol::Tcp && c.local.port() == port && !c.listening)
+            .expect("accepted loopback connection not found");
+        let bytes_in = row
+            .bytes_in
+            .expect("estats must yield counters for the live connection (None = disabled)");
+        assert!(
+            bytes_in > 0,
+            "byte counters must be nonzero after enablement, got {bytes_in}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn test_estats_global_vs_row_errors() {
-        use windows::Win32::Foundation::WIN32_ERROR;
-        // M3 (update-09): only API-level conditions are global.
-        assert!(stats::estats_error_is_global(&WIN32_ERROR(5))); // ACCESS_DENIED
-        assert!(stats::estats_error_is_global(&WIN32_ERROR(50))); // NOT_SUPPORTED
-        assert!(!stats::estats_error_is_global(&WIN32_ERROR(1168))); // NOT_FOUND (row vanished)
-        assert!(!stats::estats_error_is_global(&WIN32_ERROR(87))); // INVALID_PARAMETER
+        // M3 (update-09): only API-level conditions on owned rows are global.
+        assert!(estats_error_is_global(5, 42)); // ACCESS_DENIED, owned row
+        assert!(estats_error_is_global(50, 42)); // NOT_SUPPORTED, owned row
+        assert!(!estats_error_is_global(50, 0)); // kernel TIME_WAIT row: per-row
+        assert!(!estats_error_is_global(1168, 42)); // NOT_FOUND (row vanished)
+        assert!(!estats_error_is_global(87, 42)); // INVALID_PARAMETER
     }
 
     #[cfg(windows)]

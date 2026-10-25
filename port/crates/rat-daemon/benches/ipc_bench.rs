@@ -25,6 +25,7 @@ fn generate_connections(count: usize) -> Vec<Connection> {
             listening: false,
             bytes_in: Some(100),
             bytes_out: Some(200),
+            via_vpn: false,
         })
         .collect()
 }

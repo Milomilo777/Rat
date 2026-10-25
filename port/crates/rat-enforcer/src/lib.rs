@@ -59,6 +59,19 @@ pub fn validate_path(path: &str) -> Result<String, &'static str> {
     }
 }
 
+/// W2 (update-04 architecture review / PROPOSALS #1): svchost.exe hosts DNS
+/// (Dnscache), DHCP and many other services for the WHOLE machine — a
+/// per-program block rule for it cuts them all at once. Whole-program
+/// enforcement of shared service hosts is refused instead (see
+/// `WindowsPlan::refused`); block by the denied sockets' local ports or a
+/// future per-service mechanism instead. Kept local and minimal so the crate
+/// stays std-only; the cross-platform classification table lives in
+/// rat-ledger's `shared` module.
+pub fn is_shared_service_host(path: &str) -> bool {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    name.eq_ignore_ascii_case("svchost.exe")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,6 +82,17 @@ mod tests {
         assert!(dry_run_enabled(Some("1")));
         assert!(!dry_run_enabled(Some("0")));
         assert!(!dry_run_enabled(Some("")));
+    }
+
+    #[test]
+    fn test_shared_service_host_detection() {
+        // W2 / PROPOSALS #1: svchost.exe must never be blocked per-program.
+        assert!(is_shared_service_host("C:\\Windows\\System32\\svchost.exe"));
+        assert!(is_shared_service_host("C:\\Windows\\System32\\SVCHOST.EXE"));
+        assert!(is_shared_service_host("svchost.exe"));
+        assert!(!is_shared_service_host("C:\\Windows\\System32\\netsh.exe"));
+        assert!(!is_shared_service_host("/usr/bin/curl"));
+        assert!(!is_shared_service_host("mysvchost.exe.fake"));
     }
 
     use proptest::prelude::*;

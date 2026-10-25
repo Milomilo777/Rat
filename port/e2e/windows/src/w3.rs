@@ -15,7 +15,11 @@ impl Drop for W3Cleanup {
             .apply(&self.enforcer.plan(&Blocklist::default()));
         let _ = std::fs::remove_file(&self.path_a);
         let _ = std::fs::remove_file(&self.path_b);
-        let _ = self.enforcer.cleanup();
+        let _ = Command::new("powershell.exe")
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg("Get-NetFirewallRule -DisplayName 'Rat:path:*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule")
+            .output();
     }
 }
 
@@ -43,7 +47,11 @@ pub fn run_w3() {
     wanted.paths.push(client_a.to_string_lossy().to_string());
 
     let plan = enforcer.plan(&wanted);
-    enforcer.apply(&plan).unwrap();
+
+    let dry_run = env::var("RAT_DRY_RUN").is_ok();
+    if !dry_run {
+        enforcer.apply(&plan).unwrap();
+    }
 
     // Test A (blocked)
     let output_a = Command::new(&client_a)
@@ -51,10 +59,18 @@ pub fn run_w3() {
         .arg("https://example.com")
         .output()
         .unwrap();
-    assert!(
-        !output_a.status.success(),
-        "W3 Failed: Client A was not blocked"
-    );
+
+    if dry_run {
+        assert!(
+            output_a.status.success(),
+            "W3 Failed: Client A was blocked during dry run (Negative Control)"
+        );
+    } else {
+        assert!(
+            !output_a.status.success(),
+            "W3 Failed: Client A was not blocked"
+        );
+    }
 
     // Test B (allowed)
     let output_b = Command::new(&client_b)

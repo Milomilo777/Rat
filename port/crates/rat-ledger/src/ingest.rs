@@ -2,7 +2,7 @@
 //! the derived enforcement plan. Port of Ledger.swift's ingest/refreshEnforcement.
 
 use crate::alerts::{Alert, AlertCenter, AlertCenterConfig};
-use crate::Policy;
+use crate::{registrable_domain, Policy};
 use rat_core::Verdict;
 use rat_types::{Connection, Protocol};
 use serde::{Deserialize, Serialize};
@@ -33,6 +33,13 @@ pub struct ConnectionDetails {
     pub proxy_mark: Option<String>,
     /// The "system service" row equivalent: a socket held by a shared service host.
     pub shared_service: bool,
+    /// Reverse-DNS display name (Ledger.swift:322 `names.name(for:)`); filled by
+    /// the daemon's details closure once rat-names is wired.
+    #[serde(default)]
+    pub host_name: Option<String>,
+    /// GeoIP country of the remote (feeds the Summary's country list).
+    #[serde(default)]
+    pub country: Option<String>,
 }
 
 /// Identity of one remote as shown in the UI (dedup like Ledger.swift:320-321).
@@ -115,6 +122,12 @@ pub struct Ledger {
     rate_in: f64,
     rate_out: f64,
     plan: EnforcementPlan,
+    /// System-wide (timestamp_ms, rx, tx) per refresh, capped at 2400 points
+    /// (Ledger.swift:276-277) — the live feed for chart ranges up to an hour.
+    history: VecDeque<(u64, f64, f64)>,
+    /// System totals per minute, keyed by `timestamp_ms / 60_000`, pruned past
+    /// a week (Ledger.swift:279-281, :180) — the feed for day/week charts.
+    buckets: BTreeMap<u64, (f64, f64)>,
 }
 
 impl Ledger {
@@ -131,6 +144,8 @@ impl Ledger {
             rate_in: 0.0,
             rate_out: 0.0,
             plan: EnforcementPlan::default(),
+            history: VecDeque::new(),
+            buckets: BTreeMap::new(),
         }
     }
 
@@ -230,6 +245,20 @@ impl Ledger {
         self.rate_in = total_rx / dt;
         self.rate_out = total_tx / dt;
 
+        // Chart feeds (Ledger.swift:276-281): a live system point per refresh
+        // (capped at 2400) and per-minute buckets, pruned past a week.
+        self.history.push_back((now_ms, total_rx, total_tx));
+        if self.history.len() > 2400 {
+            self.history.pop_front();
+        }
+        let minute = now_ms / 60_000;
+        let week_of_minutes = 7 * 24 * 60;
+        let b = self.buckets.entry(minute).or_insert((0.0, 0.0));
+        b.0 += total_rx;
+        b.1 += total_tx;
+        let cutoff = minute.saturating_sub(week_of_minutes);
+        self.buckets.retain(|&m, _| m >= cutoff);
+
         // R6 + R2 per app: rebuild remotes from the current sample (Swift :347
         // `e.remotes = remotes`), merging this tick's per-remote deltas.
         let mut denied = 0usize;
@@ -254,9 +283,13 @@ impl Ledger {
                     .and_then(|m| m.get(&key))
                     .copied()
                     .unwrap_or((0.0, 0.0));
+                let d = details(c);
+                // Display host: the name when one is known, else the address
+                // string (Ledger.swift:300,322).
+                let host = d.host_name.clone().unwrap_or_else(|| remote.to_string());
                 remotes.push(RemoteEntry {
-                    host: remote.to_string(),
-                    details: details(c),
+                    host,
+                    details: d,
                     total_in: d_in as u64,
                     total_out: d_out as u64,
                     rate_in: d_in / dt,
@@ -354,6 +387,18 @@ impl Ledger {
         (self.session_in, self.session_out)
     }
 
+    /// Live system history points `(timestamp_ms, rx, tx)`, oldest first —
+    /// the feed for [`crate::chart_layout`] ranges up to an hour.
+    pub fn history(&self) -> impl Iterator<Item = (u64, f64, f64)> + '_ {
+        self.history.iter().copied()
+    }
+
+    /// Per-minute system buckets `(minute_index, rx, tx)` — the feed for
+    /// day/week chart ranges. Multiply the key by 60_000 for a timestamp.
+    pub fn buckets(&self) -> impl Iterator<Item = (u64, f64, f64)> + '_ {
+        self.buckets.iter().map(|(&m, &(rx, tx))| (m, rx, tx))
+    }
+
     pub fn rates(&self) -> (f64, f64) {
         (self.rate_in, self.rate_out)
     }
@@ -363,4 +408,63 @@ impl Ledger {
     pub fn enforcement(&self) -> &EnforcementPlan {
         &self.plan
     }
+
+    /// Summary: registrable domains by remote count (Ledger.swift:424-428).
+    /// Swift sorts by count only (ties come out in dictionary order); here ties
+    /// break by name ascending so the order is deterministic.
+    pub fn domains(&self) -> Vec<(String, usize)> {
+        let mut d: BTreeMap<String, usize> = BTreeMap::new();
+        for app in self.apps.values() {
+            for r in &app.remotes {
+                *d.entry(registrable_domain(&summary_host(&r.host)))
+                    .or_default() += 1;
+            }
+        }
+        sorted_by_count(d)
+    }
+
+    /// Summary: ASN network owners by remote count (Ledger.swift:431-435).
+    pub fn networks(&self) -> Vec<(String, usize)> {
+        let mut d: BTreeMap<String, usize> = BTreeMap::new();
+        for app in self.apps.values() {
+            for r in &app.remotes {
+                if let Some(owner) = &r.details.network_owner {
+                    *d.entry(owner.clone()).or_default() += 1;
+                }
+            }
+        }
+        sorted_by_count(d)
+    }
+
+    /// Summary: countries by remote count (Ledger.swift:437-441).
+    pub fn countries(&self) -> Vec<(String, usize)> {
+        let mut d: BTreeMap<String, usize> = BTreeMap::new();
+        for app in self.apps.values() {
+            for r in &app.remotes {
+                if let Some(country) = &r.details.country {
+                    *d.entry(country.clone()).or_default() += 1;
+                }
+            }
+        }
+        sorted_by_count(d)
+    }
+}
+
+/// The host part of a `RemoteEntry::host`: strip the `:port` (or `[v6]:port`)
+/// when the string is an address-with-port, keep names as they are.
+fn summary_host(host: &str) -> String {
+    if let Ok(sa) = host.parse::<SocketAddr>() {
+        return sa.ip().to_string();
+    }
+    host.strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .map(str::to_string)
+        .unwrap_or_else(|| host.to_string())
+}
+
+/// Count-descending, name-ascending order shared by the summary lists.
+fn sorted_by_count(d: BTreeMap<String, usize>) -> Vec<(String, usize)> {
+    let mut v: Vec<(String, usize)> = d.into_iter().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    v
 }

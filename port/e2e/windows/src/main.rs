@@ -15,7 +15,7 @@ fn run_test(name: &str, test: fn()) {
     let result = panic::catch_unwind(|| {
         test();
     });
-    if let Err(_) = result {
+    if result.is_err() {
         println!("Test {} FAILED", name);
         HAS_FAILURE.store(true, Ordering::SeqCst);
     } else {

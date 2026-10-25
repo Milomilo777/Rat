@@ -11,6 +11,11 @@ pub struct WindowsEnforcer {
 pub struct WindowsPlan {
     pub add: Vec<String>,
     pub remove: Vec<String>,
+    /// W2 (PROPOSALS #1): wanted whole-program blocks that were REFUSED
+    /// because the target is a shared service host (svchost.exe hosts DNS,
+    /// DHCP and more for the whole machine). The caller decides how to tell
+    /// the user; per-port rules below still apply.
+    pub refused: Vec<String>,
 }
 
 pub fn generate_windows_plan(current: &Blocklist, wanted: &Blocklist) -> WindowsPlan {
@@ -19,7 +24,15 @@ pub fn generate_windows_plan(current: &Blocklist, wanted: &Blocklist) -> Windows
     let wanted_set: HashSet<&String> = wanted.paths.iter().collect();
 
     let mut add = Vec::new();
+    let mut refused = Vec::new();
     for path in &wanted.paths {
+        if crate::is_shared_service_host(path) {
+            // W2: never block a shared service host per-program.
+            if !refused.contains(path) {
+                refused.push(path.clone());
+            }
+            continue;
+        }
         if !current_set.contains(path) {
             add.push(path.clone());
         }
@@ -35,8 +48,13 @@ pub fn generate_windows_plan(current: &Blocklist, wanted: &Blocklist) -> Windows
     // Sort to make plan output deterministic
     add.sort();
     remove.sort();
+    refused.sort();
 
-    WindowsPlan { add, remove }
+    WindowsPlan {
+        add,
+        remove,
+        refused,
+    }
 }
 
 pub fn format_rule_name(path: &str) -> String {
@@ -107,6 +125,15 @@ impl Enforcer for WindowsEnforcer {
         };
         let remove = validated(&plan.remove)?;
         let add = validated(&plan.add)?;
+
+        // W2 (PROPOSALS #1): plan() already refuses shared service hosts; a
+        // hand-built plan must not be able to smuggle one through — fail
+        // closed, also in dry-run.
+        if let Some(path) = add.iter().find(|p| crate::is_shared_service_host(p)) {
+            return Err(io::Error::other(format!(
+                "refusing whole-program block of shared service host {path} (would cut DNS/DHCP machine-wide); block by port instead"
+            )));
+        }
 
         let dry_run = crate::dry_run_enabled(env::var("RAT_DRY_RUN").ok().as_deref());
 
@@ -253,6 +280,47 @@ mod tests {
     }
 
     #[test]
+    fn test_windows_plan_refuses_shared_service_host() {
+        // W2 / PROPOSALS #1: svchost.exe must never become a program= rule;
+        // the refusal is reported, not silently dropped.
+        let wanted = Blocklist {
+            paths: vec![
+                r"C:\Apps\Denied\app.exe".to_string(),
+                r"C:\Windows\System32\svchost.exe".to_string(),
+            ],
+            local_ports: vec![],
+        };
+        let enforcer = WindowsEnforcer {
+            current: Blocklist::default(),
+        };
+        let plan = enforcer.plan(&wanted);
+        assert_eq!(plan.add, vec![r"C:\Apps\Denied\app.exe".to_string()]);
+        assert_eq!(
+            plan.refused,
+            vec![r"C:\Windows\System32\svchost.exe".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_windows_apply_refuses_shared_service_host_plan() {
+        // Fail closed even for a hand-built plan, also in dry-run.
+        std::env::set_var("RAT_DRY_RUN", "1");
+        let plan = WindowsPlan {
+            add: vec![r"C:\Windows\System32\svchost.exe".to_string()],
+            remove: vec![],
+            refused: vec![],
+        };
+        let enforcer = WindowsEnforcer {
+            current: Blocklist::default(),
+        };
+        let err = enforcer.apply(&plan).unwrap_err();
+        assert!(
+            err.to_string().contains("shared service host"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn test_windows_plan_spaces_non_ascii() {
         let current = Blocklist {
             paths: vec!["C:\\Program Files\\App".to_string()],
@@ -314,7 +382,10 @@ mod tests {
 
         // Check if plan generation with 5000 rules diff takes less than 50ms
         // Note: Using a HashSet reduces this to ~5ms easily.
-        assert!(duration.as_millis() < 50);
+        assert!(
+            duration.as_millis() < 50,
+            "5000-path plan took {duration:?} (debug build, loaded-host flake documented in PROPOSALS #7)"
+        );
 
         // Memory usage bounds (string array pointers should be small, actual allocations too).
         assert!(plan.add.capacity() * std::mem::size_of::<String>() < 20_000_000);

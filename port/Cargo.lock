@@ -1247,9 +1247,11 @@ dependencies = [
 name = "rat-ledger"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "rat-core",
  "rat-types",
  "serde",
+ "uuid",
 ]
 
 [[package]]
@@ -1295,6 +1297,7 @@ name = "rat-types"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]
