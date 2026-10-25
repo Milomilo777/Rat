@@ -40,10 +40,19 @@ impl Drop for CleanupGuard {
 }
 
 async fn ensure_daemon(guard: &mut CleanupGuard) -> Result<(), String> {
-    let unit_src = std::env::current_dir().unwrap_or(PathBuf::from("/app/port/e2e/linux")).join("../../packaging/linux/rat-daemon.service");
+    let mut unit_src = PathBuf::from("port/packaging/linux/rat-daemon.service");
+    if !unit_src.exists() {
+        unit_src = PathBuf::from("../../packaging/linux/rat-daemon.service");
+    }
+    if !unit_src.exists() {
+        unit_src = PathBuf::from("/home/runner/work/Rat/Rat/port/packaging/linux/rat-daemon.service");
+    }
+    if !unit_src.exists() {
+        unit_src = PathBuf::from("/app/port/packaging/linux/rat-daemon.service");
+    }
 
-    if !std::path::Path::new(&unit_src).exists() {
-        return Err(format!("Unit not found at {:?}", unit_src).into());
+    if !unit_src.exists() {
+        return Err(format!("Unit not found, last tried: {:?}", unit_src).into());
     }
 
     let _ = Command::new("sudo").args(["groupadd", "-f", "rat"]).status();
@@ -312,6 +321,7 @@ async fn test_l3_per_app_isolation() -> Result<(), String> {
         if c.process.pid == client_b_id { b_local_port = c.local.port(); }
     }
 
+    // Kill processes so we can rebind
     let mut c_b = guard.children.pop().unwrap(); let _ = c_b.kill(); let _ = c_b.wait();
     let mut c_a = guard.children.pop().unwrap(); let _ = c_a.kill(); let _ = c_a.wait();
 
@@ -361,7 +371,7 @@ async fn test_l3_per_app_isolation() -> Result<(), String> {
 }
 
 async fn test_l4_short_lived_processes() -> Result<(), String> {
-    let mut _guard = CleanupGuard::new();
+    let mut guard = CleanupGuard::new();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move { loop { let _ = listener.accept().await; } });
@@ -374,6 +384,7 @@ async fn test_l4_short_lived_processes() -> Result<(), String> {
     for i in 0..n {
         let mut client = Command::new(&tmp_path).arg("127.0.0.1").arg(port.to_string()).arg("loop").spawn().unwrap();
         let client_id = client.id();
+        guard.add_child(client);
 
         let mut found = false;
         let mut c_local_port = 0;
@@ -386,6 +397,7 @@ async fn test_l4_short_lived_processes() -> Result<(), String> {
         }
         if found { hits += 1; }
 
+        let mut client = guard.children.pop().unwrap();
         let _ = client.kill();
         let _ = client.wait();
 

@@ -1,4 +1,3 @@
-use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
@@ -8,10 +7,10 @@ fn main() {
         eprintln!("Usage: {} <host> <port> [loop]", args[0]);
         std::process::exit(1);
     }
-    let host = &args[1];
-    let port = &args[2];
+    let host = "127.0.0.1";
+    let port: u16 = args[2].parse().unwrap_or(0);
 
-    if let Ok(mut stream) = TcpStream::connect(format!("{}:{}", host, port)) {
+    if let Ok(mut stream) = TcpStream::connect((host, port)) {
         if args.len() > 3 && args[3] == "loop" {
             // Keep alive
             loop {

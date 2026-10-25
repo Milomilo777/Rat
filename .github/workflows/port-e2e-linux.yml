@@ -25,11 +25,11 @@ jobs:
 
       - name: Build tests
         run: |
-          cargo build --manifest-path port/e2e/linux/Cargo.toml --bins
+          cargo build --locked --manifest-path port/e2e/linux/Cargo.toml --bins
 
       - name: Build daemon
         run: |
-          cargo build --manifest-path port/crates/rat-daemon/Cargo.toml
+          cargo build --locked --manifest-path port/crates/rat-daemon/Cargo.toml
           sudo cp port/target/debug/rat-daemon /usr/local/bin/
           sudo groupadd -f rat
 

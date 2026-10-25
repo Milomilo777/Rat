@@ -10,23 +10,23 @@
     },
     {
       "id": "L2",
-      "status": "FAIL-PRODUCT",
+      "status": "PASS",
       "test": "test_l2_enforcer_real_rules",
-      "evidence": "L2 Error: FAIL-PRODUCT: L2 Apply error: nftables command failed",
+      "evidence": "L2 PASS",
       "control": "Tested dry run via RAT_DRY_RUN=1"
     },
     {
       "id": "L3",
-      "status": "FAIL-PRODUCT",
+      "status": "PASS",
       "test": "test_l3_per_app_isolation",
-      "evidence": "L3 Error: FAIL-PRODUCT: L3 Enforcer apply error: nftables command failed",
+      "evidence": "L3 PASS",
       "control": "N/A"
     },
     {
       "id": "L4",
-      "status": "PASS",
+      "status": "FAIL-PRODUCT",
       "test": "test_l4_short_lived_processes",
-      "evidence": "L4 PASS",
+      "evidence": "L4 Error: FAIL-PRODUCT: L4: New allowed app reusing same ephemeral port is blocked",
       "control": "N/A"
     },
     {
@@ -55,15 +55,15 @@
   ],
   "ci_runs": [
     {
+      "url": "https://github.com/Milomilo777/Rat/actions/runs/40182496918/job/121136317155",
+      "conclusion": "failure"
+    },
+    {
       "url": "https://github.com/Milomilo777/Rat/actions/runs/40179011527/job/121125826841",
       "conclusion": "failure"
     },
     {
       "url": "https://github.com/Milomilo777/Rat/actions/runs/40175785180/job/121116047432",
-      "conclusion": "failure"
-    },
-    {
-      "url": "https://github.com/Milomilo777/Rat/actions/runs/40175785180/job/121116047375",
       "conclusion": "failure"
     }
   ],
@@ -73,12 +73,6 @@
       "what": "test_cleanup_runs_on_start_and_shutdown assertion failure: exactly one shutdown cleanup. left: 1, right: 2",
       "file_line": "crates/rat-daemon/tests/pipeline.rs:409:5",
       "evidence": "thread 'test_cleanup_runs_on_start_and_shutdown' panicked at crates/rat-daemon/tests/pipeline.rs:409:5: assertion `left == right` failed: exactly one shutdown cleanup"
-    },
-    {
-      "id": "F2",
-      "what": "nft tables kernel module missing / rule fails",
-      "file_line": "rat-enforcer/src/linux.rs",
-      "evidence": "FAIL-PRODUCT: L2 Apply error"
     },
     {
       "id": "F3",
@@ -91,6 +85,12 @@
       "what": "Client connection limit not respected (or >100)",
       "file_line": "rat-daemon/src/lib.rs",
       "evidence": "FAIL-PRODUCT: L5: Client connection limit not respected"
+    },
+    {
+      "id": "F5",
+      "what": "New allowed app reusing ephemeral port blocked",
+      "file_line": "rat-enforcer/src/linux.rs",
+      "evidence": "FAIL-PRODUCT: L4: New allowed app reusing same ephemeral port is blocked"
     }
   ],
   "unverified": false,
