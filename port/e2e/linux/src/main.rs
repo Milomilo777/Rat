@@ -39,6 +39,34 @@ impl Drop for CleanupGuard {
     }
 }
 
+async fn ensure_daemon(guard: &mut CleanupGuard) -> Result<(), String> {
+    let unit_src = std::env::current_dir().unwrap_or(PathBuf::from("/app/port/e2e/linux")).join("../../packaging/linux/rat-daemon.service");
+
+    if !std::path::Path::new(&unit_src).exists() {
+        return Err(format!("Unit not found at {:?}", unit_src).into());
+    }
+
+    let _ = Command::new("sudo").args(["groupadd", "-f", "rat"]).status();
+    let cp_st = Command::new("sudo").args(["cp", unit_src.to_str().unwrap(), "/etc/systemd/system/"]).status();
+    if cp_st.is_err() || !cp_st.unwrap().success() { return Err("Failed to cp systemd unit".into()); }
+
+    let dr_st = Command::new("sudo").args(["systemctl", "daemon-reload"]).status();
+    if dr_st.is_err() || !dr_st.unwrap().success() { return Err("Failed systemctl daemon-reload".into()); }
+
+    let st_st = Command::new("sudo").args(["systemctl", "start", "rat-daemon"]).status();
+    if st_st.is_err() || !st_st.unwrap().success() { return Err("Failed to start rat-daemon".into()); }
+    guard.daemon_started = true;
+
+    let mut socket_ready = false;
+    for _ in 0..20 {
+         if std::fs::metadata("/run/rat/rat.sock").is_ok() { socket_ready = true; break; }
+         sleep(Duration::from_millis(100)).await;
+    }
+
+    if !socket_ready { return Err("Daemon socket missing after start".into()); }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Running E2E tests...");
@@ -48,19 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let _ = Command::new("cargo").args(["build", "--bin", "test-client"]).current_dir(std::env::current_dir().unwrap_or(PathBuf::from("/app/port/e2e/linux"))).status();
-
-    let current_exe_dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
-
-    let daemon_bin = current_exe_dir.join("rat-daemon");
-    if daemon_bin.exists() {
-        let _ = Command::new("sudo").args(["cp", daemon_bin.to_str().unwrap(), "/usr/local/bin/rat-daemon"]).status();
-    } else {
-        let _ = Command::new("cargo").args(["build", "--bin", "rat-daemon", "--manifest-path", "../../crates/rat-daemon/Cargo.toml"]).status();
-        if daemon_bin.exists() {
-            let _ = Command::new("sudo").args(["cp", daemon_bin.to_str().unwrap(), "/usr/local/bin/rat-daemon"]).status();
-        }
-    }
+    // In CI we just run as-is, since workflow builds test-client and copies daemon.
 
     let mut results: Vec<(&'static str, &'static str, String)> = vec![];
 
@@ -69,7 +85,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("--- Running {} ---", $name);
             match $test.await {
                 Ok(_) => { println!("{} PASS", $name); results.push(($name, "PASS", "".to_string())); },
-                Err(e) => { println!("{} Error: {}", $name, e); results.push(($name, "FAIL-PRODUCT", e)); }
+                Err(e) => {
+                    let is_fail_product = e.contains("FAIL-PRODUCT");
+                    let prefix = if is_fail_product { "" } else { "FAIL-PRODUCT: " };
+                    println!("{} Error: {}{}", $name, prefix, e);
+                    results.push(($name, "FAIL-PRODUCT", format!("{}{}", prefix, e)));
+                }
             }
         };
     }
@@ -85,7 +106,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("--- E2E Summary ---");
     for (name, status, err) in results {
-        println!("{}: {} {}", name, status, err);
+        if !err.is_empty() {
+             println!("{}: {} {}", name, status, err);
+        } else {
+             println!("{}: {}", name, status);
+        }
     }
 
     if failed > 0 {
@@ -165,7 +190,7 @@ async fn test_l2_enforcer_real_rules() -> Result<(), String> {
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
         use tokio::io::AsyncWriteExt;
-        if let Ok((mut socket, _)) = listener.accept().await { let _ = socket.write_all(b"hello").await; }
+        loop { if let Ok((mut socket, _)) = listener.accept().await { let _ = socket.write_all(b"hello").await; } }
     });
 
     let client_exec = test_client_path();
@@ -195,9 +220,6 @@ async fn test_l2_enforcer_real_rules() -> Result<(), String> {
     let is_blocked_dry = match tokio::time::timeout(
         Duration::from_millis(500),
         async {
-            // Must use a socket with the exact local port, but since the previous process is using it,
-            // we will simulate the behavior by seeing if we can connect freely. The previous client is already connected.
-            // Under dry run, dropping rules didn't happen.
             TcpStream::connect(("127.0.0.1", port)).await
         }
     ).await {
@@ -205,14 +227,14 @@ async fn test_l2_enforcer_real_rules() -> Result<(), String> {
         _ => true,
     };
     if is_blocked_dry {
-        return Err("L2 Negative Control: Traffic blocked during dry run".into());
+        return Err("FAIL-PRODUCT: L2 Negative Control: Traffic blocked during dry run".into());
     }
     std::env::remove_var("RAT_DRY_RUN");
 
     enforcer.apply(&enforcer.plan(&blocklist)).map_err(|e| format!("FAIL-PRODUCT: L2 Apply error: {}", e))?;
 
     let status = Command::new("sudo").args(["nft", "-j", "list", "table", "inet", "rat"]).status().unwrap();
-    if !status.success() { return Err("L2: Failed to list nft table".into()); }
+    if !status.success() { return Err("FAIL-PRODUCT: L2: Failed to list nft table".into()); }
 
     // To test if blocked correctly, kill the old client to release c_local_port
     let mut client = guard.children.pop().unwrap();
@@ -240,7 +262,7 @@ async fn test_l2_enforcer_real_rules() -> Result<(), String> {
     enforcer.cleanup().unwrap();
 
     let ruleset_after = get_nft_ruleset();
-    if ruleset_before != ruleset_after { return Err("L2: Host ruleset modified beyond `inet rat` table".into()); }
+    if ruleset_before != ruleset_after { return Err("FAIL-PRODUCT: L2: Host ruleset modified beyond `inet rat` table".into()); }
     if !is_blocked { return Err("FAIL-PRODUCT: L2: Traffic was not blocked by enforcer".into()); }
 
     Ok(())
@@ -290,7 +312,6 @@ async fn test_l3_per_app_isolation() -> Result<(), String> {
         if c.process.pid == client_b_id { b_local_port = c.local.port(); }
     }
 
-    // Kill processes so we can rebind
     let mut c_b = guard.children.pop().unwrap(); let _ = c_b.kill(); let _ = c_b.wait();
     let mut c_a = guard.children.pop().unwrap(); let _ = c_a.kill(); let _ = c_a.wait();
 
@@ -340,7 +361,7 @@ async fn test_l3_per_app_isolation() -> Result<(), String> {
 }
 
 async fn test_l4_short_lived_processes() -> Result<(), String> {
-    let mut guard = CleanupGuard::new();
+    let mut _guard = CleanupGuard::new();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move { loop { let _ = listener.accept().await; } });
@@ -353,7 +374,6 @@ async fn test_l4_short_lived_processes() -> Result<(), String> {
     for i in 0..n {
         let mut client = Command::new(&tmp_path).arg("127.0.0.1").arg(port.to_string()).arg("loop").spawn().unwrap();
         let client_id = client.id();
-        guard.add_child(client);
 
         let mut found = false;
         let mut c_local_port = 0;
@@ -366,7 +386,6 @@ async fn test_l4_short_lived_processes() -> Result<(), String> {
         }
         if found { hits += 1; }
 
-        let mut client = guard.children.pop().unwrap();
         let _ = client.kill();
         let _ = client.wait();
 
@@ -401,34 +420,7 @@ async fn test_l4_short_lived_processes() -> Result<(), String> {
 
 async fn test_l5_daemon_lifecycle() -> Result<(), String> {
     let mut guard = CleanupGuard::new();
-    let current_exe_dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
-
-    let unit_src = std::env::current_dir().unwrap_or(PathBuf::from("/app/port/e2e/linux")).join("../../packaging/linux/rat-daemon.service");
-
-    if !std::path::Path::new(&unit_src).exists() {
-        return Err(format!("Unit not found at {:?}", unit_src).into());
-    }
-
-    // Ensure group exists
-    let _ = Command::new("sudo").args(["groupadd", "-f", "rat"]).status();
-
-    let cp_st = Command::new("sudo").args(["cp", unit_src.to_str().unwrap(), "/etc/systemd/system/"]).status();
-    if cp_st.is_err() || !cp_st.unwrap().success() { return Err("FAIL-PRODUCT: L5: Failed to cp systemd unit".into()); }
-
-    let dr_st = Command::new("sudo").args(["systemctl", "daemon-reload"]).status();
-    if dr_st.is_err() || !dr_st.unwrap().success() { return Err("FAIL-PRODUCT: L5: Failed systemctl daemon-reload".into()); }
-
-    let st_st = Command::new("sudo").args(["systemctl", "start", "rat-daemon"]).status();
-    if st_st.is_err() || !st_st.unwrap().success() { return Err("FAIL-PRODUCT: L5: Failed to start rat-daemon".into()); }
-    guard.daemon_started = true;
-
-    let mut socket_ready = false;
-    for _ in 0..20 {
-         if std::fs::metadata("/run/rat/rat.sock").is_ok() { socket_ready = true; break; }
-         sleep(Duration::from_millis(100)).await;
-    }
-
-    if !socket_ready { return Err("FAIL-PRODUCT: L5: Daemon socket missing".into()); }
+    ensure_daemon(&mut guard).await?;
 
     if let Ok(meta) = std::fs::metadata("/run/rat/rat.sock") {
         use std::os::unix::fs::PermissionsExt;
@@ -454,6 +446,7 @@ async fn test_l5_daemon_lifecycle() -> Result<(), String> {
         }
     }
 
+    let mut error_msg = String::new();
     let s = std::os::unix::net::UnixStream::connect("/run/rat/rat.sock");
     if let Ok(mut sock) = s {
         use std::io::Write;
@@ -469,7 +462,7 @@ async fn test_l5_daemon_lifecycle() -> Result<(), String> {
                 refused = true; break;
             }
         }
-        if !refused { return Err("FAIL-PRODUCT: L5: Client connection limit not respected (or >100)".into()); }
+        if !refused { error_msg.push_str("FAIL-PRODUCT: L5: Client connection limit not respected (or >100). "); }
         drop(conns);
 
         let enforcer = LinuxEnforcer;
@@ -479,14 +472,14 @@ async fn test_l5_daemon_lifecycle() -> Result<(), String> {
 
         let mut is_active = false;
         for _ in 0..20 {
-             let stat = Command::new("systemctl").args(["is-active", "rat-daemon"]).output().unwrap();
+             let stat = Command::new("sudo").args(["systemctl", "is-active", "rat-daemon"]).output().unwrap();
              if String::from_utf8_lossy(&stat.stdout).trim() == "active" {
                   is_active = true; break;
              }
              sleep(Duration::from_millis(100)).await;
         }
 
-        if !is_active { return Err("FAIL-PRODUCT: L5: Daemon did not restart after SIGKILL".into()); }
+        if !is_active { error_msg.push_str("FAIL-PRODUCT: L5: Daemon did not restart after SIGKILL. "); }
 
         let mut table_deleted = false;
         for _ in 0..20 {
@@ -498,16 +491,20 @@ async fn test_l5_daemon_lifecycle() -> Result<(), String> {
         }
 
         if !table_deleted {
-             return Err("FAIL-PRODUCT: L5: inet rat table not deleted after daemon kill".into());
+             error_msg.push_str("FAIL-PRODUCT: L5: inet rat table not deleted after daemon kill. ");
         }
     } else {
         return Err("FAIL-PRODUCT: L5: Daemon socket not reachable".into());
     }
 
+    if !error_msg.is_empty() { return Err(error_msg); }
     Ok(())
 }
 
 async fn test_l6_gui_to_daemon_gap() -> Result<(), String> {
+    let mut guard = CleanupGuard::new();
+    ensure_daemon(&mut guard).await?;
+
     let s = std::os::unix::net::UnixStream::connect("/run/rat/rat.sock");
     if let Ok(mut sock) = s {
         use std::io::Write;

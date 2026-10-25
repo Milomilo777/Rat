@@ -3,49 +3,50 @@
   "requirements": [
     {
       "id": "L1",
-      "status": "NOT RUN",
+      "status": "FAIL-PRODUCT",
       "test": "test_l1_monitor_attribution",
-      "evidence": "Could not run in CI natively.",
+      "evidence": "L1 Error: FAIL-PRODUCT: L1: Bytes out counter not properly returning >= 1MB",
       "control": "N/A"
     },
     {
       "id": "L2",
-      "status": "NOT RUN",
+      "status": "FAIL-PRODUCT",
       "test": "test_l2_enforcer_real_rules",
-      "evidence": "Could not run in CI natively.",
+      "evidence": "L2 Error: FAIL-PRODUCT: L2 Apply error: nftables command failed",
       "control": "Tested dry run via RAT_DRY_RUN=1"
     },
     {
       "id": "L3",
-      "status": "NOT RUN",
+      "status": "FAIL-PRODUCT",
       "test": "test_l3_per_app_isolation",
-      "evidence": "Could not run in CI natively.",
+      "evidence": "L3 Error: FAIL-PRODUCT: L3 Enforcer apply error: nftables command failed",
       "control": "N/A"
     },
     {
       "id": "L4",
-      "status": "NOT RUN",
+      "status": "PASS",
       "test": "test_l4_short_lived_processes",
-      "evidence": "Could not run in CI natively.",
+      "evidence": "L4 PASS",
       "control": "N/A"
     },
     {
       "id": "L5",
-      "status": "NOT RUN",
+      "status": "FAIL-PRODUCT",
       "test": "test_l5_daemon_lifecycle",
-      "evidence": "Could not run in CI natively.",
+      "evidence": "L5 Error: FAIL-PRODUCT: L5: Client connection limit not respected (or >100)",
       "control": "N/A"
     },
     {
       "id": "L6",
-      "status": "NOT RUN",
+      "status": "FAIL-PRODUCT",
       "test": "test_l6_gui_to_daemon_gap",
-      "evidence": "Could not run in CI natively.",
+      "evidence": "L6 Error: FAIL-PRODUCT: L6: Daemon socket missing, cannot test GUI-to-daemon gap",
       "control": "N/A"
     }
   ],
   "files_changed": [
     ".github/workflows/port-e2e-linux.yml",
+    "port/crates/rat-daemon/src/core.rs",
     "port/e2e/linux/Cargo.toml",
     "port/e2e/linux/src/main.rs",
     "port/e2e/linux/src/test_client.rs",
@@ -53,6 +54,10 @@
     "port/reports/e2e-linux.json"
   ],
   "ci_runs": [
+    {
+      "url": "https://github.com/Milomilo777/Rat/actions/runs/40179011527/job/121125826841",
+      "conclusion": "failure"
+    },
     {
       "url": "https://github.com/Milomilo777/Rat/actions/runs/40175785180/job/121116047432",
       "conclusion": "failure"
@@ -68,8 +73,26 @@
       "what": "test_cleanup_runs_on_start_and_shutdown assertion failure: exactly one shutdown cleanup. left: 1, right: 2",
       "file_line": "crates/rat-daemon/tests/pipeline.rs:409:5",
       "evidence": "thread 'test_cleanup_runs_on_start_and_shutdown' panicked at crates/rat-daemon/tests/pipeline.rs:409:5: assertion `left == right` failed: exactly one shutdown cleanup"
+    },
+    {
+      "id": "F2",
+      "what": "nft tables kernel module missing / rule fails",
+      "file_line": "rat-enforcer/src/linux.rs",
+      "evidence": "FAIL-PRODUCT: L2 Apply error"
+    },
+    {
+      "id": "F3",
+      "what": "Bytes out counter not properly returning >= 1MB",
+      "file_line": "rat-monitor-linux/src/lib.rs",
+      "evidence": "FAIL-PRODUCT: L1: Bytes out counter not properly returning"
+    },
+    {
+      "id": "F4",
+      "what": "Client connection limit not respected (or >100)",
+      "file_line": "rat-daemon/src/lib.rs",
+      "evidence": "FAIL-PRODUCT: L5: Client connection limit not respected"
     }
   ],
-  "unverified": true,
-  "decisions": "Could not push to real CI due to missing terminal prompts for git push. Marked all as NOT RUN as requested by the rule. Documented the Port CI failure caused by rat-daemon tests (test_cleanup_runs_on_start_and_shutdown) in the findings."
+  "unverified": false,
+  "decisions": "Documented all real CI outputs from GitHub Actions run."
 }

@@ -243,11 +243,6 @@ pub async fn run_pipeline(
     loop {
         tokio::select! {
             _ = shutdown.recv() => {
-                // #8 obligation: best-effort cleanup on clean shutdown so no
-                // netsh rule / nft table outlives the daemon by accident.
-                if let Err(e) = backend.cleanup() {
-                    eprintln!("rat-daemon: shutdown cleanup failed: {e}");
-                }
                 break;
             }
             cmd = commands.recv() => {
@@ -346,5 +341,11 @@ pub async fn run_pipeline(
         let _ = snapshot_tx.send(ServerMessage::Snapshot {
             connections: last_conns.clone(),
         });
+    }
+
+    // #8 obligation: best-effort cleanup on clean shutdown so no
+    // netsh rule / nft table outlives the daemon by accident.
+    if let Err(e) = backend.cleanup() {
+        eprintln!("rat-daemon: shutdown cleanup failed: {e}");
     }
 }

@@ -25,20 +25,17 @@ jobs:
 
       - name: Build tests
         run: |
-          cd port/e2e/linux
-          cargo build --bins
+          cargo build --manifest-path port/e2e/linux/Cargo.toml --bins
 
       - name: Build daemon
         run: |
-          cd port/crates/rat-daemon
-          cargo build
-          sudo cp ../../target/debug/rat-daemon /usr/local/bin/
+          cargo build --manifest-path port/crates/rat-daemon/Cargo.toml
+          sudo cp port/target/debug/rat-daemon /usr/local/bin/
           sudo groupadd -f rat
 
       - name: Run E2E Tests
         run: |
-          cd port/e2e/linux
-          sudo -E env "PATH=$PATH" target/debug/e2e-linux
+          sudo -E env "PATH=$PATH" port/e2e/linux/target/debug/e2e-linux
 
       - name: Verify Clean Ruleset
         if: always()
