@@ -667,8 +667,33 @@ impl RuleEngine {
         self.set.lock().unwrap().rules.push(rule);
     }
 
-    pub fn remove(&self, id: Uuid) {
-        self.set.lock().unwrap().rules.retain(|r| r.id != id);
+    /// Add `rule`, or replace the existing rule with the same id. An
+    /// incremental edit must stay correct under a client retry, so the same
+    /// id can never end up twice. Returns whether the set changed.
+    pub fn upsert(&self, rule: Rule) -> bool {
+        let mut s = self.set.lock().unwrap();
+        match s.rules.iter().position(|r| r.id == rule.id) {
+            Some(i) => {
+                if s.rules[i] == rule {
+                    return false;
+                }
+                s.rules[i] = rule;
+                true
+            }
+            None => {
+                s.rules.push(rule);
+                true
+            }
+        }
+    }
+
+    /// Remove the rule with `id`. Returns whether a rule was removed, so a
+    /// caller can tell an edit from a stale id.
+    pub fn remove(&self, id: Uuid) -> bool {
+        let mut s = self.set.lock().unwrap();
+        let before = s.rules.len();
+        s.rules.retain(|r| r.id != id);
+        before != s.rules.len()
     }
 
     pub fn matching_rule(&self, c: &AppConnection) -> Option<Rule> {
@@ -843,6 +868,45 @@ impl RuleStore {
         }))
     }
 
+    /// Remove the temp files of a save that crashed between the write and
+    /// the rename: exactly `<rules file name>.<32 lowercase hex>.tmp` next to
+    /// the rules file, regular files only (a link or directory is left
+    /// alone, so is every other name, including the old predictable
+    /// `rules.json.tmp`). Returns the removed paths; the first failure is
+    /// returned as an error. Call once at start-up, never concurrently with
+    /// a save.
+    pub fn remove_stale_temp_files(&self) -> std::io::Result<Vec<PathBuf>> {
+        let (Some(dir), Some(name)) = (self.url.parent(), self.url.file_name()) else {
+            return Ok(Vec::new());
+        };
+        let dir = if dir.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            dir
+        };
+        let prefix = format!("{}.", name.to_string_lossy());
+        let mut removed = Vec::new();
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let file_name = entry.file_name().to_string_lossy().into_owned();
+            let Some(middle) = file_name
+                .strip_prefix(&prefix)
+                .and_then(|r| r.strip_suffix(".tmp"))
+            else {
+                continue;
+            };
+            let is_own_temp = middle.len() == 32
+                && middle
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+            if is_own_temp && entry.file_type()?.is_file() {
+                fs::remove_file(entry.path())?;
+                removed.push(entry.path());
+            }
+        }
+        Ok(removed)
+    }
+
     pub fn save_set(&self, set: &RuleSet) -> std::io::Result<()> {
         let mut s = set.clone();
         s.rules.retain(|r| r.lifetime == Lifetime::Forever);
@@ -948,6 +1012,37 @@ mod tests {
             RuleEngine::new().evaluate(&conn("a.com", 443)),
             Verdict::Ask
         );
+    }
+
+    // An incremental edit (AddRule over IPC) upserts: same id replaces,
+    // never duplicates; an identical re-delivery reports no change.
+    #[test]
+    fn test_upsert_adds_then_replaces_same_id() {
+        let e = RuleEngine::new();
+        let mut r = new_rule();
+        r.process_path = Some("/bin/a".to_string());
+        assert!(e.upsert(r.clone()));
+        let mut edited = r.clone();
+        edited.verdict = Verdict::Allow;
+        assert!(e.upsert(edited.clone()));
+        let all = e.all_rules();
+        assert_eq!(all.len(), 1, "same id must replace, not duplicate");
+        assert_eq!(all[0].verdict, Verdict::Allow);
+        assert!(!e.upsert(edited), "identical rule reports no change");
+    }
+
+    // RemoveRule over IPC must be able to tell an edit from a stale id.
+    #[test]
+    fn test_remove_reports_whether_a_rule_was_removed() {
+        let e = RuleEngine::new();
+        let r = new_rule();
+        assert!(e.upsert(r.clone()));
+        assert!(e.remove(r.id));
+        assert!(
+            !e.remove(r.id),
+            "second remove of the same id removed nothing"
+        );
+        assert!(e.all_rules().is_empty());
     }
 
     #[test]
@@ -1488,6 +1583,46 @@ mod load_tests {
             leftovers.is_empty(),
             "the temp file must be gone after the save: {leftovers:?}"
         );
+    }
+
+    // Start-up cleanup removes only this store's own leftover temp files.
+    #[test]
+    fn test_remove_stale_temp_files_removes_only_own_temp_names() {
+        let dir = tempdir().unwrap();
+        let url = dir.path().join("rules.json");
+        let store = RuleStore::new(url.clone());
+        let own = dir
+            .path()
+            .join(format!("rules.json.{}.tmp", "0123456789abcdef".repeat(2)));
+        let keep = [
+            "rules.json",
+            "rules.json.bak",
+            "rules.json.tmp",
+            "rules.json.0123.tmp",
+            "rules.json.FEDCBA9876543210FEDCBA9876543210.tmp",
+            "rules.json.0123456789abcdef0123456789abcdeg.tmp",
+            "other.json.0123456789abcdef0123456789abcdef.tmp",
+            "notes.tmp",
+        ];
+        fs::write(&own, "x").unwrap();
+        for k in keep {
+            fs::write(dir.path().join(k), "keep").unwrap();
+        }
+        // A directory with a matching name is left alone too.
+        let dir_named = dir
+            .path()
+            .join(format!("rules.json.{}.tmp", "f".repeat(32)));
+        fs::create_dir(&dir_named).unwrap();
+
+        let removed = store.remove_stale_temp_files().unwrap();
+        assert_eq!(removed, vec![own.clone()]);
+        assert!(!own.exists());
+        for k in keep {
+            assert!(dir.path().join(k).exists(), "{k} must survive");
+        }
+        assert!(dir_named.is_dir());
+        // Nothing left to do the second time.
+        assert!(store.remove_stale_temp_files().unwrap().is_empty());
     }
 
     // A file planted at the old predictable temp name is neither written

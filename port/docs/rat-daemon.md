@@ -14,7 +14,7 @@ The main components are:
 * `rat_daemon::core::run_pipeline`: the sampling/enforcement loop (monitor sample -> `rat_ledger::Ledger::ingest`
   under the `RuleEnginePolicy` -> alert fan-out -> enforcement plan -> `EnforcementBackend`), re-judging the last
   sample whenever a command arrives so SetRules/AlertAnswer take effect immediately.
-* `rat_daemon::core::Command`: what IPC clients may ask the pipeline to do (`SetRules`, `AlertAnswer`).
+* `rat_daemon::core::Command`: what IPC clients may ask the pipeline to do (`SetRules`, `AddRule`, `RemoveRule`, `AlertAnswer`).
 * `rat_daemon::core::{EnforcementBackend, WindowsBackend, LinuxBackend}`: the enforcer seam — netsh advfirewall
   per-program rules plus per-port rules for the denied sockets' local ports (`Rat:port:<n>`) on
   Windows, the whole `inet rat` nft table on Linux.
@@ -37,6 +37,8 @@ Client -> server:
 ```json
 {"Hello":{"protocol_version":1}}
 {"SetRules":{"rules":[ ...rat-core v2 rule objects (camelCase)... ]}}
+{"AddRule":{"rule":{ ...one rat-core v2 rule object (camelCase)... }}}
+{"RemoveRule":{"id":"6ec0bd7f-11d0-4c7d-a9bf-96f16b1c3f2c"}}
 "GetRules"
 {"AlertAnswer":{"id":7,"verdict":"deny","scope":"any","lifetime":"forever"}}
 ```
@@ -48,7 +50,13 @@ Client -> server:
 * A client line is limited to 64 KiB (65536 bytes); a longer line (for example a very large `SetRules`) makes the
   daemon drop that connection. Clients check the size before sending.
 * `SetRules` replaces the daemon's rule set wholesale; the rules are the same JSON the Swift app persists
-  (`rat_core::Rule`, camelCase).
+  (`rat_core::Rule`, camelCase). Runs of queued `SetRules` coalesce to the newest list.
+* `AddRule` / `RemoveRule` are incremental edits (additive: protocol version stays 1; a daemon without them
+  drops the connection on the unknown variant). `AddRule` upserts by rule id (a new id is appended, the same id
+  replaces that rule in place, an identical re-delivery changes nothing), so a client retry never duplicates.
+  `RemoveRule` removes by id; an unknown id is logged and ignored. Both are applied in arrival order (they stop
+  the `SetRules` coalescing drain, never reordered around it), keep every other rule, and are saved like
+  `SetRules`. Neither sends a reply: ask with `GetRules` afterwards (same connection, so ordered).
 * `AlertAnswer` answers the `AlertRequest` with the matching `id` (stale ids are ignored). `scope` is one of
   `any` | `domain` | `host` | `port` (`rat_ledger::AnswerScope`); `verdict` is `allow` | `deny` | `ask`;
   `lifetime` is `once` | `untilQuit` | `forever`. The answer creates a rule exactly like the macOS
@@ -152,12 +160,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   country are not filled yet — the details closure only wires the std-only parts (well-known service names from
   rat-names, shared-service-host classification). rDNS needs an async resolver with a cache, not a blocking
   lookup inside the pipeline.
-* The rule set is persisted daemon-side: every SetRules/AlertAnswer-created rule is
+* The rule set is persisted daemon-side: every SetRules/AddRule/RemoveRule/AlertAnswer-created rule is
   written back to the store (`save_set` keeps Forever rules only — UntilQuit session rules die with the daemon),
   reloaded at the next startup, and its static anchor is reconciled into the firewall before the IPC serves.
   The GUI no longer has to re-send the rules at startup (it still may: SetRules is authoritative when it does).
   A save writes a temporary file with an unpredictable name next to `rules.json`, keeps the previous content as
-  `rules.json.bak` and renames the temporary file over `rules.json` (atomic). On Windows the daemon creates the
+  `rules.json.bak` and renames the temporary file over `rules.json` (atomic). A crash in between leaves
+  `rules.json.<32 hex>.tmp`; start-up removes exactly that naming (regular files only) when the directory is
+  trusted, never any other file. On Windows the daemon creates the
   parent directory (see above); on Linux create `/etc/rat` first (see the Linux install guide). A failed save is
   logged and retried on the next change, never fatal.
 * IPC drops clients that lag too much instead of buffering infinitely.

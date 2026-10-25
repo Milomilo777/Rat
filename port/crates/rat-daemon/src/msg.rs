@@ -2,6 +2,7 @@ use rat_core::{Lifetime, Rule, Verdict};
 use rat_ledger::{Alert, AnswerScope};
 use rat_types::Connection;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// bumped on every breaking protocol change. The FIRST client
 /// message must be `Hello { protocol_version }`; a mismatched client is
@@ -32,6 +33,18 @@ pub enum ClientMessage {
     /// `ServerMessage::Rules`. The daemon is the single source of rules: a
     /// client must not read the rules file itself.
     GetRules,
+    /// Add ONE rule to the daemon's in-memory set, or replace the rule with
+    /// the same id (an incremental edit — `SetRules` stays the whole-list
+    /// replace and the bulk/import path). Saved like `SetRules`.
+    /// Boxed: Rule dwarfs the other variants; serde serializes it unchanged.
+    AddRule {
+        rule: Box<Rule>,
+    },
+    /// Remove ONE rule by id (an incremental edit). An unknown id is logged
+    /// by the daemon and changes nothing.
+    RemoveRule {
+        id: Uuid,
+    },
 }
 
 /// everything the DAEMON sends. No ServerMessage reaches a
@@ -96,6 +109,28 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::path::PathBuf;
 
+    fn new_rule() -> Rule {
+        Rule {
+            id: Uuid::new_v4(),
+            verdict: Verdict::Deny,
+            process_path: Some(r"C:\Program Files\App\app.exe".to_string()),
+            signing_id: None,
+            team_id: None,
+            remote_domain: None,
+            remote_host: None,
+            remote_address: None,
+            ports: None,
+            proto: None,
+            enabled: true,
+            approved: true,
+            lifetime: Lifetime::Forever,
+            profile_id: None,
+            group_id: None,
+            created_at: chrono::Utc::now(),
+            note: None,
+        }
+    }
+
     fn sample_connection() -> Connection {
         Connection {
             process: ProcessInfo {
@@ -125,6 +160,10 @@ mod tests {
             },
             ClientMessage::SetRules { rules: vec![] },
             ClientMessage::GetRules,
+            ClientMessage::AddRule {
+                rule: Box::new(new_rule()),
+            },
+            ClientMessage::RemoveRule { id: Uuid::new_v4() },
             ClientMessage::AlertAnswer {
                 id: 7,
                 verdict: Verdict::Deny,
@@ -218,6 +257,66 @@ mod tests {
             .to_string()
             .unwrap(),
             r#"{"Hello":{"protocol_version":1}}"#
+        );
+    }
+
+    // A3 wire pins for the incremental rule edits, from an external
+    // client's perspective: the exact JSON a non-Rust client (the desktop
+    // app) sends decodes, and the encoded shapes stay frozen. The rule body
+    // is rat-core's v2 camelCase format; Rule's serde defaults fill the
+    // omitted fields (enabled/approved true, lifetime forever, created_at
+    // epoch).
+    #[test]
+    fn test_add_remove_rule_wire_shapes() {
+        let id: Uuid = "6ec0bd7f-11d0-4c7d-a9bf-96f16b1c3f2c"
+            .parse()
+            .expect("valid uuid");
+        let add = ClientMessage::from_json_str(
+            r#"{"AddRule":{"rule":{"id":"6ec0bd7f-11d0-4c7d-a9bf-96f16b1c3f2c","verdict":"deny","processPath":"/bin/added"}}}"#,
+        )
+        .expect("AddRule line decodes");
+        match &add {
+            ClientMessage::AddRule { rule } => {
+                assert_eq!(rule.id, id);
+                assert_eq!(rule.verdict, Verdict::Deny);
+                assert_eq!(rule.process_path.as_deref(), Some("/bin/added"));
+                assert!(rule.enabled && rule.approved, "serde defaults");
+                assert_eq!(rule.lifetime, Lifetime::Forever);
+                assert_eq!(
+                    rule.created_at,
+                    chrono::DateTime::from_timestamp(0, 0).expect("epoch"),
+                    "created_at default"
+                );
+            }
+            other => panic!("expected AddRule, got {other:?}"),
+        }
+        // The encoded form keeps the additive shape and the camelCase rule
+        // body (what a client parsing the reply/echo expects).
+        let encoded = add.to_string().expect("serialize AddRule");
+        assert!(
+            encoded.starts_with(r#"{"AddRule":{"rule":"#),
+            "got {encoded}"
+        );
+        assert!(
+            encoded.contains(r#""processPath":"/bin/added""#),
+            "camelCase rule body, got {encoded}"
+        );
+        assert_eq!(
+            ClientMessage::from_json_str(&encoded).expect("round trip"),
+            add
+        );
+
+        let remove = ClientMessage::RemoveRule { id };
+        assert_eq!(
+            remove.to_string().expect("serialize RemoveRule"),
+            r#"{"RemoveRule":{"id":"6ec0bd7f-11d0-4c7d-a9bf-96f16b1c3f2c"}}"#
+        );
+        assert_eq!(
+            ClientMessage::from_json_str(
+                r#"{"RemoveRule":{"id":"6ec0bd7f-11d0-4c7d-a9bf-96f16b1c3f2c"}}"#
+            )
+            .expect("RemoveRule line decodes"),
+            remove
         );
     }
 

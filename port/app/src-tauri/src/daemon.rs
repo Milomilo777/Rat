@@ -558,7 +558,7 @@ pub async fn connect(endpoint: &str) -> io::Result<tokio::net::UnixStream> {
 }
 
 /// A small in-memory daemon for tests: the same wire protocol, a rule set in
-/// memory (`GetRules` / `SetRules`), the 64 KiB inbound line limit.
+/// memory (`GetRules` / `SetRules` / `AddRule` / `RemoveRule`), the 64 KiB inbound line limit.
 #[cfg(test)]
 pub mod fake {
     use super::*;
@@ -604,6 +604,18 @@ pub mod fake {
                 }),
                 ClientMessage::SetRules { rules } => {
                     *state.rules.lock().unwrap() = rules.clone();
+                    None
+                }
+                ClientMessage::AddRule { rule } => {
+                    let mut g = state.rules.lock().unwrap();
+                    match g.iter().position(|r| r.id == rule.id) {
+                        Some(i) => g[i] = (**rule).clone(),
+                        None => g.push((**rule).clone()),
+                    }
+                    None
+                }
+                ClientMessage::RemoveRule { id } => {
+                    state.rules.lock().unwrap().retain(|r| r.id != *id);
                     None
                 }
                 ClientMessage::AlertAnswer { id, .. } => {

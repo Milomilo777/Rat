@@ -1086,6 +1086,119 @@ async fn test_get_rules_answers_the_current_in_memory_set() {
         .unwrap();
 }
 
+// A3: AddRule/RemoveRule edit the set INCREMENTALLY — the rules around an
+// edit keep their place (the pre-fix client move was a whole-list SetRules
+// per edit) — and the edited set persists like SetRules. A stale RemoveRule
+// id is ignored without touching the set.
+#[tokio::test]
+async fn test_add_and_remove_rule_edit_the_set_incrementally_and_persist() {
+    let app = test_app();
+    let added_path = if cfg!(windows) {
+        r"C:\added\tool.exe"
+    } else {
+        "/usr/bin/added"
+    };
+    let store = dummy_store();
+    let store_path = store.url.clone();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let (snapshot_tx, mut rx) = tokio::sync::broadcast::channel(64);
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY);
+
+    let keep = deny_rule(app);
+    let added = deny_rule(added_path);
+
+    let policy = RuleEnginePolicy(rat_core::RuleEngine::new());
+    let ledger = Ledger::new(LedgerConfig { warmup_ms: 0 }, AlertCenterConfig::default());
+    let recorder = RecorderBackend::default();
+    let task = tokio::spawn(rat_daemon::core::run_pipeline(
+        ScriptedSource { conns: vec![] },
+        policy,
+        ledger,
+        recorder.clone(),
+        store,
+        cmd_rx,
+        snapshot_tx,
+        shutdown_rx,
+    ));
+
+    async fn rules_now(rx: &mut tokio::sync::broadcast::Receiver<ServerMessage>) -> Vec<Rule> {
+        wait_for_msg(rx, |m| match m {
+            ServerMessage::Rules { rules } => Some(rules),
+            _ => None,
+        })
+        .await
+    }
+
+    cmd_tx
+        .send(Command::SetRules {
+            rules: vec![keep.clone()],
+        })
+        .await
+        .unwrap();
+    cmd_tx.send(Command::GetRules).await.unwrap();
+    let first = rules_now(&mut rx).await;
+    assert_eq!(first, vec![keep.clone()], "seed via SetRules");
+
+    // The incremental add keeps the seeded rule and lands its own.
+    cmd_tx
+        .send(Command::AddRule {
+            rule: Box::new(added.clone()),
+        })
+        .await
+        .unwrap();
+    cmd_tx.send(Command::GetRules).await.unwrap();
+    let second = rules_now(&mut rx).await;
+    assert_eq!(
+        second,
+        vec![keep.clone(), added.clone()],
+        "AddRule must edit the list, not replace it"
+    );
+    // The added unscoped deny is enforced as part of the static anchor
+    // without waiting for a connection sample.
+    wait_until(Duration::from_secs(5), || {
+        recorder
+            .last_enforced()
+            .is_some_and(|b| b.paths.iter().any(|p| p == added_path))
+    })
+    .await;
+
+    // Remove one rule: only that rule goes.
+    cmd_tx
+        .send(Command::RemoveRule { id: keep.id })
+        .await
+        .unwrap();
+    cmd_tx.send(Command::GetRules).await.unwrap();
+    let third = rules_now(&mut rx).await;
+    assert_eq!(
+        third,
+        vec![added.clone()],
+        "RemoveRule takes exactly one rule"
+    );
+
+    // A stale id changes nothing (and must not wedge the pipeline).
+    cmd_tx
+        .send(Command::RemoveRule { id: Uuid::new_v4() })
+        .await
+        .unwrap();
+    cmd_tx.send(Command::GetRules).await.unwrap();
+    let fourth = rules_now(&mut rx).await;
+    assert_eq!(
+        fourth,
+        vec![added.clone()],
+        "stale RemoveRule id is a no-op"
+    );
+
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("pipeline must end on shutdown")
+        .unwrap();
+
+    // Persisted like SetRules: exactly the surviving rule is on disk.
+    let loaded = RuleStore::new(store_path).load().expect("rules were saved");
+    assert_eq!(loaded, vec![added], "exactly the surviving rule persists");
+}
+
 // The daemon tells clients when the alert it asked about is gone, so the app
 // can keep a local alert until the daemon confirms it was handled.
 #[tokio::test]
@@ -1213,4 +1326,104 @@ async fn test_set_rules_burst_coalesces_to_newest_list() {
         .await
         .expect("pipeline must end on shutdown")
         .unwrap();
+}
+
+/// A source whose every sample fails (a monitor that cannot read the table).
+struct FailingSource;
+
+impl ConnectionSource for FailingSource {
+    fn sample(&mut self) -> io::Result<Vec<Connection>> {
+        Err(io::Error::other("injected sample failure"))
+    }
+}
+
+// B7: static rules need no connection sample, so they are enforced at
+// start-up even when the very first sample fails (pre-fix the failed sample
+// skipped the whole round and nothing was enforced until a sample worked).
+#[tokio::test]
+async fn test_static_rules_enforced_even_if_first_sample_fails() {
+    let app = test_app();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let (snapshot_tx, _snapshot_rx) = tokio::sync::broadcast::channel(16);
+    let (_cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(rat_daemon::ipc::COMMAND_QUEUE_CAPACITY);
+    let recorder = RecorderBackend::default();
+
+    let engine = rat_core::RuleEngine::new();
+    engine.set_rules(vec![deny_rule(app)]);
+    let ledger = Ledger::new(LedgerConfig { warmup_ms: 0 }, AlertCenterConfig::default());
+    let task = tokio::spawn(rat_daemon::core::run_pipeline(
+        FailingSource,
+        RuleEnginePolicy(engine),
+        ledger,
+        recorder.clone(),
+        dummy_store(),
+        cmd_rx,
+        snapshot_tx,
+        shutdown_rx,
+    ));
+
+    wait_until(Duration::from_secs(5), || {
+        recorder
+            .last_enforced()
+            .is_some_and(|b| b.paths.iter().any(|p| p == app))
+    })
+    .await;
+
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("pipeline must end on shutdown")
+        .unwrap();
+}
+
+// B8: a save that crashed between write and rename leaves its own temp file
+// (`<rules file>.<32 hex>.tmp`) next to the rules. Start-up removes exactly
+// that, and nothing else in the directory.
+#[tokio::test]
+async fn test_startup_removes_only_the_daemons_own_leftover_temp_files() {
+    let dir = std::env::temp_dir().join(format!(
+        "rat_daemon_test_stray_{}_{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let rules_path = dir.join("rules.json");
+    let stray = dir.join(format!("rules.json.{}.tmp", "ab12".repeat(8)));
+    let foreign = [
+        dir.join("rules.json.tmp"),
+        dir.join("unrelated.tmp"),
+        dir.join("notes.txt"),
+    ];
+    std::fs::write(&stray, b"half-written").unwrap();
+    for f in &foreign {
+        std::fs::write(f, b"not ours").unwrap();
+    }
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let endpoint = test_endpoint("stray_tmp");
+    let task = tokio::spawn(rat_daemon::run_components(
+        endpoint.clone(),
+        ScriptedSource { conns: vec![] },
+        RecorderBackend::default(),
+        rules_path,
+        shutdown_rx,
+    ));
+    wait_until(Duration::from_secs(10), || endpoint_serving(&endpoint)).await;
+
+    assert!(!stray.exists(), "the daemon's own leftover temp is removed");
+    for f in &foreign {
+        assert!(
+            f.exists(),
+            "{} is not the daemon's and must stay",
+            f.display()
+        );
+    }
+
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("run_components must end on shutdown")
+        .expect("pipeline task did not panic")
+        .expect("clean shutdown is not an error");
+    let _ = std::fs::remove_dir_all(&dir);
 }

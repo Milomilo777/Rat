@@ -29,9 +29,10 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
   tick; a new allowed app that reuses the same ephemeral port can be blocked meanwhile (also seen on Linux, E2E L4).
 
 ## Daemon and IPC (`rat-daemon`)
-- **Rule edits replace the whole list (medium).** The app reads the rules with `GetRules`, changes the list and
-  sends it back with `SetRules`; a rule the daemon creates in between (for example from an alert answer) can be
-  overwritten. Incremental add/remove messages would fix this.
+- **Whole-list replace remains (low).** `SetRules` still replaces the daemon's whole rule set; a client that
+  uses it can overwrite a rule the daemon created in between. The desktop app edits single rules with
+  `AddRule` / `RemoveRule`. A daemon older than this change closes the connection on those messages (unknown
+  variant), so app and daemon must be updated together.
 - **IPC access (medium, Windows).** The named pipe admits only elevated administrators and SYSTEM, so the desktop
   app must run elevated.
 - **No installer or uninstaller (medium).** The service is installed by hand (see the install guides). Rules and
@@ -46,8 +47,6 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
 - **Slow clients (low).** A client that never reads its replies can hold one of the four client slots.
 - **Alerts (low).** A GUI that connects after an alert became active does not receive that alert; an alert that is
   re-queued with the same key may not be broadcast again.
-- **First tick (low).** If the first connection sample fails, static rules are enforced only after a later
-  successful sample or a GUI command.
 - **Read-back order (low).** Paths read back from existing firewall rules at startup are not sorted/deduplicated.
 - **Untested hardening.** Task-death exit + backoff and reply-then-close on oversized messages are implemented but
   have no test that fails when they are removed; the Unix peer check relies on platform tests.
@@ -67,10 +66,10 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
   is empty with the demo data.
 - Debug builds open a console window next to the app (release builds do not). Debug builds also lack the
   administrator manifest, so on Windows run them from an elevated terminal to reach the daemon.
-- The app gets the current rules from the daemon (`GetRules`) and sends the whole list back with SetRules, so it
-  never reads the rules file itself. The IPC line limit for one client message is 64 KiB (65536 bytes): a rule
-  update larger than that (a few hundred rules) is refused by the app with "too many rules for one update:
-  N bytes, limit 65536" and nothing is sent. The limit was not raised on purpose; a chunked update is not built.
+- The app gets the current rules from the daemon (`GetRules`) and never reads the rules file itself. A single
+  add or remove is one `AddRule` / `RemoveRule` message, so it fits the IPC line limit of 64 KiB (65536 bytes)
+  whatever the list size. Only a whole-list `SetRules` over that limit is refused ("too many rules for one
+  update: N bytes, limit 65536", nothing sent); the app does not send one.
 - The app waits for the write of a rule change or an alert answer to the daemon, not for the daemon to apply it.
   A closed alert window is reopened with the next snapshot until the alert is answered.
 - The rule form takes a full program path; a bare name such as `firefox` does not match.
@@ -87,5 +86,3 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
   and the macOS app tests pass.
 - There is no end-to-end test with a program path that contains spaces (for example `C:\Program Files\...`).
 - Re-applying the protected access list to an existing rules directory is not covered by an automated test.
-- A crash during a rules save can leave a stray, randomly named `.tmp` file next to `rules.json`; it is not
-  cleaned up automatically.

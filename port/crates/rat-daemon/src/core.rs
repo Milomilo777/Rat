@@ -29,6 +29,17 @@ pub enum Command {
     },
     /// Broadcast the current rule set as `ServerMessage::Rules`.
     GetRules,
+    /// Incremental edit: add one rule (or replace the rule with the same
+    /// id), keeping every other rule — the whole-list replace stays
+    /// `SetRules`. Boxed like the wire type (serde shape is unchanged).
+    AddRule {
+        rule: Box<rat_core::Rule>,
+    },
+    /// Incremental edit: remove one rule by id. An unknown id is logged and
+    /// changes nothing.
+    RemoveRule {
+        id: uuid::Uuid,
+    },
 }
 
 /// What [`EnforcementBackend::enforce`] did.
@@ -453,6 +464,10 @@ pub async fn run_pipeline(
     let mut next_alert_id: u64 = 0;
     let mut current_alert_id: Option<u64> = None;
     let mut sent_alert_key: Option<String> = None;
+    // False until the first enforce round ran. A failed sample may skip a
+    // round only AFTER that: before it, the static anchor (rules that need
+    // no connection) must still be enforced on an empty sample.
+    let mut enforced_once = false;
 
     loop {
         tokio::select! {
@@ -513,6 +528,27 @@ pub async fn run_pipeline(
                                         rules: policy.0.rule_set().rules,
                                     });
                                 }
+                                Command::AddRule { rule } => {
+                                    // Incremental edit: upsert by id, every
+                                    // other rule keeps its place. Saved like
+                                    // SetRules; an identical re-delivery
+                                    // (client retry) changes nothing and
+                                    // skips the write.
+                                    if policy.0.upsert(*rule) {
+                                        persist_rules(&store, &policy);
+                                    }
+                                }
+                                Command::RemoveRule { id } => {
+                                    // A stale id (rule already gone) is
+                                    // reported, not silently swallowed.
+                                    if policy.0.remove(id) {
+                                        persist_rules(&store, &policy);
+                                    } else {
+                                        eprintln!(
+                                            "rat-daemon: ignoring RemoveRule for unknown rule id {id}"
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -527,9 +563,13 @@ pub async fn run_pipeline(
                         // One failed sample skips the round; the monitor may
                         // recover (e.g. a transient table read) and the next
                         // tick retries. Killing the daemon for it would turn
-                        // a read hiccup into an enforcement outage.
+                        // a read hiccup into an enforcement outage. The
+                        // very first round is the exception: static rules
+                        // are enforced at start-up even without a sample.
                         eprintln!("rat-daemon: monitor sample failed: {e}");
-                        continue;
+                        if enforced_once {
+                            continue;
+                        }
                     }
                 }
             }
@@ -587,6 +627,7 @@ pub async fn run_pipeline(
         // rule blocks its program whether or not a connection is live,
         // macOS pf-anchor parity) UNION the ledger's plan: denied apps plus
         // the LOCAL ports of denied sockets — never server addresses.
+        enforced_once = true;
         let wanted = merge_blocklists(
             static_blocklist(&policy.0.rule_set()),
             to_blocklist(ledger.enforcement()),

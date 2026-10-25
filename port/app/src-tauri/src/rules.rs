@@ -1,11 +1,12 @@
 //! Rule list handling for the app.
 //!
 //! The daemon is the single source of rules. The app asks it for the current
-//! set with `GetRules`, applies one change and sends the full list back with
-//! `SetRules` (which replaces the set). Asking fresh before every change keeps
-//! rules the daemon created from alert answers, session rules (once / until
-//! quit) included. The app never reads the rules file itself: the daemon may
-//! have refused that file, and an elevated app must not push its content back.
+//! set with `GetRules` to show it; a single add or remove is one incremental
+//! message (`AddRule` / `RemoveRule`), so rules the daemon created meanwhile
+//! (alert answers), session rules (once / until quit) included, are never
+//! overwritten by a stale whole list. The app never reads the rules file
+//! itself: the daemon may have refused that file, and an elevated app must
+//! not push its content back.
 
 use rat_core::{Rule, Verdict};
 use serde::{Deserialize, Serialize};
@@ -100,15 +101,12 @@ pub fn build_rule(new: &NewRule) -> Result<Rule, String> {
     serde_json::from_value(obj).map_err(|e| e.to_string())
 }
 
-/// Remove the rule with `id`; error when it does not exist.
-pub fn remove_rule(rules: &mut Vec<Rule>, id: &str) -> Result<(), String> {
-    let before = rules.len();
-    rules.retain(|r| r.id.to_string() != id);
-    if rules.len() == before {
-        Err("no such rule".to_string())
-    } else {
-        Ok(())
-    }
+/// The rule with `id` (as the UI shows it); error when it does not exist.
+pub fn find_rule<'a>(rules: &'a [Rule], id: &str) -> Result<&'a Rule, String> {
+    rules
+        .iter()
+        .find(|r| r.id.to_string() == id)
+        .ok_or_else(|| "no such rule".to_string())
 }
 
 /// Parse the alert answer fields the webview sends. The daemon's own serde
@@ -182,15 +180,17 @@ mod tests {
     }
 
     #[test]
-    fn remove_by_id() {
+    fn find_by_id() {
         let a = build_rule(&new("/a", "allow", "")).unwrap();
         let b = build_rule(&new("/b", "deny", "")).unwrap();
-        let id = a.id.to_string();
-        let mut v = vec![a, b];
-        remove_rule(&mut v, &id).unwrap();
-        assert_eq!(v.len(), 1);
-        assert_eq!(v[0].process_path.as_deref(), Some("/b"));
-        assert!(remove_rule(&mut v, &id).is_err());
+        let id = b.id.to_string();
+        let v = vec![a, b];
+        assert_eq!(
+            find_rule(&v, &id).unwrap().process_path.as_deref(),
+            Some("/b")
+        );
+        assert!(find_rule(&v, "no-such-id").is_err());
+        assert!(find_rule(&[], &id).is_err());
     }
 
     #[test]

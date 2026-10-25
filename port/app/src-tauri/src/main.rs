@@ -146,10 +146,11 @@ impl DaemonDataSource {
         self.shared.wait_rules_after(gen, IO_TIMEOUT)
     }
 
-    fn send_rules(&self, rules: Vec<Rule>) -> Result<Vec<RuleView>, String> {
-        let views = rules.iter().map(rules::view_of).collect();
-        self.send_and_confirm(&ClientMessage::SetRules { rules })?;
-        Ok(views)
+    /// The rule list as the daemon holds it after our last edit. The edit and
+    /// this `GetRules` travel on one connection, so the daemon handles them
+    /// in order.
+    fn rule_views(&self) -> Result<Vec<RuleView>, String> {
+        Ok(self.fetch_rules()?.iter().map(rules::view_of).collect())
     }
 }
 
@@ -186,17 +187,20 @@ impl DataSource for DaemonDataSource {
         self.require_connected()?;
         let rule = rules::build_rule(&new)?;
         let _guard = self.rules_lock.lock().map_err(|_| "rules lock poisoned")?;
-        let mut all = self.fetch_rules()?;
-        all.push(rule);
-        self.send_rules(all)
+        // One incremental message: rules the daemon creates meanwhile (alert
+        // answers) are never overwritten, unlike a whole-list SetRules.
+        self.send_and_confirm(&ClientMessage::AddRule {
+            rule: Box::new(rule),
+        })?;
+        self.rule_views()
     }
 
     fn delete_rule(&self, id: &str) -> Result<Vec<RuleView>, String> {
         self.require_connected()?;
         let _guard = self.rules_lock.lock().map_err(|_| "rules lock poisoned")?;
-        let mut all = self.fetch_rules()?;
-        rules::remove_rule(&mut all, id)?;
-        self.send_rules(all)
+        let id = rules::find_rule(&self.fetch_rules()?, id)?.id;
+        self.send_and_confirm(&ClientMessage::RemoveRule { id })?;
+        self.rule_views()
     }
 
     fn status(&self) -> DaemonStatus {
@@ -793,36 +797,49 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn an_oversized_rule_list_is_an_error_and_nothing_is_sent() {
+    async fn single_rule_edits_send_incremental_messages_never_the_whole_list() {
         let f = fixture().await;
+        // A list far over the 64 KiB line limit of a whole-list SetRules.
         {
             let mut g = f.daemon.rules.lock().unwrap();
             for i in 0..600 {
                 g.push(rules::build_rule(&new_rule(&format!("/opt/app/{i}"), "deny")).unwrap());
             }
         }
-        let err = run(&f, |s| s.add_rule(new_rule("/one/more", "allow")))
+        let views = run(&f, |s| s.add_rule(new_rule("/one/more", "allow")))
             .await
-            .unwrap_err();
-        assert!(err.starts_with("too many rules for one update: "), "{err}");
-        assert!(err.ends_with("bytes, limit 65536"), "{err}");
-        // Nothing was written, the daemon kept its set, the session lives.
-        assert!(!f
-            .daemon
-            .received()
+            .unwrap();
+        assert_eq!(views.len(), 601);
+        let id = f.daemon.rules.lock().unwrap()[0].id.to_string();
+        let views = run(&f, move |s| s.delete_rule(&id)).await.unwrap();
+        assert_eq!(views.len(), 600);
+        // Deleting an id the daemon does not know is an error, nothing sent.
+        let sent_before = f.daemon.received().len();
+        assert!(run(&f, |s| s.delete_rule("no-such-id")).await.is_err());
+        let received = f.daemon.received();
+        assert!(received[sent_before..]
             .iter()
-            .any(|m| matches!(m, ClientMessage::SetRules { .. })));
-        assert_eq!(f.daemon.rules.lock().unwrap().len(), 600);
+            .all(|m| matches!(m, ClientMessage::GetRules)));
+        assert!(
+            received
+                .iter()
+                .any(|m| matches!(m, ClientMessage::AddRule { .. }))
+                && received
+                    .iter()
+                    .any(|m| matches!(m, ClientMessage::RemoveRule { .. })),
+            "incremental messages were sent"
+        );
+        assert!(
+            !received
+                .iter()
+                .any(|m| matches!(m, ClientMessage::SetRules { .. })),
+            "a single edit must never replace the whole list"
+        );
         assert!(!f
             .daemon
             .dropped_session
             .load(std::sync::atomic::Ordering::SeqCst));
         assert_eq!(f.shared.status().code, ConnState::Connected);
-        // Deleting one rule still works: the session was not dropped.
-        let id = f.daemon.rules.lock().unwrap()[0].id.to_string();
-        // (600 rules are still over the limit; the error is the same, clear.)
-        let err = run(&f, move |s| s.delete_rule(&id)).await.unwrap_err();
-        assert!(err.starts_with("too many rules for one update"), "{err}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
