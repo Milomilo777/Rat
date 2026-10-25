@@ -815,7 +815,8 @@ def l5(R, d):
     R.control("daemon still serves after the oversized line", sane.hello(), "HelloAck")
     sane.close()
 
-    # SIGKILL: phase 1 without restart proves ExecStopPost removes the table.
+    # SIGKILL: phase 1 without restart proves the blocks SURVIVE a crash (fail closed): the unit has no
+    # ExecStopPost cleanup, like the Windows service; the restarted daemon reconciles (phase 2).
     server = start_server(ns=True)
     app = make_app("l5_victim")
     c = Client(app, SRV_IP, server)
@@ -842,9 +843,10 @@ def l5(R, d):
     sh(["systemctl", "kill", "-s", "KILL", "rat-daemon"])
     dead = wait_until(lambda: sh(["systemctl", "is-active", "rat-daemon"], check=False, quiet=True).stdout.strip() != "active", 10)
     R.control("daemon died on SIGKILL", bool(dead), "is-active != active")
-    gone = wait_until(lambda: nft_json_table() is None, 8)
-    R.check("kill -9 leaves no `inet rat` table (ExecStopPost ran)", bool(gone),
-            "table present after kill: %s" % (not gone))
+    time.sleep(3)  # give a (wrongly configured) stop hook time to run before checking
+    kept = c.local in (rat_ports() or set())
+    R.check("kill -9 keeps the `inet rat` table and the denied port blocked (fail closed)", bool(kept),
+            "port %d still in rat_ports after kill: %s" % (c.local, kept))
     # phase 2: restart policy
     shutil.rmtree(dropin, ignore_errors=True)
     sh(["systemctl", "daemon-reload"])
