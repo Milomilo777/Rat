@@ -91,12 +91,19 @@ pub mod windows_sys {
 
     pub fn get_tcp_table_v4() -> std::io::Result<Vec<MIB_TCPROW_OWNER_PID>> {
         let mut size = 0;
-        let mut buffer = Vec::new();
+        // M10 (update-09): u32-aligned storage for the table cast (a Vec<u8>
+        // is only 1-aligned), and the size query passes NULL, not a dangling
+        // non-null pointer.
+        let mut buffer: Vec<u32> = Vec::new();
 
         loop {
             let res = unsafe {
                 GetExtendedTcpTable(
-                    Some(buffer.as_mut_ptr() as *mut c_void),
+                    if buffer.is_empty() {
+                        None
+                    } else {
+                        Some(buffer.as_mut_ptr() as *mut c_void)
+                    },
                     &mut size,
                     false,
                     AF_INET.0 as u32,
@@ -108,7 +115,7 @@ pub mod windows_sys {
             if res == WIN32_ERROR(0).0 {
                 break;
             } else if res == ERROR_INSUFFICIENT_BUFFER.0 {
-                buffer.resize(size as usize, 0);
+                buffer.resize((size as usize).div_ceil(4), 0);
             } else {
                 return Err(std::io::Error::from_raw_os_error(res as i32));
             }
@@ -127,12 +134,19 @@ pub mod windows_sys {
 
     pub fn get_tcp_table_v6() -> std::io::Result<Vec<MIB_TCP6ROW_OWNER_PID>> {
         let mut size = 0;
-        let mut buffer = Vec::new();
+        // M10 (update-09): u32-aligned storage for the table cast (a Vec<u8>
+        // is only 1-aligned), and the size query passes NULL, not a dangling
+        // non-null pointer.
+        let mut buffer: Vec<u32> = Vec::new();
 
         loop {
             let res = unsafe {
                 GetExtendedTcpTable(
-                    Some(buffer.as_mut_ptr() as *mut c_void),
+                    if buffer.is_empty() {
+                        None
+                    } else {
+                        Some(buffer.as_mut_ptr() as *mut c_void)
+                    },
                     &mut size,
                     false,
                     AF_INET6.0 as u32,
@@ -144,7 +158,7 @@ pub mod windows_sys {
             if res == WIN32_ERROR(0).0 {
                 break;
             } else if res == ERROR_INSUFFICIENT_BUFFER.0 {
-                buffer.resize(size as usize, 0);
+                buffer.resize((size as usize).div_ceil(4), 0);
             } else {
                 return Err(std::io::Error::from_raw_os_error(res as i32));
             }
@@ -163,12 +177,19 @@ pub mod windows_sys {
 
     pub fn get_udp_table_v4() -> std::io::Result<Vec<MIB_UDPROW_OWNER_PID>> {
         let mut size = 0;
-        let mut buffer = Vec::new();
+        // M10 (update-09): u32-aligned storage for the table cast (a Vec<u8>
+        // is only 1-aligned), and the size query passes NULL, not a dangling
+        // non-null pointer.
+        let mut buffer: Vec<u32> = Vec::new();
 
         loop {
             let res = unsafe {
                 GetExtendedUdpTable(
-                    Some(buffer.as_mut_ptr() as *mut c_void),
+                    if buffer.is_empty() {
+                        None
+                    } else {
+                        Some(buffer.as_mut_ptr() as *mut c_void)
+                    },
                     &mut size,
                     false,
                     AF_INET.0 as u32,
@@ -180,7 +201,7 @@ pub mod windows_sys {
             if res == WIN32_ERROR(0).0 {
                 break;
             } else if res == ERROR_INSUFFICIENT_BUFFER.0 {
-                buffer.resize(size as usize, 0);
+                buffer.resize((size as usize).div_ceil(4), 0);
             } else {
                 return Err(std::io::Error::from_raw_os_error(res as i32));
             }
@@ -199,12 +220,19 @@ pub mod windows_sys {
 
     pub fn get_udp_table_v6() -> std::io::Result<Vec<MIB_UDP6ROW_OWNER_PID>> {
         let mut size = 0;
-        let mut buffer = Vec::new();
+        // M10 (update-09): u32-aligned storage for the table cast (a Vec<u8>
+        // is only 1-aligned), and the size query passes NULL, not a dangling
+        // non-null pointer.
+        let mut buffer: Vec<u32> = Vec::new();
 
         loop {
             let res = unsafe {
                 GetExtendedUdpTable(
-                    Some(buffer.as_mut_ptr() as *mut c_void),
+                    if buffer.is_empty() {
+                        None
+                    } else {
+                        Some(buffer.as_mut_ptr() as *mut c_void)
+                    },
                     &mut size,
                     false,
                     AF_INET6.0 as u32,
@@ -216,7 +244,7 @@ pub mod windows_sys {
             if res == WIN32_ERROR(0).0 {
                 break;
             } else if res == ERROR_INSUFFICIENT_BUFFER.0 {
-                buffer.resize(size as usize, 0);
+                buffer.resize((size as usize).div_ceil(4), 0);
             } else {
                 return Err(std::io::Error::from_raw_os_error(res as i32));
             }
@@ -325,7 +353,15 @@ pub mod stats {
     };
 
     pub fn get_tcp_estats_v4(row: &MIB_TCPROW_OWNER_PID) -> Result<(u64, u64), WIN32_ERROR> {
-        let mut data = vec![0u8; std::mem::size_of::<TCP_ESTATS_DATA_ROD_v0>()];
+        // M10 (update-09): the ROD carries u64 counters; read it through
+        // 8-aligned storage instead of an align-1 Vec<u8>.
+        let mut data_storage = vec![0u64; std::mem::size_of::<TCP_ESTATS_DATA_ROD_v0>().div_ceil(8)];
+        let mut data = unsafe {
+            std::slice::from_raw_parts_mut(
+                data_storage.as_mut_ptr() as *mut u8,
+                data_storage.len() * 8,
+            )
+        };
         let res = unsafe {
             GetPerTcpConnectionEStats(
                 row as *const _ as *const MIB_TCPROW_LH,
@@ -348,7 +384,15 @@ pub mod stats {
     }
 
     pub fn get_tcp_estats_v6(row: &MIB_TCP6ROW_OWNER_PID) -> Result<(u64, u64), WIN32_ERROR> {
-        let mut data = vec![0u8; std::mem::size_of::<TCP_ESTATS_DATA_ROD_v0>()];
+        // M10 (update-09): the ROD carries u64 counters; read it through
+        // 8-aligned storage instead of an align-1 Vec<u8>.
+        let mut data_storage = vec![0u64; std::mem::size_of::<TCP_ESTATS_DATA_ROD_v0>().div_ceil(8)];
+        let mut data = unsafe {
+            std::slice::from_raw_parts_mut(
+                data_storage.as_mut_ptr() as *mut u8,
+                data_storage.len() * 8,
+            )
+        };
         let res = unsafe {
             GetPerTcp6ConnectionEStats(
                 &to_mib_tcp6_row(row),
@@ -692,7 +736,13 @@ impl ConnectionSource for WindowsMonitor {
             for row in table {
                 let local_ip = convert_ipv6_addr(&row.ucLocalAddr);
                 let local_port = parse_port(row.dwLocalPort);
-                let local = SocketAddr::V6(SocketAddrV6::new(local_ip, local_port, 0, 0));
+                // M10 (update-09): scope id from the row, not hard-coded 0.
+                let local = SocketAddr::V6(SocketAddrV6::new(
+                    local_ip,
+                    local_port,
+                    0,
+                    get_ipv6_scope_id(row.dwLocalScopeId),
+                ));
 
                 connections.push(Connection {
                     process: process_info::get_process_info(row.dwOwningPid),
