@@ -807,7 +807,7 @@ impl RuleStore {
             return Ok(s);
         }
         // The main file exists but is unparsable (e.g. truncated mid-JSON by
-        // a crash). this is an ERROR, never an empty rule set
+        // a crash). This is an ERROR, never an empty rule set
         // with Ok — a zero-rule set makes the daemon reconcile every real
         // Rat:* rule away. First try the recovery copy the atomic save keeps.
         let bak = sibling_path(&self.url, ".bak");
@@ -847,17 +847,27 @@ impl RuleStore {
         let mut s = set.clone();
         s.rules.retain(|r| r.lifetime == Lifetime::Forever);
         let data = serde_json::to_string_pretty(&s).map_err(std::io::Error::other)?;
-        // the save is atomic — write a sibling temp file, push
-        // it to disk, keep the previous content as `.bak`, then rename over
-        // the real file. A crash mid-save can no longer leave a truncated
-        // rules.json that a restart would read as zero rules.
-        let tmp = sibling_path(&self.url, ".tmp");
+        // The save is atomic: write a sibling temp file, push it to disk,
+        // keep the previous content as `.bak`, then rename over the real
+        // file. A crash mid-save can no longer leave a truncated rules.json
+        // that a restart would read as zero rules.
+        // The temp name is unpredictable and opened with create_new, so a
+        // file or link planted at a guessable name (rules.json.tmp) in a
+        // directory someone else could write to is never written through.
+        let tmp = sibling_path(&self.url, &format!(".{}.tmp", Uuid::new_v4().simple()));
         let bak = sibling_path(&self.url, ".bak");
-        {
+        let written = (|| {
             use std::io::Write;
-            let mut f = fs::File::create(&tmp)?;
+            let mut f = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)?;
             f.write_all(data.as_bytes())?;
-            f.sync_all()?;
+            f.sync_all()
+        })();
+        if let Err(e) = written {
+            let _ = fs::remove_file(&tmp);
+            return Err(e);
         }
         if self.url.exists() {
             // Best effort: `.bak` is the recovery copy; the atomic rename is
@@ -1469,10 +1479,30 @@ mod load_tests {
             Some("second.example")
         );
         // The temp file is consumed by the rename, not left next to the set.
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
         assert!(
-            !dir.path().join("rules.json.tmp").exists(),
-            "the temp file must be gone after the save"
+            leftovers.is_empty(),
+            "the temp file must be gone after the save: {leftovers:?}"
         );
+    }
+
+    // A file planted at the old predictable temp name is neither written
+    // through nor removed, and the save still succeeds.
+    #[test]
+    fn test_save_set_ignores_a_planted_predictable_tmp() {
+        let dir = tempdir().unwrap();
+        let url = dir.path().join("rules.json");
+        let planted = dir.path().join("rules.json.tmp");
+        fs::write(&planted, "PLANTED").unwrap();
+        let store = RuleStore::new(url.clone());
+        store.save_set(&RuleSet::standard(None)).unwrap();
+        assert_eq!(fs::read_to_string(&planted).unwrap(), "PLANTED");
+        assert!(store.load_set().is_ok());
+        assert!(!fs::read_to_string(&url).unwrap().contains("PLANTED"));
     }
 }
 
