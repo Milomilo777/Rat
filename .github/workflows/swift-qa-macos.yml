@@ -1,0 +1,56 @@
+name: Swift QA macOS
+
+on:
+  push:
+    branches: [ci/swift-qa-macos]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  swift:
+    name: ${{ matrix.label }}
+    runs-on: macos-15
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: baseline main
+            ref: main
+          - label: zcode/swift-qa
+            ref: zcode/swift-qa
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+      - name: Toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+          git log --oneline -1
+      - name: RatFilter swift test
+        working-directory: RatFilter
+        run: swift test 2>&1 | tee ../swift-test.log
+      - name: Shellcheck scripts
+        if: always()
+        run: |
+          brew list shellcheck >/dev/null 2>&1 || brew install shellcheck
+          shellcheck --version | head -2
+          shellcheck scripts/*.sh App/Resources/*.sh
+      - name: App tests (xcodegen + xcodebuild)
+        if: always()
+        run: |
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          xcodegen generate
+          xcodebuild -project Rat.xcodeproj -scheme Rat -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO test 2>&1 | tail -60
+          exit "${PIPESTATUS[0]}"
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swift-qa-${{ strategy.job-index }}
+          path: swift-test.log
+          if-no-files-found: ignore
