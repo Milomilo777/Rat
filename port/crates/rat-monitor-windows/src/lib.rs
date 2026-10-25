@@ -311,6 +311,7 @@ pub mod process_info {
             user
         }
 
+        #[cfg(test)]
         pub(crate) fn len(&self) -> usize {
             self.map.len()
         }
