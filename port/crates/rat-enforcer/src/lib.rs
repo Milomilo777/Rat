@@ -2,6 +2,7 @@ use std::io;
 
 #[cfg(not(windows))]
 pub mod linux;
+pub mod nft_plan;
 #[cfg(windows)]
 pub mod windows;
 

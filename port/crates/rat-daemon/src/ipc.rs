@@ -36,12 +36,63 @@ fn rat_group_gid() -> Option<u32> {
     None
 }
 
+/// Parse the `Groups:` line of `/proc/<pid>/status` (supplementary gids,
+/// whitespace separated). No such line -> empty; unparsable tokens are
+/// skipped (they can never grant access).
+#[cfg_attr(not(unix), allow(dead_code))]
+fn groups_from_proc_status(text: &str) -> Vec<u32> {
+    text.lines()
+        .find_map(|l| l.strip_prefix("Groups:"))
+        .map(|rest| {
+            rest.split_whitespace()
+                .filter_map(|t| t.parse::<u32>().ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Pure admission decision: root, the daemon's own user, the `rat` group as
+/// primary gid, or the `rat` gid among the peer's supplementary groups.
+/// `supplementary` is `None` when it could not be read (fail closed).
+#[cfg_attr(not(unix), allow(dead_code))]
+fn peer_decision(
+    uid: u32,
+    gid: u32,
+    supplementary: Option<&[u32]>,
+    rat_gid: Option<u32>,
+    daemon_uid: u32,
+) -> bool {
+    if uid == 0 || uid == daemon_uid {
+        return true;
+    }
+    let Some(rat) = rat_gid else {
+        return false;
+    };
+    gid == rat || supplementary.is_some_and(|groups| groups.contains(&rat))
+}
+
 /// S2 (update-08): who may talk to the privileged daemon over the unix
 /// socket — root, the daemon's own user, or a member of the `rat` group
-/// (primary gid; override the group name with RAT_IPC_GROUP).
+/// (primary or supplementary gid, e.g. `usermod -aG rat`; override the group
+/// name with RAT_IPC_GROUP). `pid` comes from SO_PEERCRED; a missing pid or an
+/// unreadable `/proc/<pid>/status` only removes the supplementary check.
 #[cfg(unix)]
-fn peer_allowed(uid: u32, gid: u32) -> bool {
-    uid == 0 || uid == effective_uid() || rat_group_gid().is_some_and(|g| g == gid)
+fn peer_allowed(uid: u32, gid: u32, pid: Option<i32>) -> bool {
+    let daemon_uid = effective_uid();
+    if uid == 0 || uid == daemon_uid {
+        return true;
+    }
+    let supplementary = pid
+        .filter(|p| *p > 0)
+        .and_then(|p| std::fs::read_to_string(format!("/proc/{p}/status")).ok())
+        .map(|text| groups_from_proc_status(&text));
+    peer_decision(
+        uid,
+        gid,
+        supplementary.as_deref(),
+        rat_group_gid(),
+        daemon_uid,
+    )
 }
 
 #[cfg(unix)]
@@ -102,7 +153,7 @@ pub async fn start_ipc_server(
                         let allowed = stream
                             .peer_cred()
                             .ok()
-                            .is_some_and(|c| peer_allowed(c.uid(), c.gid()));
+                            .is_some_and(|c| peer_allowed(c.uid(), c.gid(), c.pid()));
                         if !allowed {
                             continue;
                         }
@@ -882,6 +933,73 @@ mod client_auth_tests {
     }
 }
 
+#[cfg(test)]
+mod decision_tests {
+    use super::{groups_from_proc_status, peer_decision};
+
+    const DAEMON: u32 = 995;
+    const RAT: u32 = 990;
+
+    #[test]
+    fn parses_groups_line() {
+        let status =
+            "Name:\tx\nUid:\t1000\t1000\t1000\t1000\nGroups:\t4 24 990 1000 \nVmPeak:\t1 kB\n";
+        assert_eq!(groups_from_proc_status(status), vec![4, 24, 990, 1000]);
+    }
+
+    #[test]
+    fn groups_line_missing_empty_or_garbage() {
+        assert!(groups_from_proc_status("Name:\tx\n").is_empty());
+        assert!(groups_from_proc_status("Groups:\t\n").is_empty());
+        assert!(groups_from_proc_status("").is_empty());
+        assert_eq!(groups_from_proc_status("Groups:\t5 abc -1 7\n"), vec![5, 7]);
+    }
+
+    #[test]
+    fn root_and_daemon_user_always_allowed() {
+        assert!(peer_decision(0, 1, None, None, DAEMON));
+        assert!(peer_decision(DAEMON, 1, None, Some(RAT), DAEMON));
+    }
+
+    #[test]
+    fn primary_gid_match_allowed() {
+        assert!(peer_decision(1000, RAT, None, Some(RAT), DAEMON));
+    }
+
+    #[test]
+    fn supplementary_gid_match_allowed() {
+        assert!(peer_decision(
+            1000,
+            1000,
+            Some(&[4, RAT]),
+            Some(RAT),
+            DAEMON
+        ));
+    }
+
+    #[test]
+    fn no_match_refused() {
+        assert!(!peer_decision(
+            1000,
+            1000,
+            Some(&[4, 24]),
+            Some(RAT),
+            DAEMON
+        ));
+        assert!(!peer_decision(1000, 1000, Some(&[]), Some(RAT), DAEMON));
+    }
+
+    #[test]
+    fn unreadable_proc_refused() {
+        assert!(!peer_decision(1000, 1000, None, Some(RAT), DAEMON));
+    }
+
+    #[test]
+    fn missing_rat_group_refuses_non_privileged() {
+        assert!(!peer_decision(1000, 0, Some(&[0]), None, DAEMON));
+    }
+}
+
 #[cfg(all(test, unix))]
 mod peer_tests {
     use super::{effective_uid, peer_allowed};
@@ -890,13 +1008,20 @@ mod peer_tests {
     // anyone else only via the rat group's gid.
     #[test]
     fn test_peer_allowed_root_and_self() {
-        assert!(peer_allowed(0, 9999), "root must always be allowed");
+        assert!(peer_allowed(0, 9999, None), "root must always be allowed");
         let self_uid = effective_uid();
         assert_ne!(self_uid, u32::MAX, "could not read /proc/self/status");
         assert!(
-            peer_allowed(self_uid, 9999),
+            peer_allowed(self_uid, 9999, None),
             "the daemon's own uid must be allowed"
         );
+    }
+
+    #[test]
+    fn test_peer_allowed_missing_pid_fails_closed() {
+        let stranger = effective_uid().wrapping_add(1);
+        assert!(!peer_allowed(stranger, 9999, None));
+        assert!(!peer_allowed(stranger, 9999, Some(i32::MAX)));
     }
 
     #[test]
@@ -910,7 +1035,7 @@ mod peer_tests {
             9999
         };
         assert!(
-            !peer_allowed(stranger, gid),
+            !peer_allowed(stranger, gid, None),
             "uid {stranger} with unrelated gid {gid} must be refused"
         );
     }

@@ -26,38 +26,7 @@ impl Enforcer for LinuxEnforcer {
     type Plan = String;
 
     fn plan(&self, wanted: &Blocklist) -> Self::Plan {
-        let mut ports = wanted.local_ports.clone();
-        ports.sort();
-        ports.dedup();
-
-        let ports_str = if ports.is_empty() {
-            "".to_string()
-        } else {
-            let p: Vec<String> = ports.iter().map(|p| p.to_string()).collect();
-            format!("elements = {{ {} }}\n\t\t", p.join(", "))
-        };
-
-        format!(
-            "add table inet rat\n\
-             flush table inet rat\n\
-             table inet rat {{\n\
-                 \tset rat_ports {{\n\
-                     \t\ttype inet_service\n\
-                     \t\t{}\
-                 }}\n\
-                 \tchain drop_out {{\n\
-                     \t\ttype filter hook output priority filter; policy accept;\n\
-                     \t\ttcp sport @rat_ports drop\n\
-                     \t\tudp sport @rat_ports drop\n\
-                 \t}}\n\
-                 \tchain drop_in {{\n\
-                     \t\ttype filter hook input priority filter; policy accept;\n\
-                     \t\ttcp dport @rat_ports drop\n\
-                     \t\tudp dport @rat_ports drop\n\
-                 \t}}\n\
-             }}\n",
-            ports_str
-        )
+        crate::nft_plan::nft_script(&wanted.local_ports)
     }
 
     /// S8 (update-08): drop the whole `inet rat` table on clean shutdown
@@ -138,7 +107,10 @@ mod tests {
         let enforcer = LinuxEnforcer;
         let plan = enforcer.plan(&Blocklist::default());
         assert!(plan.contains("add table inet rat"));
-        assert!(plan.contains("flush table inet rat"));
+        // `flush table` kept old set elements (CI bug), so the plan must
+        // delete the table instead; the old expectation encoded the bug.
+        assert!(!plan.contains("flush table"));
+        assert!(plan.contains("delete table inet rat"));
         assert!(plan.contains("set rat_ports {"));
         assert!(!plan.contains("elements = {")); // Should be empty
     }
