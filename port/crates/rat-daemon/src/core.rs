@@ -321,7 +321,9 @@ fn parse_existing_output(stdout: &str) -> rat_enforcer::Blocklist {
 /// Best-effort persistence: the rule set survives a restart (Swift
 /// RulesModel parity). `save_set` keeps only Forever rules — UntilQuit
 /// session rules are supposed to die with the daemon.
-fn persist_rules(store: &rat_core::RuleStore, policy: &RuleEnginePolicy) {
+fn persist_rules(store: &Option<std::sync::Arc<rat_core::RuleStore>>, policy: &RuleEnginePolicy) {
+    // None = the rules directory is untrusted: never write into it.
+    let Some(store) = store else { return };
     if let Err(e) = store.save_set(&policy.0.rule_set()) {
         eprintln!("rat-daemon: saving rules failed: {e}");
     }
@@ -393,11 +395,12 @@ pub async fn run_pipeline(
     policy: RuleEnginePolicy,
     mut ledger: Ledger,
     mut backend: impl EnforcementBackend,
-    store: std::sync::Arc<rat_core::RuleStore>,
+    store: impl Into<Option<std::sync::Arc<rat_core::RuleStore>>>,
     mut commands: mpsc::UnboundedReceiver<Command>,
     snapshot_tx: broadcast::Sender<ServerMessage>,
     mut shutdown: broadcast::Receiver<()>,
 ) {
+    let store: Option<std::sync::Arc<rat_core::RuleStore>> = store.into();
     let mut ticker = tokio::time::interval(SAMPLE_INTERVAL);
     let mut last_conns: Vec<Connection> = Vec::new();
     let mut last_refused: Vec<String> = Vec::new();

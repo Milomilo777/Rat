@@ -1,6 +1,7 @@
 pub mod core;
 pub mod ipc;
 pub mod msg;
+pub mod rules_dir;
 pub mod service;
 
 pub use crate::core::{run_pipeline, Command, EnforceOutcome, EnforcementBackend};
@@ -20,11 +21,27 @@ use rat_types::ConnectionSource;
 pub async fn run_components(
     endpoint: String,
     source: impl ConnectionSource + Send + 'static,
-    mut backend: impl EnforcementBackend + 'static,
+    backend: impl EnforcementBackend + 'static,
     rules_path: std::path::PathBuf,
     shutdown_rx: tokio::sync::broadcast::Receiver<()>,
 ) -> std::io::Result<()> {
-    let store = std::sync::Arc::new(rat_core::RuleStore::new(rules_path));
+    run_components_trusted(endpoint, source, backend, rules_path, true, shutdown_rx).await
+}
+
+/// [`run_components`] with the rules-directory trust verdict. `rules_trusted
+/// == false` (Windows: the directory is a junction or not owned by
+/// SYSTEM/Administrators) means: never read, never write the directory, start
+/// with an empty in-memory set and skip the startup reconcile, so no firewall
+/// rule is removed on the strength of an untrusted file.
+pub async fn run_components_trusted(
+    endpoint: String,
+    source: impl ConnectionSource + Send + 'static,
+    mut backend: impl EnforcementBackend + 'static,
+    rules_path: std::path::PathBuf,
+    rules_trusted: bool,
+    shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+) -> std::io::Result<()> {
+    let store = rules_trusted.then(|| std::sync::Arc::new(rat_core::RuleStore::new(rules_path)));
     // The saved plan (Swift RulesModel parity): rules survive restarts and
     // are the anchor the reconcile below diffs against. review-02 I2: an
     // unparsable rules file is an ERROR (load_set never yields a zero-rule
@@ -35,7 +52,11 @@ pub async fn run_components(
     // the live state in this mode, so its diff can only add, never remove;
     // the cost is that stray rules the later plan no longer names stay until
     // the uninstall cleanup.
-    let (engine, loaded, plan_loaded) = match store.load_set() {
+    let loaded_set = match &store {
+        Some(s) => s.load_set(),
+        None => Err(std::io::Error::other("rules directory is not trusted")),
+    };
+    let (engine, loaded, plan_loaded) = match loaded_set {
         Ok(set) => {
             let count = set.rules.len();
             (rat_core::RuleEngine::with_rule_set(set), count, true)
@@ -157,11 +178,17 @@ pub async fn run_daemon(shutdown_rx: tokio::sync::broadcast::Receiver<()>) -> st
     {
         let source = rat_monitor_windows::WindowsMonitor::new();
         let backend = core::WindowsBackend::new();
-        run_components(
+        let rules_path = default_rules_path();
+        // RAT_RULES_FILE is an explicit admin/test override; only the
+        // built-in ProgramData location needs the trust gate.
+        let trusted = std::env::var_os("RAT_RULES_FILE").is_some()
+            || rules_dir::ensure_rules_dir(&rules_path);
+        run_components_trusted(
             ipc::PIPE_NAME.to_string(),
             source,
             backend,
-            default_rules_path(),
+            rules_path,
+            trusted,
             shutdown_rx,
         )
         .await
