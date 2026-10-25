@@ -5,7 +5,9 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/rat-daemon
-ExecStopPost=-/usr/sbin/nft delete table inet rat
+# No ExecStopPost that deletes the nft table: the blocking rules must keep
+# working while the daemon is stopped or restarting after a crash (same as the
+# Windows firewall rules). Full removal is `rat-daemon --cleanup`.
 Restart=on-failure
 User=root
 Group=rat

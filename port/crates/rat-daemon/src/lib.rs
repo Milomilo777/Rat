@@ -91,7 +91,7 @@ pub async fn run_components_trusted(
                 )
             }
         }
-        let anchor = core::static_blocklist(&policy.0.all_rules());
+        let anchor = core::static_blocklist(&policy.0.rule_set());
         if let Err(e) = backend.enforce(&anchor) {
             eprintln!("rat-daemon: startup reconcile enforce failed: {e} (first tick retries)");
         }
