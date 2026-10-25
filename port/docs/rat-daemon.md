@@ -165,7 +165,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   reloaded at the next startup, and its static anchor is reconciled into the firewall before the IPC serves.
   The GUI no longer has to re-send the rules at startup (it still may: SetRules is authoritative when it does).
   A save writes a temporary file with an unpredictable name next to `rules.json`, keeps the previous content as
-  `rules.json.bak` and renames the temporary file over `rules.json` (atomic). On Windows the daemon creates the
+  `rules.json.bak` and renames the temporary file over `rules.json` (atomic). A crash in between leaves
+  `rules.json.<32 hex>.tmp`; start-up removes exactly that naming (regular files only) when the directory is
+  trusted, never any other file. On Windows the daemon creates the
   parent directory (see above); on Linux create `/etc/rat` first (see the Linux install guide). A failed save is
   logged and retried on the next change, never fatal.
 * IPC drops clients that lag too much instead of buffering infinitely.

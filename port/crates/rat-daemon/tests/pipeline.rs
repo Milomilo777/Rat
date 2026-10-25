@@ -1375,3 +1375,55 @@ async fn test_static_rules_enforced_even_if_first_sample_fails() {
         .expect("pipeline must end on shutdown")
         .unwrap();
 }
+
+// B8: a save that crashed between write and rename leaves its own temp file
+// (`<rules file>.<32 hex>.tmp`) next to the rules. Start-up removes exactly
+// that, and nothing else in the directory.
+#[tokio::test]
+async fn test_startup_removes_only_the_daemons_own_leftover_temp_files() {
+    let dir = std::env::temp_dir().join(format!(
+        "rat_daemon_test_stray_{}_{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let rules_path = dir.join("rules.json");
+    let stray = dir.join(format!("rules.json.{}.tmp", "ab12".repeat(8)));
+    let foreign = [
+        dir.join("rules.json.tmp"),
+        dir.join("unrelated.tmp"),
+        dir.join("notes.txt"),
+    ];
+    std::fs::write(&stray, b"half-written").unwrap();
+    for f in &foreign {
+        std::fs::write(f, b"not ours").unwrap();
+    }
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let endpoint = test_endpoint("stray_tmp");
+    let task = tokio::spawn(rat_daemon::run_components(
+        endpoint.clone(),
+        ScriptedSource { conns: vec![] },
+        RecorderBackend::default(),
+        rules_path,
+        shutdown_rx,
+    ));
+    wait_until(Duration::from_secs(10), || endpoint_serving(&endpoint)).await;
+
+    assert!(!stray.exists(), "the daemon's own leftover temp is removed");
+    for f in &foreign {
+        assert!(
+            f.exists(),
+            "{} is not the daemon's and must stay",
+            f.display()
+        );
+    }
+
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("run_components must end on shutdown")
+        .expect("pipeline task did not panic")
+        .expect("clean shutdown is not an error");
+    let _ = std::fs::remove_dir_all(&dir);
+}

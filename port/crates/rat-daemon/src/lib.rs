@@ -52,6 +52,18 @@ pub async fn run_components_trusted(
     // the live state in this mode, so its diff can only add, never remove;
     // the cost is that stray rules the later plan no longer names stay until
     // the uninstall cleanup.
+    // A crash between the atomic save's write and rename leaves its own
+    // temp file next to the rules; drop those (only that exact naming).
+    if let Some(s) = &store {
+        match s.remove_stale_temp_files() {
+            Ok(gone) => {
+                for p in gone {
+                    eprintln!("rat-daemon: removed leftover temp file {}", p.display());
+                }
+            }
+            Err(e) => eprintln!("rat-daemon: cleaning leftover temp files failed: {e}"),
+        }
+    }
     let loaded_set = match &store {
         Some(s) => s.load_set(),
         None => Err(std::io::Error::other("rules directory is not trusted")),

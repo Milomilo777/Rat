@@ -86,5 +86,3 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
   and the macOS app tests pass.
 - There is no end-to-end test with a program path that contains spaces (for example `C:\Program Files\...`).
 - Re-applying the protected access list to an existing rules directory is not covered by an automated test.
-- A crash during a rules save can leave a stray, randomly named `.tmp` file next to `rules.json`; it is not
-  cleaned up automatically.
