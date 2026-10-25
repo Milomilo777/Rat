@@ -628,3 +628,51 @@ async fn test_fifth_concurrent_client_is_refused() {
     shutdown_tx.send(()).unwrap();
     ipc_task.await.unwrap().unwrap();
 }
+
+// S4 (update-08): the socket is always 0o660 and a directory the daemon
+// created is 0o750, so others cannot reach the socket during the
+// bind->chmod window (runs on CI linux).
+#[cfg(unix)]
+#[tokio::test]
+async fn test_socket_and_directory_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let base = std::env::temp_dir().join(format!("rat_test_perms_{}", std::process::id()));
+    let socket_path = base.join("sub").join("rat.sock");
+
+    let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let (_snapshot_tx_keepalive, snapshot_rx) = tokio::sync::broadcast::channel(16);
+    let sp = socket_path.to_string_lossy().into_owned();
+    let shutdown_rx_ipc = shutdown_tx.subscribe();
+    let ipc_task = tokio::spawn(async move {
+        rat_daemon::ipc::start_ipc_server(&sp, shutdown_rx_ipc, snapshot_rx).await
+    });
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !is_socket(&socket_path.to_string_lossy()) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        is_socket(&socket_path.to_string_lossy()),
+        "daemon never bound its socket"
+    );
+
+    let sock_mode = std::fs::metadata(&socket_path)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(sock_mode, 0o660, "socket must be 0o660, got {sock_mode:o}");
+    let dir_mode = std::fs::metadata(socket_path.parent().unwrap())
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        dir_mode, 0o750,
+        "created dir must be 0o750, got {dir_mode:o}"
+    );
+
+    shutdown_tx.send(()).unwrap();
+    ipc_task.await.unwrap().unwrap();
+}

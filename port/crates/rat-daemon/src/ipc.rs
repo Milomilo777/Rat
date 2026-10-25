@@ -64,7 +64,17 @@ pub async fn start_ipc_server(
 
     let _ = std::fs::remove_file(socket_path);
     if let Some(parent) = std::path::Path::new(socket_path).parent() {
+        // S4 (update-08): a directory we create is 0o750 so the socket it
+        // holds stays unreachable for others even during the bind->chmod
+        // window (systemd's RuntimeDirectory=rat covers /run/rat the same
+        // way in production).
+        let existed = parent.exists();
         std::fs::create_dir_all(parent)?;
+        if !existed {
+            let mut perms = std::fs::metadata(parent)?.permissions();
+            perms.set_mode(0o750);
+            std::fs::set_permissions(parent, perms)?;
+        }
     }
 
     let listener = UnixListener::bind(socket_path)?;
@@ -72,12 +82,10 @@ pub async fn start_ipc_server(
     // S3 (update-08): bounded concurrent clients.
     let client_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CLIENTS));
 
-    // Only set permissions if it's the real run path to avoid test errors
-    if socket_path == SOCKET_PATH {
-        let mut perms = std::fs::metadata(socket_path)?.permissions();
-        perms.set_mode(0o660);
-        std::fs::set_permissions(socket_path, perms)?;
-    }
+    // S4 (update-08): always tighten the socket to owner+group read/write.
+    let mut perms = std::fs::metadata(socket_path)?.permissions();
+    perms.set_mode(0o660);
+    std::fs::set_permissions(socket_path, perms)?;
 
     loop {
         tokio::select! {

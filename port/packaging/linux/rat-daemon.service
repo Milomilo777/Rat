@@ -7,6 +7,9 @@ Type=simple
 ExecStart=/usr/local/bin/rat-daemon
 Restart=on-failure
 User=root
+Group=rat
+RuntimeDirectory=rat
+RuntimeDirectoryMode=0750
 
 [Install]
 WantedBy=multi-user.target
