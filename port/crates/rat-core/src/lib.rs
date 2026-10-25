@@ -545,6 +545,8 @@ impl RuleEngine {
             .filter(|r| {
                 (r.profile_id.is_none() || r.profile_id == Some(snapshot.active_profile_id))
                     && !(r.group_id.is_some_and(|gid| disabled_groups.contains(&gid)))
+                    && r.enabled
+                    && r.approved
             })
             .filter(|r| r.matches(c))
             .max_by(|a, b| {
@@ -793,7 +795,7 @@ mod tests {
     }
 
     #[test]
-    fn test_disabled_ignored_but_unapproved_still_active() {
+    fn test_disabled_and_unapproved_rules_never_match() {
         let mut r1 = new_rule();
         r1.verdict = Verdict::Deny;
         r1.enabled = false;
@@ -809,7 +811,7 @@ mod tests {
 
         assert_eq!(
             RuleEngine::with_rules(vec![r2], Verdict::Ask).evaluate(&conn("a.com", 443)),
-            Verdict::Deny
+            Verdict::Ask
         );
     }
 
