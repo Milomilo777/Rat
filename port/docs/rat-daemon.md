@@ -121,7 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   logs and continues (one read hiccup must not become an enforcement outage).
 * The enforcer crate owns that `current` state — `Enforcer::apply` is `&mut self`, advances
   `current` on success and leaves it behind on failure; the daemon no longer patches it by hand, and the
-  enforcer's delete-before-add makes a retried (or read-back-missed) re-apply idempotent instead of
+  enforcer's show-then-swap add makes a retried (or read-back-missed) re-apply idempotent instead of
   duplicating netsh rules.
 
 ## Platform Notes

@@ -14,6 +14,9 @@ use crate::{Blocklist, Enforcer};
 pub type NetshRunner =
     std::sync::Arc<dyn Fn(&std::path::Path, &[String]) -> io::Result<bool> + Send + Sync>;
 
+/// one netsh call of an install: (arguments, dry-run line, failure message)
+type NetshCommand = (Vec<String>, String, String);
+
 pub struct WindowsEnforcer {
     pub current: Blocklist,
     /// None = production behavior (RAT_DRY_RUN prints, otherwise spawn).
@@ -267,18 +270,55 @@ fn path_delete_args(name: &str) -> Vec<String> {
     ]
 }
 
+/// The temporary name a rule set is installed under while it replaces an
+/// existing one (`Rat:path:x` -> `Rat:tmp:path:x`); outside the
+/// `Rat:path:*` / `Rat:port:*` read-back wildcards, inside the cleanup's.
+fn tmp_rule_name(name: &str) -> String {
+    format!("Rat:tmp:{}", name.strip_prefix("Rat:").unwrap_or(name))
+}
+
+/// `show rule name=<n>`: exits non-zero exactly when no rule has that name.
+fn show_rule_args(name: &str) -> Vec<String> {
+    vec![
+        "advfirewall".to_string(),
+        "firewall".to_string(),
+        "show".to_string(),
+        "rule".to_string(),
+        format!("name={name}"),
+    ]
+}
+
+/// `set rule name=<from> new name=<to>`: renames every rule carrying `from`.
+fn rename_rule_args(from: &str, to: &str) -> Vec<String> {
+    vec![
+        "advfirewall".to_string(),
+        "firewall".to_string(),
+        "set".to_string(),
+        "rule".to_string(),
+        format!("name={from}"),
+        "new".to_string(),
+        format!("name={to}"),
+    ]
+}
+
 /// The netsh arguments for one per-port block rule. `localport=` needs a
 /// concrete protocol (netsh rejects port parameters with protocol=any), and
 /// the Linux backend blocks both tcp and udp in both directions
 /// (linux.rs drop_out sport / drop_in dport), so one port yields four rules
 /// that all share [`format_port_rule_name`].
+#[cfg(test)]
 fn port_rule_args(port: u16, dir: &str, proto: &str) -> Vec<String> {
+    port_rule_args_named(&format_port_rule_name(port), port, dir, proto)
+}
+
+/// [`port_rule_args`] under an explicit rule name (the swap's temporary one).
+fn port_rule_args_named(name: &str, port: u16, dir: &str, proto: &str) -> Vec<String> {
     vec![
         "advfirewall".to_string(),
         "firewall".to_string(),
         "add".to_string(),
         "rule".to_string(),
-        format!("name={}", format_port_rule_name(port)),
+        format!("name={name}"),
         format!("dir={dir}"),
         "action=block".to_string(),
         format!("protocol={proto}"),
@@ -446,14 +486,62 @@ impl Enforcer for WindowsEnforcer {
             if run_netsh(args)? {
                 return Ok(true);
             }
-            let show_args = [
-                "advfirewall".to_string(),
-                "firewall".to_string(),
-                "show".to_string(),
-                "rule".to_string(),
-                format!("name={name}"),
-            ];
-            Ok(!run_netsh(&show_args)?)
+            Ok(!run_netsh(&show_rule_args(name))?)
+        };
+
+        // Install the rules of ONE name without ever leaving a moment without
+        // a block. netsh `add rule` DUPLICATES a rule whose name already
+        // exists (stale diff: restart with a failed read-back, a
+        // canonicalized rename), so an existing name is replaced by a swap:
+        // the new rules go in under a temporary name (`Rat:tmp:...`, the only
+        // way to tell old and new apart), then the old ones are deleted by
+        // name, then the temporary ones are renamed. A failure at any step
+        // leaves the old block or the temporary one in place, and `current`
+        // behind so the next diff retries; the first-add path sweeps a
+        // leftover temporary name. `exists` is the exit code of `show rule`
+        // (locale-stable), never message text.
+        let install = |name: &str, rules: &dyn Fn(&str) -> Vec<NetshCommand>| -> io::Result<()> {
+            let exists = if runner.is_none() && dry_run {
+                false
+            } else {
+                run(&show_rule_args(name), String::new())?
+            };
+            let tmp = tmp_rule_name(name);
+            let sweep_tmp = || -> io::Result<bool> {
+                run(
+                    &path_delete_args(&tmp),
+                    format!("netsh advfirewall firewall delete rule name=\"{tmp}\""),
+                )
+            };
+            let target = if exists { tmp.as_str() } else { name };
+            if exists {
+                let _ = sweep_tmp()?;
+            }
+            for (args, dry_line, failure) in rules(target) {
+                if !run(&args, dry_line)? {
+                    return Err(io::Error::other(failure));
+                }
+            }
+            if exists {
+                if !run_delete(
+                    name,
+                    &path_delete_args(name),
+                    format!("netsh advfirewall firewall delete rule name=\"{name}\""),
+                )? {
+                    return Err(io::Error::other("Failed to delete firewall rule"));
+                }
+                if !run(
+                    &rename_rule_args(&tmp, name),
+                    format!(
+                        "netsh advfirewall firewall set rule name=\"{tmp}\" new name=\"{name}\""
+                    ),
+                )? {
+                    return Err(io::Error::other("Failed to rename firewall rule"));
+                }
+            } else {
+                let _ = sweep_tmp()?;
+            }
+            Ok(())
         };
 
         for path in &remove {
@@ -471,32 +559,23 @@ impl Enforcer for WindowsEnforcer {
 
         for path in &add {
             let name = format_rule_name(path);
-            // netsh `add rule` DUPLICATES a rule whose name already
-            // exists, so delete any same-name rule first — a stale diff
-            // (restart with a failed read-back, a canonicalized rename)
-            // would otherwise pile up copies. Best-effort: "no rules match"
-            // is netsh exit 1 and the normal first-add case, while a real
-            // failure still surfaces at the checked add below, so this
-            // delete's status is ignored.
-            let _ = run(
-                &path_delete_args(&name),
-                format!("netsh advfirewall firewall delete rule name=\"{name}\""),
-            )?;
             // one rule per direction under the SAME name: a listening app
             // is blocked inbound too, and one delete by name (the remove
-            // loop, the pre-add dedupe) removes both.
-            for dir in ["out", "in"] {
-                if !run(
-                    &path_rule_args(&name, path, dir),
-                    format!(
-                        "netsh advfirewall firewall add rule name=\"{name}\" dir={dir} action=block program=\"{path}\""
-                    ),
-                )? {
-                    return Err(io::Error::other(format!(
-                        "Failed to add firewall rule dir={dir}"
-                    )));
-                }
-            }
+            // loop, the swap below) removes both.
+            install(&name, &|n: &str| {
+                ["out", "in"]
+                    .iter()
+                    .map(|dir| {
+                        (
+                            path_rule_args(n, path, dir),
+                            format!(
+                                "netsh advfirewall firewall add rule name=\"{n}\" dir={dir} action=block program=\"{path}\""
+                            ),
+                            format!("Failed to add firewall rule dir={dir}"),
+                        )
+                    })
+                    .collect()
+            })?;
         }
 
         // the port axis. One delete per port (removes all four
@@ -517,25 +596,22 @@ impl Enforcer for WindowsEnforcer {
 
         for port in &plan.add_ports {
             let name = format_port_rule_name(*port);
-            // the same pre-add dedupe as the path axis; one delete
-            // removes all four variants of the port.
-            let _ = run(
-                &port_delete_args(*port),
-                format!("netsh advfirewall firewall delete rule name=\"{name}\""),
-            )?;
-            for (dir, proto) in [("out", "TCP"), ("out", "UDP"), ("in", "TCP"), ("in", "UDP")] {
-                let name = format_port_rule_name(*port);
-                if !run(
-                    &port_rule_args(*port, dir, proto),
-                    format!(
-                        "netsh advfirewall firewall add rule name=\"{name}\" dir={dir} action=block protocol={proto} localport={port}"
-                    ),
-                )? {
-                    return Err(io::Error::other(format!(
-                        "Failed to add firewall port rule {port} dir={dir} protocol={proto}"
-                    )));
-                }
-            }
+            install(&name, &|n: &str| {
+                [("out", "TCP"), ("out", "UDP"), ("in", "TCP"), ("in", "UDP")]
+                    .iter()
+                    .map(|(dir, proto)| {
+                        (
+                            port_rule_args_named(n, *port, dir, proto),
+                            format!(
+                                "netsh advfirewall firewall add rule name=\"{n}\" dir={dir} action=block protocol={proto} localport={port}"
+                            ),
+                            format!(
+                                "Failed to add firewall port rule {port} dir={dir} protocol={proto}"
+                            ),
+                        )
+                    })
+                    .collect()
+            })?;
         }
 
         // Part 1: apply owns the crate's view of reality. Advance
@@ -604,7 +680,7 @@ impl Enforcer for WindowsEnforcer {
 
 /// the wildcard cleanup must remove BOTH rule families this
 /// daemon creates — per-program (`Rat:path:*`) and per-port (`Rat:port:*`).
-pub(crate) const CLEANUP_RULES_QUERY: &str = "Get-NetFirewallRule -DisplayName @('Rat:path:*','Rat:port:*') -ErrorAction SilentlyContinue | Remove-NetFirewallRule";
+pub(crate) const CLEANUP_RULES_QUERY: &str = "Get-NetFirewallRule -DisplayName @('Rat:path:*','Rat:port:*','Rat:tmp:*') -ErrorAction SilentlyContinue | Remove-NetFirewallRule";
 
 #[cfg(test)]
 mod tests {
@@ -1200,13 +1276,20 @@ mod tests {
                 assert!(exe.ends_with("netsh.exe"), "unexpected exe {exe:?}");
                 let mut verb = "";
                 let mut name = None;
+                let mut new_name = None;
+                let mut after_new = false;
                 for a in args {
                     match a.as_str() {
-                        "add" | "delete" | "show" => verb = a,
+                        "add" | "delete" | "show" | "set" => verb = a,
                         "rule" => {}
+                        "new" => after_new = true,
                         other => {
                             if let Some(n) = other.strip_prefix("name=") {
-                                name = Some(n.to_string());
+                                if after_new {
+                                    new_name = Some(n.to_string());
+                                } else {
+                                    name = Some(n.to_string());
+                                }
                             }
                         }
                     }
@@ -1218,6 +1301,16 @@ mod tests {
                     Ok(true)
                 } else if verb == "show" {
                     Ok(rules.contains_key(&name))
+                } else if verb == "set" {
+                    // rename: every rule named `name` takes the new name
+                    let new_name = new_name.expect("set rule carries new name=");
+                    match rules.remove(&name) {
+                        Some(n) => {
+                            *rules.entry(new_name).or_insert(0) += n;
+                            Ok(true)
+                        }
+                        None => Ok(false),
+                    }
                 } else {
                     Ok(rules.remove(&name).is_some())
                 }
@@ -1703,21 +1796,80 @@ mod tests {
             name: String,
             dir: String,
             program: String,
+            proto: String,
+            port: String,
         }
+
+        impl SimRule {
+            /// what the rule blocks: the gap check compares these
+            fn blocks(&self) -> (String, String, String, String) {
+                (
+                    self.dir.clone(),
+                    self.program.clone(),
+                    self.proto.clone(),
+                    self.port.clone(),
+                )
+            }
+        }
+
+        type Blocks = (String, String, String, String);
 
         #[derive(Default)]
         struct Sim {
             rules: Mutex<Vec<SimRule>>,
             log: Mutex<Vec<Vec<String>>>,
+            /// when set, every block that existed once must exist after
+            /// every command; violations are recorded in `gaps`
+            watch: Mutex<bool>,
+            covered: Mutex<std::collections::HashSet<Blocks>>,
+            gaps: Mutex<Vec<String>>,
         }
 
         impl Sim {
             fn run(&self, exe: &Path, args: &[String]) -> io::Result<bool> {
+                let out = self.exec(exe, args);
+                if *self.watch.lock().unwrap() {
+                    let now: std::collections::HashSet<Blocks> = self
+                        .rules
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .map(SimRule::blocks)
+                        .collect();
+                    let mut covered = self.covered.lock().unwrap();
+                    for b in covered.iter() {
+                        if !now.contains(b) {
+                            self.gaps
+                                .lock()
+                                .unwrap()
+                                .push(format!("{b:?} unblocked after {args:?}"));
+                        }
+                    }
+                    covered.extend(now);
+                }
+                out
+            }
+
+            /// start watching for gaps from the current state on
+            fn watch_from_now(&self) {
+                let now: Vec<Blocks> = self
+                    .rules
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(SimRule::blocks)
+                    .collect();
+                self.covered.lock().unwrap().extend(now);
+                *self.watch.lock().unwrap() = true;
+            }
+
+            fn exec(&self, exe: &Path, args: &[String]) -> io::Result<bool> {
                 assert!(exe.ends_with("netsh.exe"), "unexpected exe {exe:?}");
                 self.log.lock().unwrap().push(args.to_vec());
                 let mut verb = "";
                 let (mut name, mut new_name) = (None, None);
                 let (mut dir, mut program) = (String::new(), String::new());
+                let (mut proto, mut port) = (String::new(), String::new());
                 let mut after_new = false;
                 for a in args {
                     match a.as_str() {
@@ -1735,6 +1887,10 @@ mod tests {
                                 dir = d.to_string();
                             } else if let Some(p) = other.strip_prefix("program=") {
                                 program = p.to_string();
+                            } else if let Some(p) = other.strip_prefix("protocol=") {
+                                proto = p.to_string();
+                            } else if let Some(p) = other.strip_prefix("localport=") {
+                                port = p.to_string();
                             }
                         }
                     }
@@ -1743,7 +1899,13 @@ mod tests {
                 let mut rules = self.rules.lock().unwrap();
                 match verb {
                     "add" => {
-                        rules.push(SimRule { name, dir, program });
+                        rules.push(SimRule {
+                            name,
+                            dir,
+                            program,
+                            proto,
+                            port,
+                        });
                         Ok(true)
                     }
                     "show" => Ok(rules.iter().any(|r| r.name == name)),
@@ -1890,6 +2052,135 @@ mod tests {
             let plan = e.plan(&Blocklist::default());
             e.apply(&plan).expect("remove");
             assert!(sim.rules.lock().unwrap().is_empty());
+        }
+
+        /// the commands as `verb name[ -> new name]` lines, show probes and
+        /// all, for pinning the call order
+        fn calls(sim: &Sim) -> Vec<String> {
+            sim.log
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|a| {
+                    let verb = a
+                        .iter()
+                        .find(|x| matches!(x.as_str(), "add" | "delete" | "show" | "set"))
+                        .cloned()
+                        .unwrap();
+                    let names: Vec<&str> =
+                        a.iter().filter_map(|x| x.strip_prefix("name=")).collect();
+                    let dir = a.iter().find_map(|x| x.strip_prefix("dir=")).unwrap_or("");
+                    format!("{verb} {} {dir}", names.join(" -> "))
+                        .trim_end()
+                        .to_string()
+                })
+                .collect()
+        }
+
+        /// the rule state a first enforcer left behind, then a FRESH
+        /// enforcer (restart with a failed read-back: empty `current`)
+        /// re-adds the same wanted state
+        fn readd(wanted: &Blocklist) -> (Arc<Sim>, io::Result<()>) {
+            let sim = Arc::new(Sim::default());
+            let mut first = enforcer_with(&sim);
+            let plan = first.plan(wanted);
+            first.apply(&plan).expect("first apply");
+            sim.log.lock().unwrap().clear();
+            sim.watch_from_now();
+            let mut second = enforcer_with(&sim);
+            let plan = second.plan(wanted);
+            let r = second.apply(&plan);
+            (sim, r)
+        }
+
+        #[test]
+        fn test_windows_readd_never_leaves_a_moment_without_a_block() {
+            let wanted = Blocklist {
+                paths: vec![APP.to_string()],
+                local_ports: vec![5353],
+            };
+            let (sim, r) = readd(&wanted);
+            r.expect("re-apply");
+            assert!(
+                sim.gaps.lock().unwrap().is_empty(),
+                "a block vanished mid-sequence: {:?}",
+                sim.gaps.lock().unwrap()
+            );
+            // and the end state is exactly one set of rules, final names only
+            assert_eq!(sim.rules_named(&format_rule_name(APP)).len(), 2);
+            assert_eq!(sim.rules_named(&format_port_rule_name(5353)).len(), 4);
+            assert_eq!(sim.rules.lock().unwrap().len(), 6, "no leftover temp rules");
+        }
+
+        #[test]
+        fn test_windows_readd_adds_the_new_rules_before_removing_the_old() {
+            let (sim, r) = readd(&paths(&[APP]));
+            r.expect("re-apply");
+            let name = format_rule_name(APP);
+            let tmp = format!("Rat:tmp:{}", name.strip_prefix("Rat:").unwrap());
+            assert_eq!(
+                calls(&sim),
+                vec![
+                    format!("show {name}"),
+                    format!("delete {tmp}"),
+                    format!("add {tmp} out"),
+                    format!("add {tmp} in"),
+                    format!("delete {name}"),
+                    format!("set {tmp} -> {name}"),
+                ]
+            );
+        }
+
+        #[test]
+        fn test_windows_first_add_has_no_temp_swap() {
+            let sim = Arc::new(Sim::default());
+            let mut e = enforcer_with(&sim);
+            let plan = e.plan(&paths(&[APP]));
+            e.apply(&plan).expect("apply");
+            let name = format_rule_name(APP);
+            let tmp = format!("Rat:tmp:{}", name.strip_prefix("Rat:").unwrap());
+            assert_eq!(
+                calls(&sim),
+                vec![
+                    format!("show {name}"),
+                    format!("add {name} out"),
+                    format!("add {name} in"),
+                    format!("delete {tmp}"), // sweep of a crashed swap's leftover
+                ]
+            );
+        }
+
+        #[test]
+        fn test_windows_failed_swap_keeps_the_old_block() {
+            // the temp add fails halfway: the old rules must still be there
+            let sim = Arc::new(Sim::default());
+            let mut first = enforcer_with(&sim);
+            let plan = first.plan(&paths(&[APP]));
+            first.apply(&plan).expect("first apply");
+            let inner = Arc::clone(&sim);
+            let mut second = WindowsEnforcer {
+                current: Blocklist::default(),
+                runner: Some(Arc::new(move |exe: &Path, args: &[String]| {
+                    let s = args.join(" ");
+                    if s.contains("add") && s.contains("Rat:tmp:") && s.contains("dir=in") {
+                        return Ok(false);
+                    }
+                    inner.run(exe, args)
+                })),
+            };
+            let plan = second.plan(&paths(&[APP]));
+            let err = second.apply(&plan).unwrap_err();
+            assert!(
+                err.to_string().contains("Failed to add firewall rule"),
+                "{err}"
+            );
+            assert_eq!(sim.rules_named(&format_rule_name(APP)).len(), 2);
+            assert!(second.current.paths.is_empty(), "current stays behind");
+        }
+
+        #[test]
+        fn test_windows_cleanup_also_removes_temp_swap_rules() {
+            assert!(CLEANUP_RULES_QUERY.contains("'Rat:tmp:*'"));
         }
 
         #[test]
