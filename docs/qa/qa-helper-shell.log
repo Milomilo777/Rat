@@ -1,0 +1,6 @@
+1..5
+ok 1 tests/shell/qa-helper.bats::R1: shellcheck clean
+ok 2 tests/shell/qa-helper.bats::R2: rat-pf-helper snapshot side-effects
+ok 3 tests/shell/qa-helper.bats::R5: snapshot output format
+ok 4 tests/shell/qa-helper.bats::R6: fetch script verifies download
+ok 5 tests/shell/qa-helper.bats::R6: fetch script fails cleanly offline
