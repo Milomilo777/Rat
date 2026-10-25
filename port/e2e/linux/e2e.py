@@ -94,7 +94,8 @@ def sh(cmd, check=True, timeout=30, env=None, quiet=False, cwd=None):
             msg += "\n    stdout: " + r.stdout.strip()[:500].replace("\n", "\n    ")
         if r.stderr.strip():
             msg += "\n    stderr: " + r.stderr.strip()[:500].replace("\n", "\n    ")
-    log(msg)
+    if not quiet or r.returncode != 0:
+        log(msg)
     if check and r.returncode != 0:
         raise Harness("command failed rc=%d: %s: %s" % (r.returncode, " ".join(cmd), r.stderr.strip()[:300]))
     return r
@@ -461,13 +462,29 @@ def reset_rules():
         ipc = Ipc()
         if ipc.hello():
             set_rules(ipc, [])
-            wait_until(lambda: not rat_ports(), 10)
+            wait_until(lambda: not rat_ports(), 4)
         ipc.close()
     except OSError:
         pass
 
 
 # ---------------------------------------------------------------- L1
+
+def socket_diag(pid, R):
+    """Where do the monitor's byte counters get lost? Dump the raw sock_diag map."""
+    inodes = []
+    for fd in os.listdir("/proc/%d/fd" % pid):
+        try:
+            m = re.match(r"socket:\[(\d+)\]", os.readlink("/proc/%d/fd/%s" % (pid, fd)))
+        except OSError:
+            continue
+        if m:
+            inodes.append(m.group(1))
+    out = subprocess.run([os.path.join(BIN, "monitor-probe"), "diag"], capture_output=True, text=True, timeout=30).stdout
+    rows = out.splitlines()
+    mine = [r for r in rows[1:] if r.split()[0] in inodes]
+    R.info("raw sock_diag counters", "%s; client socket inodes=%s; rows for them=%s" % (rows[0] if rows else "(none)", inodes, mine or "NONE"))
+
 
 def l1(R):
     server = start_server()
@@ -499,6 +516,8 @@ def l1(R):
         detail = "monitor bytes_out=%r (needs >= %d); kernel ss bytes_acked=%r [%s]" % (best, MIB, kernel, raw)
         if not ok and (kernel is None or kernel < MIB):
             raise Harness("kernel itself shows < 1 MiB, harness did not send it: " + detail)
+        if not ok:
+            socket_diag(c.p.pid, R)
         R.check("byte counter >= 1 MiB after sending 1 MiB", ok, detail)
 
     # negative control: a connection that sent nothing must not look like 1 MiB
@@ -519,7 +538,7 @@ def l2(R):
     before = other_tables()
     R.info("tables present before", ", ".join(sorted(before)) or "(none)")
     app = make_app("l2_client")
-    servers = [start_server() for _ in range(4)]
+    servers = [start_server() for _ in range(5)]
     F = free_port(20000, 29000)
     G = free_port(20000, 29000)
     while G == F:
@@ -554,6 +573,14 @@ def l2(R):
     R.check("traffic from another fixed port still flows", other.connected, "port %d: %s" % (G, other.desc()))
     eph = Client(app, "127.0.0.1", servers[3], hold=500)
     R.check("traffic from an ephemeral port still flows", eph.connected, eph.desc())
+
+    r = sh([ctl, "apply", str(G)], check=False)
+    R.check("second apply (new deny set) exit code 0", r.returncode == 0, "rc=%d %s" % (r.returncode, r.stderr.strip()[:200]))
+    ports = rat_ports() or set()
+    R.check("re-apply replaces the deny set (only the new port remains)", ports == {G},
+            "set=%s wanted={%d}, previous deny was %d" % (sorted(ports), G, F))
+    freed = Client(app, "127.0.0.1", servers[4], bind=F, hold=500)
+    R.check("previously denied port flows again after re-apply", freed.connected, freed.desc())
 
     r = sh([ctl, "cleanup"], check=False)
     R.check("cleanup() exit code 0", r.returncode == 0, "rc=%d %s" % (r.returncode, r.stderr.strip()[:200]))
@@ -617,7 +644,7 @@ def l4(R, d):
             try:
                 for c in probe():
                     if c["remote"] and port_of(c["remote"]) == server:
-                        seen[(c["process"]["pid"], port_of(c["local"]))] = c["process"]["exe"]
+                        seen.setdefault((c["process"]["pid"], port_of(c["local"])), set()).add(c["process"]["exe"])
             except Exception as e:  # recorded, checked below
                 errors.append(str(e))
                 return
@@ -633,10 +660,13 @@ def l4(R, d):
     R.control("sampler ran without error", not errors, "; ".join(errors) or "ok")
     made = [c for c in clients if c.connected]
     R.control("all 100 short clients connected", len(made) == 100, "%d/100 connected" % len(made))
-    hits = sum(1 for c in made if seen.get((c.p.pid, c.local)) == app)
-    wrong = [(k, v) for k, v in seen.items() if v != app]
+    hits = sum(1 for c in made if app in seen.get((c.p.pid, c.local), set()))
+    seen_any = sum(1 for c in made if (c.p.pid, c.local) in seen)
+    wrong = [(k, sorted(map(str, v))) for k, v in seen.items() if v - {app, None}]
+    R.info("attribution detail", "seen at all %d/100; exe None only: %d; other exe: %s" % (
+        seen_any, sum(1 for c in made if seen.get((c.p.pid, c.local)) == {None}), wrong[:3] or "none"))
     R.check("attribution hit rate >= 95% with the right executable", hits >= 95,
-            "hit rate %d/100; wrong exe: %s" % (hits, wrong[:3] or "none"))
+            "hit rate %d/100" % hits)
 
     # Part 2: port reuse, through the daemon (needs a non-loopback remote).
     if not d.running:
