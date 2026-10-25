@@ -1,0 +1,99 @@
+name: Port E2E Windows
+on:
+  push:
+    branches:
+      - 'e2e/windows-v1'
+  workflow_dispatch:
+
+jobs:
+  e2e-windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      RAT_DAEMON_EXE: ${{ github.workspace }}\port\target\release\rat-daemon.exe
+      RAT_E2E_EXE: ${{ github.workspace }}\port\e2e\windows\target\release\e2e-windows.exe
+    steps:
+      - uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: stable
+      - name: Build rat-daemon
+        working-directory: port
+        run: cargo build --release -p rat-daemon
+      - name: Build harness
+        working-directory: port/e2e/windows
+        run: cargo build --release
+      - name: Environment facts
+        shell: powershell
+        run: |
+          $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $admin = (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          "user=$($id.Name) elevated-admin=$admin"
+          [System.Environment]::OSVersion.VersionString
+          (Get-NetFirewallProfile | Select-Object Name,Enabled | Out-String)
+          Test-Path $env:RAT_DAEMON_EXE
+          Test-Path $env:RAT_E2E_EXE
+
+      - name: W1 monitor attribution
+        id: w1
+        continue-on-error: true
+        shell: powershell
+        run: |
+          & $env:RAT_E2E_EXE w1
+          exit $LASTEXITCODE
+      - name: W2 enforcer real rules
+        id: w2
+        continue-on-error: true
+        shell: powershell
+        run: |
+          & $env:RAT_E2E_EXE w2
+          exit $LASTEXITCODE
+      - name: W3 per-app isolation
+        id: w3
+        continue-on-error: true
+        shell: powershell
+        run: |
+          & $env:RAT_E2E_EXE w3
+          exit $LASTEXITCODE
+      - name: W4 service and pipe security
+        id: w4
+        continue-on-error: true
+        shell: powershell
+        run: |
+          & $env:RAT_E2E_EXE w4
+          exit $LASTEXITCODE
+      - name: W5 shared services report
+        id: w5
+        continue-on-error: true
+        shell: powershell
+        run: |
+          & $env:RAT_E2E_EXE w5
+          exit $LASTEXITCODE
+      - name: W6 GUI-to-daemon IPC
+        id: w6
+        continue-on-error: true
+        shell: powershell
+        run: |
+          & $env:RAT_E2E_EXE w6
+          exit $LASTEXITCODE
+
+      - name: Verify host firewall has no rat leftovers
+        if: always()
+        shell: powershell
+        run: |
+          $rules = Get-NetFirewallRule -DisplayName 'Rat:*' -ErrorAction SilentlyContinue
+          if ($rules) {
+            $rules | Select-Object DisplayName | Out-String
+            throw "Firewall leftover error"
+          }
+          "no Rat: rules left"
+          if (Get-Service -Name RatDaemon -ErrorAction SilentlyContinue) { throw "RatDaemon service left behind" }
+          "no RatDaemon service left"
+      - name: Summary (fails when any requirement is not PASS)
+        if: always()
+        shell: powershell
+        run: |
+          $o = @{ W1='${{ steps.w1.outcome }}'; W2='${{ steps.w2.outcome }}'; W3='${{ steps.w3.outcome }}'; W4='${{ steps.w4.outcome }}'; W5='${{ steps.w5.outcome }}'; W6='${{ steps.w6.outcome }}' }
+          $o.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Name) step outcome: $($_.Value)" }
+          if ($o.Values | Where-Object { $_ -ne 'success' }) { throw "at least one requirement is not PASS (see RESULT lines in the step logs)" }
