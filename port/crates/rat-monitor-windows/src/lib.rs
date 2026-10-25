@@ -701,12 +701,8 @@ impl ConnectionSource for WindowsMonitor {
 pub mod routes {
     use std::net::IpAddr;
     use windows::Win32::Foundation::WIN32_ERROR;
-    use windows::Win32::NetworkManagement::IpHelper::{
-        ConvertInterfaceIndexToLuid, ConvertInterfaceLuidToAlias,
-    };
-    use windows::Win32::NetworkManagement::IpHelper::{
-        GetBestInterfaceEx, IF_TYPE_PROP_VIRTUAL, IF_TYPE_TUNNEL,
-    };
+    use windows::Win32::NetworkManagement::IpHelper::ConvertInterfaceIndexToLuid;
+    use windows::Win32::NetworkManagement::IpHelper::GetBestInterfaceEx;
     use windows::Win32::NetworkManagement::Ndis::NET_LUID_LH;
 
     pub fn is_vpn_route(remote: IpAddr) -> bool {
@@ -768,39 +764,86 @@ pub mod routes {
             return false;
         }
 
-        let mut alias = [0u16; 257]; // NDIS_IF_MAX_STRING_SIZE + 1
-        if unsafe { ConvertInterfaceLuidToAlias(&luid, &mut alias).is_err() } {
-            return false;
+        // M4 (update-09): decide from the adapter's tunnel type + DESCRIPTION;
+        // the user-editable alias and IF_TYPE_PROP_VIRTUAL alone produce
+        // false positives (Hyper-V vSwitch, WSL vEthernet are type 53 too).
+        for (adapter_luid, description, if_type) in crate::list_adapter_descriptions() {
+            if adapter_luid == unsafe { luid.Value } {
+                return crate::check_is_vpn_interface(if_type, &description);
+            }
         }
-
-        let alias_str = String::from_utf16_lossy(&alias).to_lowercase();
-
-        // Check if interface type is virtual or tunnel by checking the high bits of luid Info
-        let if_type = unsafe { luid.Info._bitfield >> 48 } as u32;
-        if if_type == IF_TYPE_PROP_VIRTUAL || if_type == IF_TYPE_TUNNEL {
-            return true;
-        }
-
-        if alias_str.contains("wintun") || alias_str.contains("wireguard") {
-            return true;
-        }
-
         false
     }
 }
 
-pub fn check_is_vpn_interface_type(if_type: u32, alias: &str) -> bool {
-    // 53 is IF_TYPE_PROP_VIRTUAL, 131 is IF_TYPE_TUNNEL
-    if if_type == 53 || if_type == 131 {
+/// (luid, description, if_type) for every adapter. M4 (update-09): the
+/// DESCRIPTION is the driver-provided string, unlike the editable alias.
+#[cfg(windows)]
+pub fn list_adapter_descriptions() -> Vec<(u64, String, u32)> {
+    use windows::Win32::NetworkManagement::IpHelper::{
+        GetAdaptersAddresses, GAA_FLAG_INCLUDE_ALL_INTERFACES, GAA_FLAG_SKIP_ANYCAST,
+        GAA_FLAG_SKIP_MULTICAST, GAA_FLAG_SKIP_UNICAST, IP_ADAPTER_ADDRESSES_LH,
+    };
+
+    const AF_UNSPEC: u32 = 0;
+    let flags = GAA_FLAG_INCLUDE_ALL_INTERFACES
+        | GAA_FLAG_SKIP_UNICAST
+        | GAA_FLAG_SKIP_ANYCAST
+        | GAA_FLAG_SKIP_MULTICAST;
+
+    let mut size: u32 = 16 * 1024;
+    for _ in 0..4 {
+        let mut buffer = vec![0u8; size as usize];
+        let rc = unsafe {
+            GetAdaptersAddresses(
+                AF_UNSPEC,
+                flags,
+                None,
+                Some(buffer.as_mut_ptr() as *mut IP_ADAPTER_ADDRESSES_LH),
+                &mut size,
+            )
+        };
+        if rc != 0 {
+            if rc == 111
+            /* ERROR_MORE_DATA */
+            {
+                continue;
+            }
+            return Vec::new();
+        }
+
+        let mut out = Vec::new();
+        let mut current = buffer.as_ptr() as *const IP_ADAPTER_ADDRESSES_LH;
+        while !current.is_null() {
+            let adapter = unsafe { &*current };
+            let description = unsafe {
+                let mut len = 0usize;
+                while *adapter.Description.as_ptr().add(len) != 0 {
+                    len += 1;
+                }
+                String::from_utf16_lossy(std::slice::from_raw_parts(
+                    adapter.Description.as_ptr(),
+                    len,
+                ))
+            };
+            out.push((unsafe { adapter.Luid.Value }, description, adapter.IfType));
+            current = adapter.Next;
+        }
+        return out;
+    }
+    Vec::new()
+}
+
+pub fn check_is_vpn_interface(if_type: u32, description: &str) -> bool {
+    // M4 (update-09): 131 (IF_TYPE_TUNNEL) is authoritative. 53
+    // (IF_TYPE_PROP_VIRTUAL) is NOT - Hyper-V vSwitch and WSL vEthernet
+    // adapters report it too - so it needs a matching driver DESCRIPTION.
+    if if_type == 131 {
         return true;
     }
 
-    let lower_alias = alias.to_lowercase();
-    if lower_alias.contains("wintun") || lower_alias.contains("wireguard") {
-        return true;
-    }
-
-    false
+    let lower = description.to_lowercase();
+    lower.contains("wintun") || lower.contains("wireguard") || lower.contains("tap-")
 }
 
 #[cfg(test)]
@@ -808,12 +851,39 @@ mod vpn_tests {
     use super::*;
 
     #[test]
-    fn test_check_is_vpn_interface_type() {
-        assert!(check_is_vpn_interface_type(53, "eth0"));
-        assert!(check_is_vpn_interface_type(131, "tun0"));
-        assert!(check_is_vpn_interface_type(6, "Wintun Userspace Tunnel"));
-        assert!(check_is_vpn_interface_type(6, "wireguard1"));
-        assert!(!check_is_vpn_interface_type(6, "Ethernet"));
+    fn test_check_is_vpn_interface_description_semantics() {
+        // M4 (update-09): tunnel type is authoritative...
+        assert!(check_is_vpn_interface(131, "anything"));
+        // ...but PROP_VIRTUAL alone is not (Hyper-V vSwitch / WSL vEthernet)
+        assert!(!check_is_vpn_interface(
+            53,
+            "Hyper-V Virtual Ethernet Adapter"
+        ));
+        assert!(!check_is_vpn_interface(53, "vEthernet (WSL)"));
+        // ...wintun/wireguard/tap drivers are VPNs regardless of type
+        assert!(check_is_vpn_interface(6, "Wintun Userspace Tunnel"));
+        assert!(check_is_vpn_interface(53, "Wintun Userspace Tunnel"));
+        assert!(check_is_vpn_interface(6, "WireGuard Tunnel"));
+        assert!(check_is_vpn_interface(6, "TAP-Windows Adapter V9"));
+        assert!(!check_is_vpn_interface(
+            6,
+            "Intel(R) Ethernet Connection I219-V"
+        ));
+        assert!(!check_is_vpn_interface(
+            53,
+            "Microsoft Wi-Fi Direct Virtual Adapter"
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_list_adapter_descriptions_smoke() {
+        let adapters = list_adapter_descriptions();
+        assert!(!adapters.is_empty(), "host has at least one adapter");
+        for (_, description, if_type) in &adapters {
+            assert!(!description.is_empty(), "descriptions are populated");
+            assert!(*if_type > 0);
+        }
     }
 }
 
