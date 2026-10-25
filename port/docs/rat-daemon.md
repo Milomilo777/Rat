@@ -133,6 +133,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   `current` on success and leaves it behind on failure; the daemon no longer patches it by hand, and the
   enforcer's show-then-swap add makes a retried (or read-back-missed) re-apply idempotent instead of
   duplicating netsh rules.
+* Upgrade from the out-only version: the Windows read-back also returns each rule's direction (the integer
+  value of `Direction`, 1 in / 2 out, which is not localized). A program found with fewer than both directions
+  stays in `current` (so an unwanted one is still removed) but is re-added when wanted, which installs the
+  missing inbound rule through the enforcer's swap (no gap). The read-back itself changes nothing.
 
 ## Platform Notes
 * **Linux**:

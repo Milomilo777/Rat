@@ -92,6 +92,11 @@ pub trait EnforcementBackend: Send {
 #[cfg(windows)]
 pub struct WindowsBackend {
     pub enforcer: rat_enforcer::windows::WindowsEnforcer,
+    /// Programs the read-back found with fewer than both directions (rules
+    /// of the previous, out-only version). They are in `enforcer.current`
+    /// (so an unwanted one is still removed) but must be re-added when
+    /// wanted: see [`WindowsBackend::enforce`].
+    incomplete: std::sync::Mutex<Vec<String>>,
 }
 
 #[cfg(windows)]
@@ -109,6 +114,7 @@ impl WindowsBackend {
                 current: rat_enforcer::Blocklist::default(),
                 runner: None,
             },
+            incomplete: std::sync::Mutex::new(Vec::new()),
         }
     }
 }
@@ -138,7 +144,9 @@ impl EnforcementBackend for WindowsBackend {
         }
         // One program path / local port per line; anything non-empty counts.
         // An empty answer (no Rat rules at all) is success, not an error.
-        Ok(parse_existing_output(&String::from_utf8_lossy(&out.stdout)))
+        let (found, incomplete) = parse_existing_directions(&String::from_utf8_lossy(&out.stdout));
+        *self.incomplete.lock().unwrap() = incomplete;
+        Ok(found)
     }
 
     fn adopt(&mut self, existing: rat_enforcer::Blocklist) {
@@ -166,6 +174,30 @@ impl EnforcementBackend for WindowsBackend {
 
     fn enforce(&mut self, wanted: &rat_enforcer::Blocklist) -> io::Result<EnforceOutcome> {
         use rat_enforcer::Enforcer;
+
+        // A5 upgrade: a wanted program the read-back found with one
+        // direction only is dropped from `current`, so the plan adds it
+        // (the enforcer's swap installs out + in without a gap). An unwanted
+        // one stays and is removed by the normal diff. Entries leave the list
+        // once re-added or gone from `current`.
+        {
+            let mut inc = self.incomplete.lock().unwrap();
+            if !inc.is_empty() {
+                let wanted_norm: std::collections::HashSet<String> = wanted
+                    .paths
+                    .iter()
+                    .filter_map(|p| rat_enforcer::validate_path(p).ok())
+                    .collect();
+                let redo: Vec<String> = inc
+                    .iter()
+                    .filter(|p| wanted_norm.contains(*p))
+                    .cloned()
+                    .collect();
+                self.enforcer.current.paths.retain(|p| !redo.contains(p));
+                let current = &self.enforcer.current.paths;
+                inc.retain(|p| !redo.contains(p) && current.contains(p));
+            }
+        }
 
         // The port axis reaches the plan (dropping it here made
         // every refused shared host a silent no-op and ignored the ledger's
@@ -359,7 +391,7 @@ fn merge_blocklists(
 /// separates the two sections for [`parse_existing_output`].
 #[cfg(windows)]
 fn existing_rules_query() -> &'static str {
-    "Get-NetFirewallRule -DisplayName 'Rat:path:*' -ErrorAction SilentlyContinue | Get-NetFirewallApplicationFilter | Select-Object -ExpandProperty Program; Write-Output '---RATPORTS---'; Get-NetFirewallRule -DisplayName 'Rat:port:*' -ErrorAction SilentlyContinue | Get-NetFirewallPortFilter | Select-Object -ExpandProperty LocalPort"
+    "Get-NetFirewallRule -DisplayName 'Rat:path:*' -ErrorAction SilentlyContinue | ForEach-Object { $d = [int]$_.Direction; $_ | Get-NetFirewallApplicationFilter | Select-Object -ExpandProperty Program | ForEach-Object { \"$d|$_\" } }; Write-Output '---RATPORTS---'; Get-NetFirewallRule -DisplayName 'Rat:port:*' -ErrorAction SilentlyContinue | Get-NetFirewallPortFilter | Select-Object -ExpandProperty LocalPort"
 }
 
 /// Start-up sweep of a crashed swap's leftovers (`Rat:tmp:*`, see the
@@ -379,7 +411,20 @@ const PORTS_MARKER: &str = "---RATPORTS---";
 /// reconcile and are skipped.
 #[cfg(windows)]
 fn parse_existing_output(stdout: &str) -> rat_enforcer::Blocklist {
-    let mut paths = Vec::new();
+    parse_existing_directions(stdout).0
+}
+
+/// [`parse_existing_output`] plus the programs seen with fewer than both
+/// directions. A path line is `<1|2>|<program>` (1 = Inbound, 2 = Outbound,
+/// the integer value of the rule's Direction, which is not localized); a line
+/// without that prefix carries no direction and is never flagged. The
+/// previous version created out-only rules under the same names, so a
+/// program found with one direction needs its inbound rule added.
+#[cfg(windows)]
+fn parse_existing_directions(stdout: &str) -> (rat_enforcer::Blocklist, Vec<String>) {
+    use std::collections::BTreeMap;
+    // path -> bit 1 = inbound seen, bit 2 = outbound seen, bit 4 = unknown
+    let mut seen: BTreeMap<String, u8> = BTreeMap::new();
     let mut local_ports = Vec::new();
     let mut in_ports = false;
     for line in stdout.lines() {
@@ -396,14 +441,23 @@ fn parse_existing_output(stdout: &str) -> rat_enforcer::Blocklist {
                 local_ports.push(p);
             }
         } else {
-            paths.push(line.to_string());
+            let (bit, path) = match line.split_once('|') {
+                Some(("1", p)) => (1, p),
+                Some(("2", p)) => (2, p),
+                _ => (4, line),
+            };
+            *seen.entry(path.to_string()).or_insert(0) |= bit;
         }
     }
-    paths.sort();
-    paths.dedup();
+    let incomplete: Vec<String> = seen
+        .iter()
+        .filter(|(_, bits)| **bits & 4 == 0 && **bits != 3)
+        .map(|(p, _)| p.clone())
+        .collect();
+    let paths: Vec<String> = seen.into_keys().collect();
     local_ports.sort();
     local_ports.dedup();
-    rat_enforcer::Blocklist { paths, local_ports }
+    (rat_enforcer::Blocklist { paths, local_ports }, incomplete)
 }
 
 /// Best-effort persistence: the rule set survives a restart (Swift
@@ -815,6 +869,111 @@ mod tests {
             vec!["/a".to_string(), "/b".to_string(), "/c".to_string()]
         );
         assert_eq!(merged.local_ports, vec![1, 2, 3]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parse_directions_flags_programs_without_both_directions() {
+        // `<1 = Inbound | 2 = Outbound>|<program>` per rule
+        let out = "2|C:\\old\\out_only.exe\n1|C:\\new\\both.exe\n2|C:\\new\\both.exe\n1|C:\\in\\in_only.exe\n---RATPORTS---\n5300\n";
+        let (b, incomplete) = parse_existing_directions(out);
+        assert_eq!(
+            b.paths,
+            vec![
+                r"C:\in\in_only.exe".to_string(),
+                r"C:\new\both.exe".to_string(),
+                r"C:\old\out_only.exe".to_string()
+            ]
+        );
+        assert_eq!(b.local_ports, vec![5300]);
+        assert_eq!(
+            incomplete,
+            vec![
+                r"C:\in\in_only.exe".to_string(),
+                r"C:\old\out_only.exe".to_string()
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parse_directions_legacy_lines_without_a_direction_are_not_flagged() {
+        let (b, incomplete) = parse_existing_directions("C:\\a\\app.exe\n---RATPORTS---\n");
+        assert_eq!(b.paths, vec![r"C:\a\app.exe".to_string()]);
+        assert!(incomplete.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn existing_rules_query_reports_the_direction_as_a_number() {
+        // enum names could be localized; the integer is not (1 in, 2 out)
+        let q = existing_rules_query();
+        assert!(q.contains("[int]$_.Direction"), "{q}");
+        assert!(q.contains("Get-NetFirewallApplicationFilter"));
+    }
+
+    /// a backend whose netsh is a recorder (never the real one)
+    #[cfg(windows)]
+    fn recording_backend() -> (WindowsBackend, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let l = std::sync::Arc::clone(&log);
+        let mut backend = WindowsBackend::new();
+        backend.enforcer.runner = Some(std::sync::Arc::new(
+            move |_exe: &std::path::Path, args: &[String]| {
+                l.lock().unwrap().push(args.join(" "));
+                // `show rule` finds the existing name; everything else works
+                Ok(true)
+            },
+        ));
+        (backend, log)
+    }
+
+    // A5 upgrade: a program the previous version blocked outbound only is
+    // wanted again; adopting the read-back must make the next enforce add the
+    // inbound rule (through the swap), once.
+    #[cfg(windows)]
+    #[test]
+    fn enforce_readds_a_wanted_program_found_with_one_direction() {
+        let app = r"C:\Apps\Old\app.exe".to_string();
+        let (mut backend, log) = recording_backend();
+        *backend.incomplete.lock().unwrap() = vec![app.clone()];
+        backend.adopt(rat_enforcer::Blocklist {
+            paths: vec![app.clone()],
+            local_ports: vec![],
+        });
+        let wanted = rat_enforcer::Blocklist {
+            paths: vec![app.clone()],
+            local_ports: vec![],
+        };
+        let out = backend.enforce(&wanted).unwrap();
+        assert!(out.applied, "the missing inbound rule must be applied");
+        let cmds = log.lock().unwrap().clone();
+        assert!(
+            cmds.iter().any(|c| c.contains("dir=in") && c.contains("add")),
+            "{cmds:?}"
+        );
+        // and only once: the next round is a no-op
+        log.lock().unwrap().clear();
+        assert!(!backend.enforce(&wanted).unwrap().applied);
+        assert!(log.lock().unwrap().is_empty());
+    }
+
+    // An unwanted one-direction program is still removed (it stays in current).
+    #[cfg(windows)]
+    #[test]
+    fn enforce_still_removes_an_unwanted_one_direction_program() {
+        let app = r"C:\Apps\Old\app.exe".to_string();
+        let (mut backend, log) = recording_backend();
+        *backend.incomplete.lock().unwrap() = vec![app.clone()];
+        backend.adopt(rat_enforcer::Blocklist {
+            paths: vec![app],
+            local_ports: vec![],
+        });
+        let out = backend
+            .enforce(&rat_enforcer::Blocklist::default())
+            .unwrap();
+        assert!(out.applied);
+        assert!(log.lock().unwrap().iter().any(|c| c.contains("delete")));
     }
 
     // The orphan sweep removes the swap family only, never path/port rules.
