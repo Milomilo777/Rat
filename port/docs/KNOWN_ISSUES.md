@@ -38,8 +38,9 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
   firewall entries outlive the service unless `rat-daemon --cleanup` is run before removing it.
 - **Network and verbatim paths (low).** Rule paths on a network share (`\\host\share\app.exe`) and paths that
   start with `\\?\` or `\\.\` are refused; programs on a network share cannot be blocked by path.
-- **Back pressure (medium).** The command channel is unbounded and each `SetRules` runs a full enforce; a client can
-  queue a lot of work.
+- **Busy daemon (low).** At most 16 client commands wait for the daemon; queued `SetRules` lists are merged into
+  the newest one. When the queue is full the client gets an Error reply and the command (also an alert answer)
+  is dropped; the desktop app does not retry it yet.
 - **Pipe start-up (low).** If another process already owns `\\.\pipe\rat`, the daemon exits; there is no retry, and
   the GUI does not verify the server's identity.
 - **Slow clients (low).** A client that never reads its replies can hold one of the four client slots.
