@@ -6,6 +6,22 @@ use crate::{Blocklist, Enforcer};
 
 pub struct LinuxEnforcer;
 
+/// S5 (update-08): resolve nft from its known absolute locations instead of
+/// PATH / the working directory, so a tampered PATH cannot substitute the
+/// binary the privileged daemon shells out to.
+pub fn nft_path() -> io::Result<std::path::PathBuf> {
+    for candidate in ["/usr/sbin/nft", "/sbin/nft"] {
+        let path = std::path::PathBuf::from(candidate);
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "nft not found in /usr/sbin or /sbin",
+    ))
+}
+
 impl Enforcer for LinuxEnforcer {
     type Plan = String;
 
@@ -51,7 +67,7 @@ impl Enforcer for LinuxEnforcer {
             println!("nft -f - <<EOF\n{}EOF", plan);
             Ok(())
         } else {
-            let mut child = Command::new("nft")
+            let mut child = Command::new(nft_path()?)
                 .arg("-f")
                 .arg("-")
                 .stdin(std::process::Stdio::piped())
@@ -74,6 +90,24 @@ impl Enforcer for LinuxEnforcer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_nft_resolved_absolute_when_present() {
+        // Consistency: if either known location holds nft, it is returned;
+        // otherwise the lookup fails instead of falling back to PATH.
+        let present = ["/usr/sbin/nft", "/sbin/nft"]
+            .iter()
+            .find(|c| std::path::Path::new(c).is_file());
+        match (present, nft_path()) {
+            (Some(found), Ok(p)) => {
+                assert!(p.is_absolute());
+                assert_eq!(&p.to_string_lossy(), found);
+            }
+            (None, Err(e)) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
+            (Some(_), Err(e)) => panic!("nft present but lookup failed: {e}"),
+            (None, Ok(p)) => panic!("nft not present but lookup returned {p:?}"),
+        }
+    }
     use proptest::prelude::*;
     use std::time::Instant;
 

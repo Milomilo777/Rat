@@ -43,6 +43,24 @@ pub fn format_rule_name(path: &str) -> String {
     format!("Rat:path:{}", path)
 }
 
+/// S5 (update-08): resolve netsh from %SystemRoot% instead of PATH / the
+/// working directory, so a tampered PATH cannot substitute the binary the
+/// privileged daemon shells out to.
+pub fn netsh_path() -> io::Result<std::path::PathBuf> {
+    let root = std::env::var_os("SystemRoot")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
+    let candidate = root.join(r"System32\netsh.exe");
+    if candidate.is_file() {
+        Ok(candidate)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "netsh.exe not found under SystemRoot",
+        ))
+    }
+}
+
 impl Enforcer for WindowsEnforcer {
     type Plan = WindowsPlan;
 
@@ -72,7 +90,7 @@ impl Enforcer for WindowsEnforcer {
             if dry_run {
                 println!("netsh advfirewall firewall delete rule name=\"{}\"", name);
             } else {
-                let status = Command::new("netsh")
+                let status = Command::new(netsh_path()?)
                     .args([
                         "advfirewall",
                         "firewall",
@@ -106,7 +124,7 @@ impl Enforcer for WindowsEnforcer {
                     format!("program={}", path),
                 ];
 
-                let status = Command::new("netsh").args(&args).status()?;
+                let status = Command::new(netsh_path()?).args(&args).status()?;
 
                 if !status.success() {
                     return Err(io::Error::other("Failed to add firewall rule"));
@@ -121,6 +139,18 @@ impl Enforcer for WindowsEnforcer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_netsh_resolved_absolute() {
+        let p = netsh_path().expect("netsh must resolve under SystemRoot");
+        assert!(p.is_absolute(), "netsh must be resolved absolutely: {p:?}");
+        assert!(p.is_file(), "resolved netsh does not exist: {p:?}");
+        assert_eq!(
+            p.file_name().and_then(|n| n.to_str()),
+            Some("netsh.exe"),
+            "unexpected binary: {p:?}"
+        );
+    }
     use proptest::prelude::*;
     use std::time::Instant;
 
