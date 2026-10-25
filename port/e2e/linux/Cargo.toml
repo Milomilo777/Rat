@@ -1,0 +1,27 @@
+[package]
+name = "e2e-linux-helpers"
+version = "0.2.0"
+edition = "2021"
+publish = false
+
+# Standalone crate: not a member of the port workspace.
+[workspace]
+
+[dependencies]
+rat-types = { path = "../../crates/rat-types" }
+rat-monitor-linux = { path = "../../crates/rat-monitor-linux" }
+rat-enforcer = { path = "../../crates/rat-enforcer" }
+serde_json = "1"
+libc = "0.2"
+
+[[bin]]
+name = "test-client"
+path = "src/test_client.rs"
+
+[[bin]]
+name = "monitor-probe"
+path = "src/monitor_probe.rs"
+
+[[bin]]
+name = "enforcer-ctl"
+path = "src/enforcer_ctl.rs"
