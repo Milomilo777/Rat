@@ -155,16 +155,17 @@ pub fn format_port_rule_name(port: u16) -> String {
     format!("Rat:port:{}", port)
 }
 
-/// The netsh arguments for one per-program block rule (dir=out block on the
-/// validated program path). Shape pinned by tests; tests never run netsh.
-fn path_rule_args(name: &str, program: &str) -> Vec<String> {
+/// The netsh arguments for one per-program block rule (`dir` = out or in, a
+/// block on the validated program path). Shape pinned by tests; tests never
+/// run netsh.
+fn path_rule_args(name: &str, program: &str, dir: &str) -> Vec<String> {
     vec![
         "advfirewall".to_string(),
         "firewall".to_string(),
         "add".to_string(),
         "rule".to_string(),
         format!("name={name}"),
-        "dir=out".to_string(),
+        format!("dir={dir}"),
         "action=block".to_string(),
         format!("program={program}"),
     ]
@@ -397,13 +398,20 @@ impl Enforcer for WindowsEnforcer {
                 &path_delete_args(&name),
                 format!("netsh advfirewall firewall delete rule name=\"{name}\""),
             )?;
-            if !run(
-                &path_rule_args(&name, path),
-                format!(
-                    "netsh advfirewall firewall add rule name=\"{name}\" dir=out action=block program=\"{path}\""
-                ),
-            )? {
-                return Err(io::Error::other("Failed to add firewall rule"));
+            // one rule per direction under the SAME name: a listening app
+            // is blocked inbound too, and one delete by name (the remove
+            // loop, the pre-add dedupe) removes both.
+            for dir in ["out", "in"] {
+                if !run(
+                    &path_rule_args(&name, path, dir),
+                    format!(
+                        "netsh advfirewall firewall add rule name=\"{name}\" dir={dir} action=block program=\"{path}\""
+                    ),
+                )? {
+                    return Err(io::Error::other(format!(
+                        "Failed to add firewall rule dir={dir}"
+                    )));
+                }
             }
         }
 
@@ -1151,8 +1159,8 @@ mod tests {
 
         #[test]
         fn test_windows_apply_twice_live_count_equals_plan_size() {
-            // One plan's worth of firewall rules: 1 per-program rule + 4
-            // per-port variants (out/in x TCP/UDP).
+            // One plan's worth of firewall rules: 2 per-program rules
+            // (out/in) + 4 per-port variants (out/in x TCP/UDP).
             let fake = Arc::new(FakeNetsh {
                 rules: Mutex::new(HashMap::new()),
             });
@@ -1165,7 +1173,7 @@ mod tests {
             enforcer.apply(&plan1).expect("first apply");
             assert_eq!(
                 fake.count(&format_rule_name(APP)),
-                1,
+                2,
                 "one live path rule after the first apply"
             );
             assert_eq!(
@@ -1189,7 +1197,7 @@ mod tests {
             enforcer.apply(&plan2).expect("second apply");
             assert_eq!(
                 fake.count(&format_rule_name(APP)),
-                1,
+                2,
                 "apply twice -> live rule count == plan size (path)"
             );
             assert_eq!(
@@ -1215,7 +1223,7 @@ mod tests {
             };
             let plan = first.plan(&wanted());
             first.apply(&plan).expect("first enforcer apply");
-            assert_eq!(fake.count(&format_rule_name(APP)), 1);
+            assert_eq!(fake.count(&format_rule_name(APP)), 2);
             assert_eq!(fake.count(&format_port_rule_name(5353)), 4);
 
             let mut second = WindowsEnforcer {
@@ -1226,7 +1234,7 @@ mod tests {
             second.apply(&plan2).expect("second enforcer apply");
             assert_eq!(
                 fake.count(&format_rule_name(APP)),
-                1,
+                2,
                 "a stale diff re-apply must dedupe, not duplicate (path)"
             );
             assert_eq!(
@@ -1269,7 +1277,7 @@ mod tests {
                 .expect("a no-match delete must not abort the plan");
             assert_eq!(
                 fake.count(&format_rule_name(APP)),
-                1,
+                2,
                 "the rest of the plan (the new block) is applied after the no-match delete"
             );
             // The verified-gone rule leaves `current` too, so the next diff
@@ -1344,7 +1352,7 @@ mod tests {
                 .expect("an invalid add must not fail the whole plan");
             assert_eq!(
                 fake.count(&format_rule_name(APP)),
-                1,
+                2,
                 "the rest of the plan (the valid block) is applied"
             );
             assert_eq!(
@@ -1525,7 +1533,7 @@ mod tests {
                 .expect("a localized no-match delete must be tolerated");
             assert_eq!(
                 fake.count(&format_rule_name(APP)),
-                1,
+                2,
                 "the rest of the plan (the new block) is applied after the localized no-match delete"
             );
             assert!(
@@ -1594,6 +1602,154 @@ mod tests {
                 "nothing is applied after a real delete failure, saw {:?}",
                 fake.seen.lock().unwrap()
             );
+        }
+    }
+
+    // Rule shape and netsh call sequence, through the runner seam (never
+    // real netsh). `Sim` keeps every rule with its direction and program
+    // and logs each command.
+    #[cfg(windows)]
+    mod netsh_calls {
+        use super::*;
+        use std::path::Path;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        struct SimRule {
+            name: String,
+            dir: String,
+            program: String,
+        }
+
+        #[derive(Default)]
+        struct Sim {
+            rules: Mutex<Vec<SimRule>>,
+            log: Mutex<Vec<Vec<String>>>,
+        }
+
+        impl Sim {
+            fn run(&self, exe: &Path, args: &[String]) -> io::Result<bool> {
+                assert!(exe.ends_with("netsh.exe"), "unexpected exe {exe:?}");
+                self.log.lock().unwrap().push(args.to_vec());
+                let mut verb = "";
+                let (mut name, mut new_name) = (None, None);
+                let (mut dir, mut program) = (String::new(), String::new());
+                let mut after_new = false;
+                for a in args {
+                    match a.as_str() {
+                        "add" | "delete" | "show" | "set" => verb = a,
+                        "rule" => {}
+                        "new" => after_new = true,
+                        other => {
+                            if let Some(n) = other.strip_prefix("name=") {
+                                if after_new {
+                                    new_name = Some(n.to_string());
+                                } else {
+                                    name = Some(n.to_string());
+                                }
+                            } else if let Some(d) = other.strip_prefix("dir=") {
+                                dir = d.to_string();
+                            } else if let Some(p) = other.strip_prefix("program=") {
+                                program = p.to_string();
+                            }
+                        }
+                    }
+                }
+                let name = name.expect("netsh rule command carries name=");
+                let mut rules = self.rules.lock().unwrap();
+                match verb {
+                    "add" => {
+                        rules.push(SimRule { name, dir, program });
+                        Ok(true)
+                    }
+                    "show" => Ok(rules.iter().any(|r| r.name == name)),
+                    "set" => {
+                        let new_name = new_name.expect("set rule carries new name=");
+                        let mut hit = false;
+                        for r in rules.iter_mut().filter(|r| r.name == name) {
+                            r.name = new_name.clone();
+                            hit = true;
+                        }
+                        Ok(hit)
+                    }
+                    _ => {
+                        let before = rules.len();
+                        rules.retain(|r| r.name != name);
+                        Ok(rules.len() != before)
+                    }
+                }
+            }
+
+            fn rules_named(&self, name: &str) -> Vec<SimRule> {
+                self.rules
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|r| r.name == name)
+                    .cloned()
+                    .collect()
+            }
+        }
+
+        fn sim_runner(sim: &Arc<Sim>) -> NetshRunner {
+            let sim = Arc::clone(sim);
+            Arc::new(move |exe: &Path, args: &[String]| sim.run(exe, args))
+        }
+
+        fn enforcer_with(sim: &Arc<Sim>) -> WindowsEnforcer {
+            WindowsEnforcer {
+                current: Blocklist::default(),
+                runner: Some(sim_runner(sim)),
+            }
+        }
+
+        fn paths(p: &[&str]) -> Blocklist {
+            Blocklist {
+                paths: p.iter().map(|s| s.to_string()).collect(),
+                local_ports: vec![],
+            }
+        }
+
+        const APP: &str = r"C:\Apps\Denied\app.exe";
+
+        #[test]
+        fn test_windows_path_rule_blocks_both_directions() {
+            // a program rule must block inbound too (a listening app).
+            let sim = Arc::new(Sim::default());
+            let mut e = enforcer_with(&sim);
+            let plan = e.plan(&paths(&[APP]));
+            e.apply(&plan).expect("apply");
+            let rules = sim.rules_named(&format_rule_name(APP));
+            let mut dirs: Vec<&str> = rules.iter().map(|r| r.dir.as_str()).collect();
+            dirs.sort();
+            assert_eq!(dirs, vec!["in", "out"], "one rule per direction: {rules:?}");
+            assert!(rules.iter().all(|r| r.program == APP));
+        }
+
+        #[test]
+        fn test_windows_path_remove_deletes_both_directions() {
+            // one delete by name removes the out and the in rule.
+            let sim = Arc::new(Sim::default());
+            let mut e = enforcer_with(&sim);
+            let plan = e.plan(&paths(&[APP]));
+            e.apply(&plan).expect("apply");
+            let plan = e.plan(&Blocklist::default());
+            assert_eq!(plan.remove, vec![APP.to_string()]);
+            e.apply(&plan).expect("remove");
+            assert!(sim.rules_named(&format_rule_name(APP)).is_empty());
+            assert!(sim.rules.lock().unwrap().is_empty());
+        }
+
+        #[test]
+        fn test_windows_path_rule_args_carry_the_direction() {
+            let name = format_rule_name(APP);
+            for dir in ["out", "in"] {
+                let args = path_rule_args(&name, APP, dir);
+                assert!(args.contains(&format!("dir={dir}")), "{args:?}");
+                assert!(args.contains(&format!("name={name}")));
+                assert!(args.contains(&format!("program={APP}")));
+                assert!(args.contains(&"action=block".to_string()));
+            }
         }
     }
 }

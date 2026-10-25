@@ -4,8 +4,6 @@ This is the first release of the Windows and Linux port. The items below are kno
 versions. Severity is our own estimate. Reports and fixes are welcome.
 
 ## Enforcement (`rat-enforcer`)
-- **Outbound only for app rules (medium).** Per-program rules block outbound traffic; inbound connections to a
-  listening blocked app are only blocked when a local-port rule covers them (port rules block both directions).
 - **Apps that change their executable (medium).** Rules match one executable path. Electron/Chromium helper
   executables, packaged (Store/UWP) apps and auto-updaters that install into versioned folders (`app-1.2.3\`) are
   not followed; after an update the block may stop applying. A renamed or copied executable is not blocked.
