@@ -481,13 +481,15 @@ impl Enforcer for WindowsEnforcer {
 
     /// netsh cannot delete by name pattern, so the wildcard
     /// cleanup goes through PowerShell's NetSecurity module.
-    fn cleanup(&self) -> io::Result<()> {
+    fn cleanup(&mut self) -> io::Result<()> {
         use std::env;
         use std::process::Command;
 
         let dry_run = crate::dry_run_enabled(env::var("RAT_DRY_RUN").ok().as_deref());
         if dry_run {
             println!("powershell: {CLEANUP_RULES_QUERY}");
+            // the rules are gone (in the dry-run model too): so is our view
+            self.current = Blocklist::default();
             return Ok(());
         }
 
@@ -500,6 +502,10 @@ impl Enforcer for WindowsEnforcer {
                 &out,
             ));
         }
+        // every Rat rule is gone: `current` must say so, or the next plan
+        // would think they still exist and never re-add them. A failed
+        // cleanup (above) leaves `current` as it was.
+        self.current = Blocklist::default();
         Ok(())
     }
 }
@@ -527,11 +533,28 @@ mod tests {
         // with the dry-run opt-out set, cleanup must not spawn
         // any process (verified by it succeeding instantly offline).
         std::env::set_var("RAT_DRY_RUN", "1");
-        let enforcer = WindowsEnforcer {
+        let mut enforcer = WindowsEnforcer {
             current: Blocklist::default(),
             runner: None,
         };
         enforcer.cleanup().expect("dry-run cleanup must succeed");
+    }
+
+    #[test]
+    fn test_windows_cleanup_empties_in_memory_state() {
+        // After cleanup() every Rat rule is gone, so the enforcer's own view
+        // (`current`) must be empty too; otherwise the next plan believes the
+        // rules still exist and never re-adds them.
+        std::env::set_var("RAT_DRY_RUN", "1");
+        let mut enforcer = WindowsEnforcer {
+            current: Blocklist {
+                paths: vec![r"C:\Apps\Denied\app.exe".to_string()],
+                local_ports: vec![5353],
+            },
+            runner: None,
+        };
+        enforcer.cleanup().expect("dry-run cleanup must succeed");
+        assert_eq!(enforcer.current, Blocklist::default());
     }
 
     #[test]

@@ -31,7 +31,7 @@ impl Enforcer for LinuxEnforcer {
 
     /// drop the whole `inet rat` table on clean shutdown
     /// (systemd's ExecStopPost runs the same command after any exit).
-    fn cleanup(&self) -> io::Result<()> {
+    fn cleanup(&mut self) -> io::Result<()> {
         let dry_run = crate::dry_run_enabled(env::var("RAT_DRY_RUN").ok().as_deref());
         if dry_run {
             println!("nft delete table inet rat");

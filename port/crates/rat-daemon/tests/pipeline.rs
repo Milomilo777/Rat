@@ -41,7 +41,7 @@ struct RecorderBackend {
 }
 
 impl EnforcementBackend for RecorderBackend {
-    fn cleanup(&self) -> io::Result<()> {
+    fn cleanup(&mut self) -> io::Result<()> {
         self.events.lock().unwrap().push(Event::Cleanup);
         Ok(())
     }

@@ -27,8 +27,9 @@ pub trait Enforcer {
     /// remove every rule this enforcer created. Called on
     /// start and on clean shutdown (daemon wiring) so
     /// persistent rules do not survive crashes as duplicates; systemd's
-    /// ExecStopPost covers the linux daemon meanwhile.
-    fn cleanup(&self) -> io::Result<()> {
+    /// ExecStopPost covers the linux daemon meanwhile. On success the
+    /// enforcer's own view of the rules is empty again (hence `&mut self`).
+    fn cleanup(&mut self) -> io::Result<()> {
         Ok(())
     }
 }

@@ -50,7 +50,7 @@ pub trait EnforcementBackend: Send {
     /// (`rat-daemon --cleanup`): startup reconciles instead and a clean
     /// stop keeps the rules (macOS
     /// persistent-anchor parity).
-    fn cleanup(&self) -> io::Result<()>;
+    fn cleanup(&mut self) -> io::Result<()>;
     /// Read back the rules this backend currently holds, so a restart can
     /// RECONCILE against them instead of wiping (read existing, diff
     /// with the saved plan, remove extras, add missing — a wanted rule is
@@ -96,7 +96,7 @@ impl WindowsBackend {
 
 #[cfg(windows)]
 impl EnforcementBackend for WindowsBackend {
-    fn cleanup(&self) -> io::Result<()> {
+    fn cleanup(&mut self) -> io::Result<()> {
         use rat_enforcer::Enforcer;
         self.enforcer.cleanup()
     }
@@ -187,7 +187,7 @@ impl LinuxBackend {
 
 #[cfg(not(windows))]
 impl EnforcementBackend for LinuxBackend {
-    fn cleanup(&self) -> io::Result<()> {
+    fn cleanup(&mut self) -> io::Result<()> {
         use rat_enforcer::Enforcer;
         self.enforcer.cleanup()
     }
