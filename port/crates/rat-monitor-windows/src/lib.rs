@@ -318,7 +318,8 @@ pub mod process_info {
 pub mod stats {
     use windows::Win32::Foundation::WIN32_ERROR;
     use windows::Win32::NetworkManagement::IpHelper::{
-        GetPerTcp6ConnectionEStats, GetPerTcpConnectionEStats, TCP_ESTATS_DATA_ROD_v0,
+        GetPerTcp6ConnectionEStats, GetPerTcpConnectionEStats, SetPerTcp6ConnectionEStats,
+        SetPerTcpConnectionEStats, TCP_ESTATS_DATA_ROD_v0, TCP_ESTATS_DATA_RW_v0,
         TcpConnectionEstatsData, MIB_TCP6ROW, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_LH,
         MIB_TCPROW_OWNER_PID,
     };
@@ -398,15 +399,100 @@ pub mod stats {
     /// M3 (update-09): API-level conditions that disable estats for the
     /// whole process (no admin rights / OS support); anything else is a
     /// per-row error.
-    pub fn estats_error_is_global(e: &WIN32_ERROR) -> bool {
-        *e == windows::Win32::Foundation::ERROR_ACCESS_DENIED
-            || *e == windows::Win32::Foundation::ERROR_NOT_SUPPORTED
+    pub fn estats_error_is_global(e: &WIN32_ERROR, owning_pid: u32) -> bool {
+        owning_pid != 0
+            && (*e == windows::Win32::Foundation::ERROR_ACCESS_DENIED
+                || *e == windows::Win32::Foundation::ERROR_NOT_SUPPORTED)
+    }
+
+    fn estats_rw_bytes(rw: &TCP_ESTATS_DATA_RW_v0) -> &[u8] {
+        unsafe {
+            std::slice::from_raw_parts(
+                rw as *const _ as *const u8,
+                std::mem::size_of::<TCP_ESTATS_DATA_RW_v0>(),
+            )
+        }
+    }
+
+    /// M1 (update-09): byte counters stay zero until data collection is
+    /// enabled for the individual connection; call once per established row.
+    pub fn enable_tcp_estats_v4(row: &MIB_TCPROW_OWNER_PID) -> WIN32_ERROR {
+        let rw = TCP_ESTATS_DATA_RW_v0 {
+            EnableCollection: windows::Win32::Foundation::BOOLEAN(1),
+        };
+        WIN32_ERROR(unsafe {
+            SetPerTcpConnectionEStats(
+                row as *const _ as *const MIB_TCPROW_LH,
+                TcpConnectionEstatsData,
+                estats_rw_bytes(&rw),
+                0,
+                0,
+            )
+        })
+    }
+
+    pub fn enable_tcp_estats_v6(row: &MIB_TCP6ROW_OWNER_PID) -> WIN32_ERROR {
+        let rw = TCP_ESTATS_DATA_RW_v0 {
+            EnableCollection: windows::Win32::Foundation::BOOLEAN(1),
+        };
+        WIN32_ERROR(unsafe {
+            SetPerTcp6ConnectionEStats(
+                &to_mib_tcp6_row(row),
+                TcpConnectionEstatsData,
+                estats_rw_bytes(&rw),
+                0,
+                0,
+            )
+        })
+    }
+}
+
+#[cfg(windows)]
+#[derive(Hash, Eq, PartialEq, Clone, Copy)]
+struct EstatsRowKey {
+    local: u128,
+    local_port: u32,
+    remote: u128,
+    remote_port: u32,
+    pid: u32,
+}
+
+#[cfg(windows)]
+fn estats_row_key_v4(
+    row: &windows::Win32::NetworkManagement::IpHelper::MIB_TCPROW_OWNER_PID,
+) -> EstatsRowKey {
+    EstatsRowKey {
+        local: row.dwLocalAddr as u128,
+        local_port: row.dwLocalPort,
+        remote: row.dwRemoteAddr as u128,
+        remote_port: row.dwRemotePort,
+        pid: row.dwOwningPid,
+    }
+}
+
+#[cfg(windows)]
+fn estats_row_key_v6(
+    row: &windows::Win32::NetworkManagement::IpHelper::MIB_TCP6ROW_OWNER_PID,
+) -> EstatsRowKey {
+    let mut local = [0u8; 16];
+    local.copy_from_slice(&row.ucLocalAddr);
+    let mut remote = [0u8; 16];
+    remote.copy_from_slice(&row.ucRemoteAddr);
+    EstatsRowKey {
+        local: u128::from_be_bytes(local),
+        local_port: row.dwLocalPort,
+        remote: u128::from_be_bytes(remote),
+        remote_port: row.dwRemotePort,
+        pid: row.dwOwningPid,
     }
 }
 
 #[cfg(windows)]
 pub struct WindowsMonitor {
     estats_supported: bool,
+    /// M1 (update-09): connections whose estats collection was already
+    /// enabled (never on LISTEN rows).
+    enabled_rows: std::collections::HashSet<EstatsRowKey>,
 }
 
 #[cfg(windows)]
@@ -421,6 +507,7 @@ impl WindowsMonitor {
     pub fn new() -> Self {
         Self {
             estats_supported: true,
+            enabled_rows: std::collections::HashSet::new(),
         }
     }
 }
@@ -429,6 +516,12 @@ impl WindowsMonitor {
 impl ConnectionSource for WindowsMonitor {
     fn sample(&mut self) -> std::io::Result<Vec<Connection>> {
         let mut connections = Vec::new();
+
+        // M1 (update-09): bound the enabled-connection set; re-enabling a
+        // still-live connection is harmless, so a plain clear suffices.
+        if self.enabled_rows.len() > 8192 {
+            self.enabled_rows.clear();
+        }
 
         // TCP IPv4
         if let Ok(table) = windows_sys::get_tcp_table_v4() {
@@ -454,13 +547,25 @@ impl ConnectionSource for WindowsMonitor {
                 // vanished between the table snapshot and the stats call)
                 // leaves that row at None without affecting the others.
                 if self.estats_supported && !is_listening_state(row.dwState) {
+                    // M1 (update-09): enable collection once per connection.
+                    let key = estats_row_key_v4(&row);
+                    if !self.enabled_rows.contains(&key) {
+                        let rc = stats::enable_tcp_estats_v4(&row);
+                        if rc == windows::Win32::Foundation::WIN32_ERROR(0) {
+                            self.enabled_rows.insert(key);
+                        } else if stats::estats_error_is_global(&rc, row.dwOwningPid) {
+                            self.estats_supported = false;
+                        }
+                    }
+                }
+                if self.estats_supported && !is_listening_state(row.dwState) {
                     match stats::get_tcp_estats_v4(&row) {
                         Ok((bin, bout)) => {
                             bytes_in = Some(bin);
                             bytes_out = Some(bout);
                         }
                         Err(e) => {
-                            if stats::estats_error_is_global(&e) {
+                            if stats::estats_error_is_global(&e, row.dwOwningPid) {
                                 self.estats_supported = false;
                             }
                         }
@@ -513,13 +618,25 @@ impl ConnectionSource for WindowsMonitor {
                 // vanished between the table snapshot and the stats call)
                 // leaves that row at None without affecting the others.
                 if self.estats_supported && !is_listening_state(row.dwState) {
+                    // M1 (update-09): enable collection once per connection.
+                    let key = estats_row_key_v6(&row);
+                    if !self.enabled_rows.contains(&key) {
+                        let rc = stats::enable_tcp_estats_v6(&row);
+                        if rc == windows::Win32::Foundation::WIN32_ERROR(0) {
+                            self.enabled_rows.insert(key);
+                        } else if stats::estats_error_is_global(&rc, row.dwOwningPid) {
+                            self.estats_supported = false;
+                        }
+                    }
+                }
+                if self.estats_supported && !is_listening_state(row.dwState) {
                     match stats::get_tcp_estats_v6(&row) {
                         Ok((bin, bout)) => {
                             bytes_in = Some(bin);
                             bytes_out = Some(bout);
                         }
                         Err(e) => {
-                            if stats::estats_error_is_global(&e) {
+                            if stats::estats_error_is_global(&e, row.dwOwningPid) {
                                 self.estats_supported = false;
                             }
                         }
@@ -706,13 +823,52 @@ mod edge_case_tests {
     use std::path::Path;
 
     #[test]
+    fn test_estats_enablement_live_loopback_counts_bytes() {
+        // M1 (update-09): without SetPerTcpConnectionEStats the Get side
+        // reports zeros; enablement must happen once per connection. Two
+        // samples: the first enables, traffic flows, the second reads.
+        use rat_types::Protocol;
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let mut server = listener.accept().unwrap().0;
+        client.write_all(&vec![b'x'; 1024]).unwrap();
+        let mut drain = [0u8; 16];
+        let _ = server.read(&mut drain);
+
+        let mut monitor = WindowsMonitor::new();
+        let _ = monitor.sample().expect("first sample (enables estats)");
+
+        client.write_all(&vec![b'y'; 64 * 1024]).unwrap();
+        client.flush().unwrap();
+        let mut probe = [0u8; 1];
+        let _ = server.read(&mut probe);
+
+        let conns = monitor.sample().expect("second sample");
+        let row = conns
+            .iter()
+            .find(|c| c.protocol == Protocol::Tcp && c.local.port() == port && !c.listening)
+            .expect("accepted loopback connection not found");
+        let bytes_in = row
+            .bytes_in
+            .expect("estats must yield counters for the live connection (None = disabled)");
+        assert!(
+            bytes_in > 0,
+            "byte counters must be nonzero after enablement, got {bytes_in}"
+        );
+    }
+
+    #[test]
     fn test_estats_global_vs_row_errors() {
         use windows::Win32::Foundation::WIN32_ERROR;
         // M3 (update-09): only API-level conditions are global.
-        assert!(stats::estats_error_is_global(&WIN32_ERROR(5))); // ACCESS_DENIED
-        assert!(stats::estats_error_is_global(&WIN32_ERROR(50))); // NOT_SUPPORTED
-        assert!(!stats::estats_error_is_global(&WIN32_ERROR(1168))); // NOT_FOUND (row vanished)
-        assert!(!stats::estats_error_is_global(&WIN32_ERROR(87))); // INVALID_PARAMETER
+        assert!(stats::estats_error_is_global(&WIN32_ERROR(5), 42)); // ACCESS_DENIED, owned row
+        assert!(stats::estats_error_is_global(&WIN32_ERROR(50), 42)); // NOT_SUPPORTED, owned row
+        assert!(!stats::estats_error_is_global(&WIN32_ERROR(50), 0)); // kernel TIME_WAIT row: per-row
+        assert!(!stats::estats_error_is_global(&WIN32_ERROR(1168), 42)); // NOT_FOUND (row vanished)
+        assert!(!stats::estats_error_is_global(&WIN32_ERROR(87), 42)); // INVALID_PARAMETER
     }
 
     #[test]
