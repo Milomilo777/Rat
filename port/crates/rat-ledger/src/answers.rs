@@ -6,11 +6,15 @@ use crate::alerts::Alert;
 use crate::registrable_domain;
 use chrono::Utc;
 use rat_core::{Lifetime, PortRange, Rule, Verdict};
+use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, SocketAddr};
 use uuid::Uuid;
 
-/// Answer scope (RulesModel.swift:158-161).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Answer scope (RulesModel.swift:158-161). Serialized lowercase over the
+/// daemon IPC ("any" | "domain" | "host" | "port") — rat-daemon carries it
+/// in ClientMessage::AlertAnswer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AnswerScope {
     /// "This App (Any Server)" — a whole-app rule.
     Any,

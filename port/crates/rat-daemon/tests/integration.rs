@@ -1,14 +1,464 @@
-use rat_daemon::msg::Message;
-use rat_types::{Connection, ConnectionSource, ProcessInfo, Protocol};
+use rat_daemon::msg::{ClientMessage, ServerMessage, PROTOCOL_VERSION};
+use rat_types::{Connection, ProcessInfo, Protocol};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec};
 
-struct MockSource {
-    invocations: usize,
+fn sample_connection() -> Connection {
+    Connection {
+        process: ProcessInfo {
+            pid: 1234,
+            exe: Some(PathBuf::from(r"C:\Program Files\Some فارسی Name\App.exe")),
+            name: "تست中文".to_string(),
+            user: None,
+        },
+        protocol: Protocol::Tcp,
+        local: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080),
+        remote: Some(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)),
+            443,
+        )),
+        listening: false,
+        bytes_in: Some(100),
+        bytes_out: Some(200),
+        via_vpn: false,
+    }
 }
 
-impl ConnectionSource for MockSource {
+// ---------------------------------------------------------------- helpers
+
+async fn spawn_server(
+    test: &str,
+) -> (
+    String,
+    tokio::sync::broadcast::Sender<ServerMessage>,
+    tokio::sync::broadcast::Sender<()>,
+) {
+    #[cfg(unix)]
+    let endpoint = format!("/tmp/rat_it_{test}_{}.sock", std::process::id());
+    #[cfg(windows)]
+    let endpoint = format!(r"\\.\pipe\rat_it_{test}_{}", std::process::id());
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let (snapshot_tx, snapshot_rx) = tokio::sync::broadcast::channel(16);
+    // Commands are dropped here: the IPC scenarios below never set rules.
+    let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let ep = endpoint.clone();
+    tokio::spawn(async move {
+        let _ = rat_daemon::ipc::start_ipc_server(&ep, shutdown_rx, snapshot_rx, cmd_tx).await;
+    });
+
+    #[cfg(unix)]
+    {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !std::path::Path::new(&endpoint).exists() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            std::path::Path::new(&endpoint).exists(),
+            "server never bound {endpoint}"
+        );
+    }
+    #[cfg(windows)]
+    {
+        // Probe with a throwaway client: its handler occupies one of the four
+        // handshake slots for its (unused) 10s window.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match tokio::net::windows::named_pipe::ClientOptions::new().open(&endpoint) {
+                Ok(probe) => {
+                    drop(probe);
+                    break;
+                }
+                Err(_) => {
+                    assert!(Instant::now() < deadline, "server never created {endpoint}");
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        }
+    }
+
+    (endpoint, snapshot_tx, shutdown_tx)
+}
+
+#[cfg(unix)]
+async fn connect_ep(path: &str) -> tokio::net::UnixStream {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match tokio::net::UnixStream::connect(path).await {
+            Ok(s) => return s,
+            Err(_) => {
+                assert!(Instant::now() < deadline, "server at {path} never came up");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+async fn connect_ep(pipe: &str) -> tokio::net::windows::named_pipe::NamedPipeClient {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match tokio::net::windows::named_pipe::ClientOptions::new().open(pipe) {
+            Ok(c) => return c,
+            Err(_) => {
+                assert!(Instant::now() < deadline, "pipe {pipe} never came up");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
+}
+
+async fn send_client<S>(writer: &mut FramedWrite<S, LinesCodec>, msg: &ClientMessage)
+where
+    S: tokio::io::AsyncWrite + Unpin,
+{
+    use futures::SinkExt;
+    writer
+        .send(msg.to_string().expect("test message serializes"))
+        .await
+        .expect("write to server");
+}
+
+async fn read_server<S>(
+    reader: &mut FramedRead<S, LinesCodec>,
+    timeout: Duration,
+) -> Option<ServerMessage>
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
+    use futures::StreamExt;
+    match tokio::time::timeout(timeout, reader.next()).await {
+        Ok(Some(Ok(line))) => {
+            Some(ServerMessage::from_json_str(&line).expect("server sent a non-ServerMessage line"))
+        }
+        Ok(Some(Err(e))) => panic!("codec error reading server: {e}"),
+        Ok(None) => None,
+        Err(_) => panic!("timed out reading a server message"),
+    }
+}
+
+const READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+// ------------------------------------------------------------ scenarios
+
+// PROPOSALS #15: Hello{PROTOCOL_VERSION} is answered with HelloAck; a repeat
+// Hello gets an error but keeps the connection.
+async fn scenario_hello_ack<S>(stream: S)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (r, w) = tokio::io::split(stream);
+    let mut reader = FramedRead::new(r, LinesCodec::new());
+    let mut writer = FramedWrite::new(w, LinesCodec::new());
+
+    send_client(
+        &mut writer,
+        &ClientMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    )
+    .await;
+    let ack = read_server(&mut reader, READ_TIMEOUT)
+        .await
+        .expect("HelloAck");
+    assert_eq!(
+        ack,
+        ServerMessage::HelloAck {
+            protocol_version: PROTOCOL_VERSION
+        }
+    );
+
+    send_client(
+        &mut writer,
+        &ClientMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    )
+    .await;
+    let again = read_server(&mut reader, READ_TIMEOUT).await.expect("reply");
+    assert!(
+        matches!(again, ServerMessage::Error { .. }),
+        "a repeat Hello must be answered with an error: {again:?}"
+    );
+}
+
+// PROPOSALS #15: a mismatched version is answered with Error and closed.
+async fn scenario_version_mismatch<S>(stream: S)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (r, w) = tokio::io::split(stream);
+    let mut reader = FramedRead::new(r, LinesCodec::new());
+    let mut writer = FramedWrite::new(w, LinesCodec::new());
+
+    send_client(
+        &mut writer,
+        &ClientMessage::Hello {
+            protocol_version: PROTOCOL_VERSION + 1,
+        },
+    )
+    .await;
+    let reply = read_server(&mut reader, READ_TIMEOUT)
+        .await
+        .expect("Error reply");
+    match reply {
+        ServerMessage::Error { message } => {
+            assert!(
+                message.contains("unsupported protocol version"),
+                "the error must name the version problem: {message}"
+            );
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+    assert!(
+        read_server(&mut reader, READ_TIMEOUT).await.is_none(),
+        "the connection must close after a version mismatch"
+    );
+}
+
+// PROPOSALS #15: any other opener is rejected — the first message must be
+// Hello, and SetRules before it is dropped on the floor.
+async fn scenario_first_message_must_be_hello<S>(stream: S)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (r, w) = tokio::io::split(stream);
+    let mut reader = FramedRead::new(r, LinesCodec::new());
+    let mut writer = FramedWrite::new(w, LinesCodec::new());
+
+    send_client(&mut writer, &ClientMessage::SetRules { rules: vec![] }).await;
+    let reply = read_server(&mut reader, READ_TIMEOUT)
+        .await
+        .expect("Error reply");
+    match reply {
+        ServerMessage::Error { message } => {
+            assert!(
+                message.contains("first message must be Hello"),
+                "the error must name the handshake requirement: {message}"
+            );
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+    assert!(
+        read_server(&mut reader, READ_TIMEOUT).await.is_none(),
+        "the connection must close when the handshake is skipped"
+    );
+}
+
+// A client that never sends Hello receives nothing (PROPOSALS #15: no
+// ServerMessage flows before the handshake completes).
+async fn scenario_unhandshaked_gets_nothing<S>(stream: S)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use futures::StreamExt;
+    let (r, _w) = tokio::io::split(stream);
+    let mut reader = FramedRead::new(r, LinesCodec::new());
+    let got = tokio::time::timeout(Duration::from_millis(700), reader.next()).await;
+    assert!(
+        got.is_err(),
+        "an unhandshaked client must not receive anything"
+    );
+}
+
+// Malformed and oversized input before the handshake: answered with Error,
+// then closed (S10).
+async fn scenario_bad_input<S>(stream: S, payload: &[u8], needle: &str)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use futures::StreamExt;
+    use tokio::io::AsyncWriteExt;
+    let (r, mut w) = tokio::io::split(stream);
+    let mut reader = FramedRead::new(r, LinesCodec::new());
+    let _ = w.write_all(payload).await;
+    let _ = w.write_all(b"\n").await;
+
+    let deadline = Instant::now() + READ_TIMEOUT;
+    let mut saw_error = false;
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_secs(2), reader.next()).await {
+            Ok(Some(Ok(line))) => {
+                if line.contains(needle) {
+                    saw_error = true;
+                    break;
+                }
+            }
+            Ok(Some(Err(e))) => {
+                if format!("{e}").contains(needle) {
+                    saw_error = true;
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(_) => break,
+        }
+    }
+    assert!(saw_error, "expected a reply containing {needle:?}");
+}
+
+// ------------------------------------------------------------ tests
+
+#[tokio::test]
+async fn test_hello_ack() {
+    let (endpoint, _snapshot_tx, shutdown_tx) = spawn_server("hello_ack").await;
+    scenario_hello_ack(connect_ep(&endpoint).await).await;
+    let _ = shutdown_tx.send(());
+}
+
+#[tokio::test]
+async fn test_version_mismatch_is_refused_and_closed() {
+    let (endpoint, _snapshot_tx, shutdown_tx) = spawn_server("version_mismatch").await;
+    scenario_version_mismatch(connect_ep(&endpoint).await).await;
+    let _ = shutdown_tx.send(());
+}
+
+#[tokio::test]
+async fn test_first_message_must_be_hello() {
+    let (endpoint, _snapshot_tx, shutdown_tx) = spawn_server("hello_first").await;
+    scenario_first_message_must_be_hello(connect_ep(&endpoint).await).await;
+    let _ = shutdown_tx.send(());
+}
+
+#[tokio::test]
+async fn test_unhandshaked_client_gets_nothing() {
+    let (endpoint, snapshot_tx, shutdown_tx) = spawn_server("no_hello_no_data").await;
+    let stream = connect_ep(&endpoint).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _ = snapshot_tx.send(ServerMessage::Snapshot {
+        connections: vec![sample_connection()],
+    });
+    scenario_unhandshaked_gets_nothing(stream).await;
+    let _ = shutdown_tx.send(());
+}
+
+#[tokio::test]
+async fn test_empty_line_before_handshake_rejected() {
+    let (endpoint, _snapshot_tx, shutdown_tx) = spawn_server("empty_line").await;
+    scenario_bad_input(connect_ep(&endpoint).await, b"", "Invalid JSON").await;
+    let _ = shutdown_tx.send(());
+}
+
+#[tokio::test]
+async fn test_garbage_before_handshake_rejected() {
+    let (endpoint, _snapshot_tx, shutdown_tx) = spawn_server("garbage").await;
+    scenario_bad_input(
+        connect_ep(&endpoint).await,
+        b"not a valid json message",
+        "Invalid JSON",
+    )
+    .await;
+    let _ = shutdown_tx.send(());
+}
+
+// The snapshot must reach a handshaked client over a REAL socket/pipe,
+// produced by the same core loop the daemon runs (run_pipeline).
+#[cfg(unix)]
+#[tokio::test]
+async fn test_ipc_snapshot() {
+    let socket_path = format!("/tmp/rat_it_snapshot_{}.sock", std::process::id());
+    let _ = std::fs::remove_file(&socket_path);
+    run_snapshot_pipeline(&socket_path).await;
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn test_ipc_snapshot() {
+    let pipe_name = format!(r"\\.\pipe\rat_it_snapshot_{}", std::process::id());
+    run_snapshot_pipeline(&pipe_name).await;
+}
+
+async fn run_snapshot_pipeline(endpoint: &str) {
+    use tokio_util::codec::LinesCodec;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let (snapshot_tx, snapshot_rx) = tokio::sync::broadcast::channel(16);
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let source = MockSource;
+    let policy = rat_ledger::RuleEnginePolicy(rat_core::RuleEngine::new());
+    let ledger = rat_ledger::Ledger::new(Default::default(), Default::default());
+    let backend = NoopBackend;
+
+    let _core_task = tokio::spawn(rat_daemon::core::run_pipeline(
+        source,
+        policy,
+        ledger,
+        backend,
+        cmd_rx,
+        snapshot_tx,
+        shutdown_rx,
+    ));
+    let shutdown_for_ipc = shutdown_tx.clone();
+    let ep = endpoint.to_string();
+    let _ipc_task = tokio::spawn(async move {
+        let _ = rat_daemon::ipc::start_ipc_server(
+            &ep,
+            shutdown_for_ipc.subscribe(),
+            snapshot_rx,
+            cmd_tx,
+        )
+        .await;
+    });
+
+    // Wait for the server endpoint, then handshake.
+    #[cfg(unix)]
+    {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !std::path::Path::new(endpoint).exists() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+    let stream = connect_ep(endpoint).await;
+    let (r, w) = tokio::io::split(stream);
+    let mut reader = FramedRead::new(r, LinesCodec::new());
+    let mut writer = FramedWrite::new(w, LinesCodec::new());
+
+    send_client(
+        &mut writer,
+        &ClientMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    )
+    .await;
+    let ack = read_server(&mut reader, READ_TIMEOUT)
+        .await
+        .expect("HelloAck");
+    assert!(matches!(ack, ServerMessage::HelloAck { .. }));
+
+    // The pipeline's Snapshot (from MockSource, pid 1234) arrives on its own.
+    use futures::StreamExt;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut got = None;
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_secs(2), reader.next()).await {
+            Ok(Some(Ok(line))) => {
+                if let Ok(ServerMessage::Snapshot { connections }) =
+                    ServerMessage::from_json_str(&line)
+                {
+                    got = Some(connections);
+                    break;
+                }
+            }
+            Ok(Some(Err(e))) => panic!("codec error: {e}"),
+            Ok(None) => panic!("connection closed before a snapshot arrived"),
+            Err(_) => {}
+        }
+    }
+    let connections = got.expect("no snapshot arrived");
+    assert_eq!(connections.len(), 1);
+    assert_eq!(connections[0].process.pid, 1234);
+
+    let _ = shutdown_tx.send(());
+}
+
+struct MockSource;
+
+impl rat_types::ConnectionSource for MockSource {
     fn sample(&mut self) -> std::io::Result<Vec<Connection>> {
-        self.invocations += 1;
         Ok(vec![Connection {
             process: ProcessInfo {
                 pid: 1234,
@@ -27,175 +477,27 @@ impl ConnectionSource for MockSource {
     }
 }
 
-#[cfg(unix)]
-#[tokio::test]
-async fn test_ipc_snapshot() {
-    use futures::StreamExt;
-    use tokio::net::UnixStream;
-    use tokio_util::codec::{FramedRead, LinesCodec};
+struct NoopBackend;
 
-    let socket_path = format!("/tmp/rat_test_{}.sock", std::process::id());
-    let _ = std::fs::remove_file(&socket_path);
-
-    let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel(1);
-    let (snapshot_tx, snapshot_rx) = tokio::sync::broadcast::channel(16);
-
-    let shutdown_rx_core = shutdown_tx.subscribe();
-    let shutdown_rx_ipc = shutdown_tx.subscribe();
-
-    let source = MockSource { invocations: 0 };
-    let snapshot_tx_clone = snapshot_tx.clone();
-
-    let _core_task = tokio::spawn(async move {
-        rat_daemon::core::run_core_loop(source, snapshot_tx_clone, shutdown_rx_core).await;
-    });
-
-    let sp_clone = socket_path.clone();
-    let _ipc_task = tokio::spawn(async move {
-        let _ = rat_daemon::ipc::start_ipc_server(&sp_clone, shutdown_rx_ipc, snapshot_rx).await;
-    });
-
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-    let stream = UnixStream::connect(&socket_path)
-        .await
-        .expect("Failed to connect");
-    let mut framed = FramedRead::new(stream, LinesCodec::new());
-
-    if let Some(Ok(line)) = framed.next().await {
-        let msg: Message = Message::from_json_str(&line).expect("Invalid message");
-        if let Message::Snapshot { connections } = msg {
-            assert_eq!(connections.len(), 1);
-            assert_eq!(connections[0].process.pid, 1234);
-        } else {
-            panic!("Expected Snapshot");
-        }
-    } else {
-        panic!("Did not receive a message");
+impl rat_daemon::core::EnforcementBackend for NoopBackend {
+    fn cleanup(&self) -> std::io::Result<()> {
+        Ok(())
     }
 
-    let _ = shutdown_tx.send(());
-}
-
-#[cfg(windows)]
-#[tokio::test]
-async fn test_ipc_snapshot() {
-    use futures::StreamExt;
-    use tokio::net::windows::named_pipe::ClientOptions;
-    use tokio_util::codec::{FramedRead, LinesCodec};
-
-    let pipe_name = format!(r"\\.\pipe\rat_test_{}", std::process::id());
-
-    let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel(1);
-    let (snapshot_tx, snapshot_rx) = tokio::sync::broadcast::channel(16);
-
-    let shutdown_rx_core = shutdown_tx.subscribe();
-    let shutdown_rx_ipc = shutdown_tx.subscribe();
-
-    let source = MockSource { invocations: 0 };
-    let snapshot_tx_clone = snapshot_tx.clone();
-
-    let _core_task = tokio::spawn(async move {
-        rat_daemon::core::run_core_loop(source, snapshot_tx_clone, shutdown_rx_core).await;
-    });
-
-    let pn_clone = pipe_name.clone();
-    let _ipc_task = tokio::spawn(async move {
-        let _ = rat_daemon::ipc::start_ipc_server(&pn_clone, shutdown_rx_ipc, snapshot_rx).await;
-    });
-
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-
-    let client = ClientOptions::new()
-        .open(&pipe_name)
-        .expect("Failed to connect to pipe");
-    let mut framed = FramedRead::new(client, LinesCodec::new());
-
-    if let Some(Ok(line)) = framed.next().await {
-        let msg: Message = Message::from_json_str(&line).expect("Invalid message");
-        if let Message::Snapshot { connections } = msg {
-            assert_eq!(connections.len(), 1);
-            assert_eq!(connections[0].process.pid, 1234);
-        } else {
-            panic!("Expected Snapshot");
-        }
-    } else {
-        panic!("Did not receive a message");
+    fn enforce(
+        &mut self,
+        _wanted: &rat_enforcer::Blocklist,
+    ) -> std::io::Result<rat_daemon::core::EnforceOutcome> {
+        Ok(rat_daemon::core::EnforceOutcome::default())
     }
-
-    let _ = shutdown_tx.send(());
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn test_ipc_edge_cases() {
-    use futures::StreamExt;
-    use tokio::io::AsyncWriteExt;
-    use tokio::net::UnixStream;
-    use tokio_util::codec::{FramedRead, LinesCodec};
-
-    let socket_path = format!("/tmp/rat_test_edges_{}.sock", std::process::id());
-    let _ = std::fs::remove_file(&socket_path);
-
-    let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel(1);
-    let (snapshot_tx, snapshot_rx) = tokio::sync::broadcast::channel(16);
-
-    let shutdown_rx_core = shutdown_tx.subscribe();
-    let shutdown_rx_ipc = shutdown_tx.subscribe();
-
-    let source = MockSource { invocations: 0 };
-    let snapshot_tx_clone = snapshot_tx.clone();
-
-    let _core_task = tokio::spawn(async move {
-        rat_daemon::core::run_core_loop(source, snapshot_tx_clone, shutdown_rx_core).await;
-    });
-
-    let sp_clone = socket_path.clone();
-    let _ipc_task = tokio::spawn(async move {
-        let _ = rat_daemon::ipc::start_ipc_server(&sp_clone, shutdown_rx_ipc, snapshot_rx).await;
-    });
-
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-    let mut stream = UnixStream::connect(&socket_path)
-        .await
-        .expect("Failed to connect");
-
-    // 1. Empty input
-    let _ = stream.write_all(b"\n").await;
-
-    // 2. Malformed input
-    let _ = stream.write_all(b"not a valid json message\n").await;
-
-    // 3. Oversized input (e.g. 10MB +) will close the connection which causes broken pipe so we ignore error.
-    let huge_line = vec![b'a'; 11 * 1024 * 1024];
-    let _ = stream.write_all(&huge_line).await;
-    let _ = stream.write_all(b"\n").await;
-
-    let mut framed = FramedRead::new(stream, LinesCodec::new());
-
-    let mut _saw_error = false;
-    // We expect some Error messages back for malformed/oversized.
-    for _ in 0..3 {
-        if let Some(Ok(line)) = framed.next().await {
-            if let Ok(Message::Error { .. }) = serde_json::from_str::<Message>(&line) {
-                _saw_error = true;
-                break;
-            }
-        }
-    }
-
-    let _ = shutdown_tx.send(());
 }
 
 #[test]
 fn test_edge_cases_msg_roundtrip() {
-    use std::path::PathBuf;
-
-    let snapshot = Message::Snapshot {
+    let snapshot = ServerMessage::Snapshot {
         connections: vec![Connection {
             process: ProcessInfo {
-                pid: 1234,
+                pid: 4321,
                 exe: Some(PathBuf::from(r"C:\Program Files\Some فارسی Name\App.exe")),
                 name: "تست中文".to_string(),
                 user: Some("用戶".to_string()),
@@ -214,7 +516,7 @@ fn test_edge_cases_msg_roundtrip() {
     };
 
     let serialized = snapshot.to_string().unwrap();
-    let deserialized: Message = Message::from_json_str(&serialized).unwrap();
+    let deserialized: ServerMessage = ServerMessage::from_json_str(&serialized).unwrap();
     assert_eq!(snapshot, deserialized);
 }
 
@@ -231,18 +533,17 @@ fn is_socket(p: &str) -> bool {
 #[cfg(unix)]
 #[tokio::test]
 async fn test_second_daemon_cannot_steal_live_socket() {
-    use std::time::{Duration, Instant};
-
-    let socket_path = format!("/tmp/rat_test_steal_{}.sock", std::process::id());
+    let socket_path = format!("/tmp/rat_it_steal_{}.sock", std::process::id());
     let _ = std::fs::remove_file(&socket_path);
 
     let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel(1);
     let (snapshot_tx, snapshot_rx) = tokio::sync::broadcast::channel(16);
+    let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel();
 
     let sp = socket_path.clone();
     let shutdown_rx_ipc = shutdown_tx.subscribe();
     let ipc_task = tokio::spawn(async move {
-        rat_daemon::ipc::start_ipc_server(&sp, shutdown_rx_ipc, snapshot_rx).await
+        rat_daemon::ipc::start_ipc_server(&sp, shutdown_rx_ipc, snapshot_rx, cmd_tx).await
     });
 
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -260,6 +561,7 @@ async fn test_second_daemon_cannot_steal_live_socket() {
             &socket_path,
             shutdown_tx.subscribe(),
             snapshot_tx.subscribe(),
+            tokio::sync::mpsc::unbounded_channel().0,
         ),
     )
     .await
@@ -286,9 +588,7 @@ async fn test_second_daemon_cannot_steal_live_socket() {
 #[cfg(unix)]
 #[tokio::test]
 async fn test_stale_socket_from_crashed_daemon_is_reclaimed() {
-    use std::time::{Duration, Instant};
-
-    let socket_path = format!("/tmp/rat_test_stale_{}.sock", std::process::id());
+    let socket_path = format!("/tmp/rat_it_stale_{}.sock", std::process::id());
     std::fs::write(&socket_path, b"leftover from a crashed daemon").unwrap();
 
     let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel(1);
@@ -300,7 +600,13 @@ async fn test_stale_socket_from_crashed_daemon_is_reclaimed() {
     let sp = socket_path.clone();
     let shutdown_rx_ipc = shutdown_tx.subscribe();
     let ipc_task = tokio::spawn(async move {
-        rat_daemon::ipc::start_ipc_server(&sp, shutdown_rx_ipc, snapshot_rx).await
+        rat_daemon::ipc::start_ipc_server(
+            &sp,
+            shutdown_rx_ipc,
+            snapshot_rx,
+            tokio::sync::mpsc::unbounded_channel().0,
+        )
+        .await
     });
 
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -328,18 +634,18 @@ async fn test_stale_socket_from_crashed_daemon_is_reclaimed() {
 #[cfg(windows)]
 #[tokio::test]
 async fn test_second_daemon_cannot_steal_live_pipe() {
-    use std::time::Duration;
     use tokio::net::windows::named_pipe::ClientOptions;
 
-    let pipe_name = format!(r"\\.\pipe\rat_test_steal_{}", std::process::id());
+    let pipe_name = format!(r"\\.\pipe\rat_it_steal_{}", std::process::id());
 
     let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel(1);
     let (snapshot_tx, snapshot_rx) = tokio::sync::broadcast::channel(16);
+    let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel();
 
     let pn = pipe_name.clone();
     let shutdown_rx_ipc = shutdown_tx.subscribe();
     let ipc_task = tokio::spawn(async move {
-        rat_daemon::ipc::start_ipc_server(&pn, shutdown_rx_ipc, snapshot_rx).await
+        rat_daemon::ipc::start_ipc_server(&pn, shutdown_rx_ipc, snapshot_rx, cmd_tx).await
     });
 
     // Wait until the first daemon has a live pipe instance, then let it
@@ -365,6 +671,7 @@ async fn test_second_daemon_cannot_steal_live_pipe() {
             &pipe_name,
             shutdown_tx.subscribe(),
             snapshot_tx.subscribe(),
+            tokio::sync::mpsc::unbounded_channel().0,
         ),
     )
     .await
@@ -390,12 +697,10 @@ async fn test_second_daemon_cannot_steal_live_pipe() {
 #[cfg(unix)]
 #[tokio::test]
 async fn test_oversized_client_line_is_rejected_and_closed() {
-    use futures::StreamExt;
     use tokio::io::AsyncWriteExt;
     use tokio::net::UnixStream;
-    use tokio_util::codec::{FramedRead, LinesCodec};
 
-    let socket_path = format!("/tmp/rat_test_oversize_{}.sock", std::process::id());
+    let socket_path = format!("/tmp/rat_it_oversize_{}.sock", std::process::id());
     let _ = std::fs::remove_file(&socket_path);
 
     let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel(1);
@@ -406,12 +711,18 @@ async fn test_oversized_client_line_is_rejected_and_closed() {
     let sp = socket_path.clone();
     let shutdown_rx_ipc = shutdown_tx.subscribe();
     let ipc_task = tokio::spawn(async move {
-        rat_daemon::ipc::start_ipc_server(&sp, shutdown_rx_ipc, snapshot_rx).await
+        rat_daemon::ipc::start_ipc_server(
+            &sp,
+            shutdown_rx_ipc,
+            snapshot_rx,
+            tokio::sync::mpsc::unbounded_channel().0,
+        )
+        .await
     });
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !is_socket(&socket_path) && std::time::Instant::now() < deadline {
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !is_socket(&socket_path) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(is_socket(&socket_path), "daemon never bound its socket");
 
@@ -420,15 +731,11 @@ async fn test_oversized_client_line_is_rejected_and_closed() {
     // being written - a failed write here is part of the expected rejection.
     let big = vec![b'a'; 200 * 1024];
     let _ = stream.write_all(&big).await;
-    let _ = stream
-        .write_all(
-            b"
-",
-        )
-        .await;
+    let _ = stream.write_all(b"\n").await;
 
     let mut framed = FramedRead::new(stream, LinesCodec::new());
-    let saw_error = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    let saw_error = tokio::time::timeout(Duration::from_secs(5), async {
+        use futures::StreamExt;
         while let Some(Ok(line)) = framed.next().await {
             assert!(
                 line.contains("LinesCodec error") || line.contains("Invalid JSON"),
@@ -451,12 +758,10 @@ async fn test_oversized_client_line_is_rejected_and_closed() {
 #[cfg(windows)]
 #[tokio::test]
 async fn test_oversized_client_line_is_rejected_and_closed() {
-    use futures::StreamExt;
     use tokio::io::AsyncWriteExt;
     use tokio::net::windows::named_pipe::ClientOptions;
-    use tokio_util::codec::{FramedRead, LinesCodec};
 
-    let pipe_name = format!(r"\\.\pipe\rat_test_oversize_{}", std::process::id());
+    let pipe_name = format!(r"\\.\pipe\rat_it_oversize_{}", std::process::id());
     let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel(1);
     // Hold a sender: with every sender dropped the handlers' snapshot_rx
     // reports Closed and they would exit immediately (the daemon always
@@ -465,7 +770,13 @@ async fn test_oversized_client_line_is_rejected_and_closed() {
     let pn = pipe_name.clone();
     let shutdown_rx_ipc = shutdown_tx.subscribe();
     let ipc_task = tokio::spawn(async move {
-        rat_daemon::ipc::start_ipc_server(&pn, shutdown_rx_ipc, snapshot_rx).await
+        rat_daemon::ipc::start_ipc_server(
+            &pn,
+            shutdown_rx_ipc,
+            snapshot_rx,
+            tokio::sync::mpsc::unbounded_channel().0,
+        )
+        .await
     });
 
     let mut client = None;
@@ -475,7 +786,7 @@ async fn test_oversized_client_line_is_rejected_and_closed() {
                 client = Some(c);
                 break;
             }
-            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
         }
     }
     let mut client = client.expect("pipe never came up");
@@ -484,16 +795,12 @@ async fn test_oversized_client_line_is_rejected_and_closed() {
     // written - a failed write here is part of the expected rejection.
     let big = vec![b'a'; 200 * 1024];
     let _ = client.write_all(&big).await;
-    let _ = client
-        .write_all(
-            b"
-",
-        )
-        .await;
+    let _ = client.write_all(b"\n").await;
 
     let mut framed = FramedRead::new(client, LinesCodec::new());
     let mut received: Vec<String> = Vec::new();
-    let saw_error = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    let saw_error = tokio::time::timeout(Duration::from_secs(5), async {
+        use futures::StreamExt;
         while let Some(Ok(line)) = framed.next().await {
             received.push(line.clone());
             if line.contains("LinesCodec error") {
@@ -521,7 +828,7 @@ async fn test_fifth_concurrent_client_is_refused() {
     use tokio::io::AsyncReadExt;
     use tokio::net::UnixStream;
 
-    let socket_path = format!("/tmp/rat_test_cap_{}.sock", std::process::id());
+    let socket_path = format!("/tmp/rat_it_cap_{}.sock", std::process::id());
     let _ = std::fs::remove_file(&socket_path);
 
     let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel(1);
@@ -532,12 +839,18 @@ async fn test_fifth_concurrent_client_is_refused() {
     let sp = socket_path.clone();
     let shutdown_rx_ipc = shutdown_tx.subscribe();
     let ipc_task = tokio::spawn(async move {
-        rat_daemon::ipc::start_ipc_server(&sp, shutdown_rx_ipc, snapshot_rx).await
+        rat_daemon::ipc::start_ipc_server(
+            &sp,
+            shutdown_rx_ipc,
+            snapshot_rx,
+            tokio::sync::mpsc::unbounded_channel().0,
+        )
+        .await
     });
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !is_socket(&socket_path) && std::time::Instant::now() < deadline {
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !is_socket(&socket_path) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(is_socket(&socket_path), "daemon never bound its socket");
 
@@ -548,14 +861,14 @@ async fn test_fifth_concurrent_client_is_refused() {
                 .await
                 .expect("held client"),
         );
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
     let mut fifth = UnixStream::connect(&socket_path)
         .await
         .expect("5th connect");
     let mut buf = [0u8; 64];
-    let read = tokio::time::timeout(std::time::Duration::from_secs(5), fifth.read(&mut buf))
+    let read = tokio::time::timeout(Duration::from_secs(5), fifth.read(&mut buf))
         .await
         .expect("5th client must not hang");
     match read {
@@ -576,7 +889,7 @@ async fn test_fifth_concurrent_client_is_refused() {
     use tokio::io::AsyncReadExt;
     use tokio::net::windows::named_pipe::ClientOptions;
 
-    let pipe_name = format!(r"\\.\pipe\rat_test_cap_{}", std::process::id());
+    let pipe_name = format!(r"\\.\pipe\rat_it_cap_{}", std::process::id());
     let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel(1);
     // Hold a sender: with every sender dropped the handlers' snapshot_rx
     // reports Closed and they would exit immediately (the daemon always
@@ -585,7 +898,13 @@ async fn test_fifth_concurrent_client_is_refused() {
     let pn = pipe_name.clone();
     let shutdown_rx_ipc = shutdown_tx.subscribe();
     let ipc_task = tokio::spawn(async move {
-        rat_daemon::ipc::start_ipc_server(&pn, shutdown_rx_ipc, snapshot_rx).await
+        rat_daemon::ipc::start_ipc_server(
+            &pn,
+            shutdown_rx_ipc,
+            snapshot_rx,
+            tokio::sync::mpsc::unbounded_channel().0,
+        )
+        .await
     });
 
     let mut held = Vec::new();
@@ -597,11 +916,11 @@ async fn test_fifth_concurrent_client_is_refused() {
                     client = Some(c);
                     break;
                 }
-                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
             }
         }
         held.push(client.expect("held client"));
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
     let mut fifth = None;
@@ -611,12 +930,12 @@ async fn test_fifth_concurrent_client_is_refused() {
                 fifth = Some(c);
                 break;
             }
-            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
         }
     }
     let mut fifth = fifth.expect("5th client connect");
     let mut buf = [0u8; 64];
-    let read = tokio::time::timeout(std::time::Duration::from_secs(5), fifth.read(&mut buf))
+    let read = tokio::time::timeout(Duration::from_secs(5), fifth.read(&mut buf))
         .await
         .expect("5th client must not hang");
     match read {
@@ -639,7 +958,7 @@ async fn test_fifth_concurrent_client_is_refused() {
 async fn test_socket_and_directory_permissions() {
     use std::os::unix::fs::PermissionsExt;
 
-    let base = std::env::temp_dir().join(format!("rat_test_perms_{}", std::process::id()));
+    let base = std::env::temp_dir().join(format!("rat_it_perms_{}", std::process::id()));
     let socket_path = base.join("sub").join("rat.sock");
 
     let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel(1);
@@ -647,12 +966,18 @@ async fn test_socket_and_directory_permissions() {
     let sp = socket_path.to_string_lossy().into_owned();
     let shutdown_rx_ipc = shutdown_tx.subscribe();
     let ipc_task = tokio::spawn(async move {
-        rat_daemon::ipc::start_ipc_server(&sp, shutdown_rx_ipc, snapshot_rx).await
+        rat_daemon::ipc::start_ipc_server(
+            &sp,
+            shutdown_rx_ipc,
+            snapshot_rx,
+            tokio::sync::mpsc::unbounded_channel().0,
+        )
+        .await
     });
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !is_socket(&socket_path.to_string_lossy()) && std::time::Instant::now() < deadline {
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !is_socket(&socket_path.to_string_lossy()) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(
         is_socket(&socket_path.to_string_lossy()),

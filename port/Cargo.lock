@@ -1207,16 +1207,24 @@ dependencies = [
 name = "rat-daemon"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "criterion 0.5.1",
  "futures",
  "libc",
  "proptest",
+ "rat-core",
+ "rat-enforcer",
+ "rat-ledger",
+ "rat-monitor-linux",
+ "rat-monitor-windows",
+ "rat-names",
  "rat-types",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
  "tokio-util",
+ "uuid",
  "windows-service",
  "windows-sys 0.59.0",
 ]
