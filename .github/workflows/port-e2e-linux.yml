@@ -1,0 +1,46 @@
+name: Port E2E Linux
+
+on:
+  push:
+    branches:
+      - 'jules-port-e2e-linux*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Verify tools
+        run: |
+          rustc --version
+          cargo --version
+          nft -v || true
+          sudo nft list ruleset || true
+
+      - name: Build tests
+        run: |
+          cd port/e2e/linux
+          cargo build --bins
+
+      - name: Build daemon
+        run: |
+          cd port/crates/rat-daemon
+          cargo build
+          sudo cp ../../target/debug/rat-daemon /usr/local/bin/
+          sudo groupadd -f rat
+
+      - name: Run E2E Tests
+        run: |
+          cd port/e2e/linux
+          sudo -E env "PATH=$PATH" target/debug/e2e-linux
+
+      - name: Verify Clean Ruleset
+        if: always()
+        run: |
+          ! sudo nft list ruleset | grep -q rat
