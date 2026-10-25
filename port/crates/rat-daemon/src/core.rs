@@ -72,6 +72,14 @@ pub trait EnforcementBackend: Send {
     /// the diff so the next `enforce` computes exactly remove-extras +
     /// add-missing.
     fn adopt(&mut self, existing: rat_enforcer::Blocklist);
+    /// Remove leftovers of an interrupted rule swap (Windows `Rat:tmp:*`)
+    /// that no reconcile would ever name. Called once at start-up, AFTER the
+    /// first reconcile enforce succeeded: a wanted program has its final
+    /// rules by then, so a leftover can only be a duplicate or an orphan.
+    /// Default: nothing to sweep.
+    fn sweep_orphans(&mut self) -> io::Result<()> {
+        Ok(())
+    }
     /// Make `wanted` effective. Implementations must be no-ops when the
     /// wanted state is already effective, and on failure must leave their
     /// notion of the current state behind so the next call retries the diff.
@@ -135,6 +143,25 @@ impl EnforcementBackend for WindowsBackend {
 
     fn adopt(&mut self, existing: rat_enforcer::Blocklist) {
         self.enforcer.current = existing;
+    }
+
+    fn sweep_orphans(&mut self) -> io::Result<()> {
+        use std::process::Command;
+        if rat_enforcer::dry_run_enabled(std::env::var("RAT_DRY_RUN").ok().as_deref()) {
+            println!("powershell: {ORPHAN_SWEEP_QUERY}");
+            return Ok(());
+        }
+        let mut cmd = Command::new(rat_enforcer::windows::powershell_path()?);
+        cmd.args(["-NoProfile", "-Command", ORPHAN_SWEEP_QUERY]);
+        let out =
+            rat_enforcer::run_with_timeout(cmd, "powershell", rat_enforcer::TOOL_TIMEOUT, None)?;
+        if !out.status.success() {
+            return Err(rat_enforcer::tool_failure(
+                "Failed to remove leftover temporary rules",
+                &out,
+            ));
+        }
+        Ok(())
     }
 
     fn enforce(&mut self, wanted: &rat_enforcer::Blocklist) -> io::Result<EnforceOutcome> {
@@ -334,6 +361,11 @@ fn merge_blocklists(
 fn existing_rules_query() -> &'static str {
     "Get-NetFirewallRule -DisplayName 'Rat:path:*' -ErrorAction SilentlyContinue | Get-NetFirewallApplicationFilter | Select-Object -ExpandProperty Program; Write-Output '---RATPORTS---'; Get-NetFirewallRule -DisplayName 'Rat:port:*' -ErrorAction SilentlyContinue | Get-NetFirewallPortFilter | Select-Object -ExpandProperty LocalPort"
 }
+
+/// Start-up sweep of a crashed swap's leftovers (`Rat:tmp:*`, see the
+/// enforcer's install()); the read-back above never sees that family.
+#[cfg(windows)]
+const ORPHAN_SWEEP_QUERY: &str = "Get-NetFirewallRule -DisplayName 'Rat:tmp:*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule";
 
 #[cfg(windows)]
 const PORTS_MARKER: &str = "---RATPORTS---";
@@ -783,6 +815,16 @@ mod tests {
             vec!["/a".to_string(), "/b".to_string(), "/c".to_string()]
         );
         assert_eq!(merged.local_ports, vec![1, 2, 3]);
+    }
+
+    // The orphan sweep removes the swap family only, never path/port rules.
+    #[cfg(windows)]
+    #[test]
+    fn orphan_sweep_query_targets_only_the_tmp_family() {
+        let q = ORPHAN_SWEEP_QUERY;
+        assert!(q.contains("-DisplayName 'Rat:tmp:*'"));
+        assert!(!q.contains("Rat:path:") && !q.contains("Rat:port:"));
+        assert!(q.contains("Remove-NetFirewallRule"));
     }
 
     // The read-back must target ONLY this daemon's own prefixed rules, and

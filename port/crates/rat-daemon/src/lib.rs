@@ -104,8 +104,17 @@ pub async fn run_components_trusted(
             }
         }
         let anchor = core::static_blocklist(&policy.0.rule_set());
-        if let Err(e) = backend.enforce(&anchor) {
-            eprintln!("rat-daemon: startup reconcile enforce failed: {e} (first tick retries)");
+        match backend.enforce(&anchor) {
+            // only after a successful enforce: a failed one may leave a
+            // swap's temporary rule as the program's only block
+            Ok(_) => {
+                if let Err(e) = backend.sweep_orphans() {
+                    eprintln!("rat-daemon: sweeping leftover temporary rules failed: {e}");
+                }
+            }
+            Err(e) => {
+                eprintln!("rat-daemon: startup reconcile enforce failed: {e} (first tick retries)")
+            }
         }
         eprintln!("rat-daemon: {loaded} rules loaded, startup reconcile done");
     } else {

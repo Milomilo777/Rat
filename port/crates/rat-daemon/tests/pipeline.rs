@@ -38,6 +38,8 @@ struct RecorderBackend {
     /// When set, `existing()` blocks on this receiver first, so a test can
     /// hold the startup reconcile and observe the endpoint is NOT serving.
     existing_gate: Arc<Mutex<Option<std::sync::mpsc::Receiver<()>>>>,
+    /// `events.len()` at each `sweep_orphans()` call
+    sweeps: Arc<Mutex<Vec<usize>>>,
 }
 
 impl EnforcementBackend for RecorderBackend {
@@ -61,6 +63,12 @@ impl EnforcementBackend for RecorderBackend {
 
     fn adopt(&mut self, existing: rat_enforcer::Blocklist) {
         self.events.lock().unwrap().push(Event::Adopt(existing));
+    }
+
+    fn sweep_orphans(&mut self) -> io::Result<()> {
+        let n = self.events.lock().unwrap().len();
+        self.sweeps.lock().unwrap().push(n);
+        Ok(())
     }
 
     fn enforce(&mut self, wanted: &rat_enforcer::Blocklist) -> io::Result<EnforceOutcome> {
@@ -445,6 +453,71 @@ async fn test_stale_alert_answer_is_ignored() {
     tokio::time::timeout(Duration::from_secs(5), task)
         .await
         .expect("pipeline must end on shutdown")
+        .unwrap();
+}
+
+// Orphaned `Rat:tmp:*` rules of an interrupted swap are swept once at
+// start-up, after the first reconcile enforce succeeded and before serving.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_startup_sweeps_orphaned_tmp_rules_after_the_reconcile() {
+    let rules_path = temp_rules_path("sweep");
+    RuleStore::new(rules_path.clone())
+        .save(vec![deny_rule(test_app())])
+        .expect("seed rules file");
+    let recorder = RecorderBackend::default();
+    *recorder.existing_state.lock().unwrap() = Some(rat_enforcer::Blocklist::default());
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let endpoint = test_endpoint("sweep");
+    let task = tokio::spawn(rat_daemon::run_components(
+        endpoint.clone(),
+        ScriptedSource { conns: vec![] },
+        recorder.clone(),
+        rules_path,
+        shutdown_rx,
+    ));
+    wait_until(Duration::from_secs(10), || endpoint_serving(&endpoint)).await;
+    // events: Adopt, Enforce -> the sweep ran once, after both
+    assert_eq!(
+        *recorder.sweeps.lock().unwrap(),
+        vec![2],
+        "{:?}",
+        recorder.events_snapshot()
+    );
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("run_components must end on shutdown")
+        .unwrap()
+        .unwrap();
+}
+
+// A failed reconcile enforce means a tmp rule may still be the only block of
+// a wanted program: no sweep then.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_startup_does_not_sweep_when_the_reconcile_failed() {
+    let rules_path = temp_rules_path("nosweep");
+    RuleStore::new(rules_path.clone())
+        .save(vec![deny_rule(test_app())])
+        .expect("seed rules file");
+    let recorder = RecorderBackend::default();
+    recorder.fail_enforce.store(true, Ordering::SeqCst);
+    *recorder.existing_state.lock().unwrap() = Some(rat_enforcer::Blocklist::default());
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let endpoint = test_endpoint("nosweep");
+    let task = tokio::spawn(rat_daemon::run_components(
+        endpoint.clone(),
+        ScriptedSource { conns: vec![] },
+        recorder.clone(),
+        rules_path,
+        shutdown_rx,
+    ));
+    wait_until(Duration::from_secs(10), || endpoint_serving(&endpoint)).await;
+    assert!(recorder.sweeps.lock().unwrap().is_empty());
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("run_components must end on shutdown")
+        .unwrap()
         .unwrap();
 }
 

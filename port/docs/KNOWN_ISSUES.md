@@ -9,7 +9,8 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
   not followed; after an update the block may stop applying. A renamed or copied executable is not blocked.
 - **Leftover temporary rule (low).** A re-added rule is swapped in under a temporary name (`Rat:tmp:...`) so there
   is never a moment without a block. If the daemon dies halfway, that temporary rule keeps blocking until the next
-  add of the same program or port, or until cleanup. The swap's `netsh advfirewall firewall set rule ... new name=`
+  start of the daemon, which removes every `Rat:tmp:*` rule after its first successful reconcile (if that
+  reconcile fails, the rule stays until the next start or cleanup). The swap's `netsh advfirewall firewall set rule ... new name=`
   step is tested against a simulation only; it has not been run against a real firewall.
 - **Firewall tool time limit (low).** netsh, PowerShell and nft are killed after 30 seconds. On Windows the kill
   does not reach processes the tool itself started, and a failed netsh add or delete reports no tool output.
