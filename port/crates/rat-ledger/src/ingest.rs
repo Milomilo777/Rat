@@ -89,6 +89,20 @@ pub struct EnforcementPlan {
 /// Per-connection byte-counter baseline identity (socket reuse detection, R2).
 type ConnId = (u32, SocketAddr, Option<SocketAddr>, Protocol);
 
+/// Swift probes whole-app denial with TEST-NET-3 (Ledger.swift:411).
+const PROBE: SocketAddr = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 9)), 443);
+
+/// Loopback/private/link-local remotes are listed but never judged or enforced
+/// (Ledger.swift:329 `guard !isLocalAddress(...)`, App/Model/Geo.swift:150-152).
+fn is_local(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_broadcast()
+        }
+        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unicast_link_local(),
+    }
+}
+
 pub struct Ledger {
     config: LedgerConfig,
     pub alerts: AlertCenter,
@@ -105,13 +119,35 @@ pub struct Ledger {
 
 impl Ledger {
     pub fn new(config: LedgerConfig, alerts: AlertCenterConfig) -> Self {
-        todo!("R1 construct")
+        Self {
+            config,
+            alerts: AlertCenter::new(alerts),
+            apps: BTreeMap::new(),
+            baselines: HashMap::new(),
+            last_tick_ms: None,
+            started_ms: None,
+            session_in: 0,
+            session_out: 0,
+            rate_in: 0.0,
+            rate_out: 0.0,
+            plan: EnforcementPlan::default(),
+        }
     }
 
-    /// Ingest one sample (Ledger.swift:226-354): groups by exe path, accumulates
-    /// byte totals/rates per app and remote (never negative on counter reset),
-    /// counts verdicts, reports Ask connections as alerts after warmup, and
-    /// recomputes the enforcement plan (denied apps + denied local ports).
+    /// App key (R1): the executable path; `<unknown>` when the monitor could not see one.
+    fn app_key(c: &Connection) -> String {
+        c.process
+            .exe
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "<unknown>".to_string())
+    }
+
+    /// Ingest one sample (Ledger.swift:226-354): groups by exe path (R1),
+    /// accumulates byte totals/rates per app and remote — never negative on a
+    /// counter reset (R2) — counts verdicts, reports Ask connections as alerts
+    /// after warmup (R3), rebuilds remotes with their v1.2.0 details (R6) and
+    /// recomputes the enforcement plan (R4).
     pub fn ingest(
         &mut self,
         policy: &dyn Policy,
@@ -119,7 +155,190 @@ impl Ledger {
         conns: &[Connection],
         details: &dyn Fn(&Connection) -> ConnectionDetails,
     ) -> IngestSummary {
-        todo!("R1/R2/R4/R6 ingest")
+        let started = *self.started_ms.get_or_insert(now_ms);
+        let warmed_up = now_ms.saturating_sub(started) >= self.config.warmup_ms;
+
+        let dt = match self.last_tick_ms {
+            Some(t) => (now_ms.saturating_sub(t)) as f64 / 1000.0,
+            None => 0.2,
+        };
+        let dt = dt.max(0.2);
+        self.last_tick_ms = Some(now_ms);
+
+        // R1: group the sample by executable path.
+        let mut listening_by_app: BTreeMap<String, usize> = BTreeMap::new();
+        let mut conns_by_app: BTreeMap<String, Vec<&Connection>> = BTreeMap::new();
+        let mut listening_total = 0usize;
+        for c in conns {
+            let app = Self::app_key(c);
+            let entry = self.apps.entry(app.clone()).or_insert_with(|| AppEntry {
+                app: app.clone(),
+                ..Default::default()
+            });
+            entry.pids.insert(c.process.pid);
+            if c.listening {
+                *listening_by_app.entry(app).or_insert(0) += 1;
+                listening_total += 1;
+            } else {
+                conns_by_app.entry(app).or_default().push(c);
+            }
+        }
+
+        // R2: deltas from the previous sample. The baseline is ALWAYS updated
+        // (Swift's `defer { previous[t.pid] = t }`); a delta is accumulated only
+        // when both counters are monotonic, so a reused socket can never produce
+        // a negative rate.
+        let mut rx_by_app: HashMap<String, f64> = HashMap::new();
+        let mut tx_by_app: HashMap<String, f64> = HashMap::new();
+        let mut remote_deltas: BTreeMap<String, HashMap<RemoteKey, (f64, f64)>> = BTreeMap::new();
+        for c in conns {
+            let (Some(bytes_in), Some(bytes_out)) = (c.bytes_in, c.bytes_out) else {
+                continue;
+            };
+            let id = (c.process.pid, c.local, c.remote, c.protocol);
+            let prev = self.baselines.insert(id, (bytes_in, bytes_out));
+            let Some((prev_in, prev_out)) = prev else {
+                continue; // first sighting: baseline only
+            };
+            if bytes_in < prev_in || bytes_out < prev_out {
+                continue; // counter went backwards (socket reused): skip this sample
+            }
+            let (d_in, d_out) = ((bytes_in - prev_in) as f64, (bytes_out - prev_out) as f64);
+            let app = Self::app_key(c);
+            *rx_by_app.entry(app.clone()).or_insert(0.0) += d_in;
+            *tx_by_app.entry(app.clone()).or_insert(0.0) += d_out;
+            if let Some(remote) = c.remote {
+                let key = RemoteKey {
+                    address: remote.ip(),
+                    port: remote.port(),
+                    proto: c.protocol,
+                    process: Some(c.process.name.clone()),
+                };
+                let acc = remote_deltas
+                    .entry(app)
+                    .or_default()
+                    .entry(key)
+                    .or_insert((0.0, 0.0));
+                acc.0 += d_in;
+                acc.1 += d_out;
+            }
+        }
+        let total_rx: f64 = rx_by_app.values().sum();
+        let total_tx: f64 = tx_by_app.values().sum();
+        self.session_in += total_rx as u64;
+        self.session_out += total_tx as u64;
+        self.rate_in = total_rx / dt;
+        self.rate_out = total_tx / dt;
+
+        // R6 + R2 per app: rebuild remotes from the current sample (Swift :347
+        // `e.remotes = remotes`), merging this tick's per-remote deltas.
+        let mut denied = 0usize;
+        let mut unconfirmed = 0usize;
+        let mut denied_local_ports: BTreeSet<u16> = BTreeSet::new();
+        for (app, sample) in &conns_by_app {
+            let mut remotes: Vec<RemoteEntry> = Vec::new();
+            let mut seen: HashSet<RemoteKey> = HashSet::new();
+            for c in sample {
+                let Some(remote) = c.remote else { continue };
+                let key = RemoteKey {
+                    address: remote.ip(),
+                    port: remote.port(),
+                    proto: c.protocol,
+                    process: Some(c.process.name.clone()),
+                };
+                if !seen.insert(key.clone()) {
+                    continue;
+                }
+                let (d_in, d_out) = remote_deltas
+                    .get(app)
+                    .and_then(|m| m.get(&key))
+                    .copied()
+                    .unwrap_or((0.0, 0.0));
+                remotes.push(RemoteEntry {
+                    host: remote.to_string(),
+                    details: details(c),
+                    total_in: d_in as u64,
+                    total_out: d_out as u64,
+                    rate_in: d_in / dt,
+                    rate_out: d_out / dt,
+                    key,
+                });
+            }
+
+            // R4: verdict per outbound remote; local remotes are listed but never
+            // judged (Ledger.swift:329). Only the LOCAL port of a denied socket is
+            // ever blocked (:330-332), never the server address.
+            for c in sample {
+                let Some(remote) = c.remote else { continue };
+                if is_local(remote.ip()) {
+                    continue;
+                }
+                match policy.evaluate(app, &remote, None) {
+                    Verdict::Deny => {
+                        denied += 1;
+                        if c.local.port() != 0 {
+                            denied_local_ports.insert(c.local.port());
+                        }
+                    }
+                    Verdict::Ask => {
+                        unconfirmed += 1;
+                        if warmed_up {
+                            self.alerts.report(Alert {
+                                app: app.clone(),
+                                app_name: c.process.name.clone(),
+                                host: remote.to_string(),
+                                remote,
+                                proto: c.protocol,
+                                details: details(c),
+                                reported_ms: now_ms,
+                            });
+                        }
+                    }
+                    Verdict::Allow => {}
+                }
+            }
+
+            if let Some(entry) = self.apps.get_mut(app) {
+                let rx = rx_by_app.get(app).copied().unwrap_or(0.0);
+                let tx = tx_by_app.get(app).copied().unwrap_or(0.0);
+                entry.listening = listening_by_app.get(app).copied().unwrap_or(0);
+                entry.remotes = remotes;
+                entry.total_in += rx as u64;
+                entry.total_out += tx as u64;
+                entry.rates.push_back((rx, tx));
+                if entry.rates.len() > 14 {
+                    entry.rates.pop_front();
+                }
+                if rx + tx > 0.0 {
+                    entry.last_active_ms = now_ms;
+                }
+            }
+        }
+
+        // R4: whole-app denial, probed like Swift's 203.0.113.9:443 check
+        // (Ledger.swift:411). Through the Policy seam the probe IS the answer:
+        // an app with an allow rule probes as Allow.
+        let denied_apps: BTreeSet<String> = self
+            .apps
+            .keys()
+            .filter(|app| policy.evaluate(app, &PROBE, None) == Verdict::Deny)
+            .cloned()
+            .collect();
+
+        self.plan = EnforcementPlan {
+            denied_apps,
+            denied_local_ports,
+        };
+
+        // The daemon loop re-validates queued alerts after every pass
+        // (Ledger.swift:210).
+        self.alerts.revalidate(policy);
+
+        IngestSummary {
+            denied,
+            unconfirmed,
+            listening: listening_total,
+        }
     }
 
     pub fn apps(&self) -> impl Iterator<Item = &AppEntry> {
@@ -143,18 +362,5 @@ impl Ledger {
     /// never accumulated — removing a rule shrinks it on the next ingest).
     pub fn enforcement(&self) -> &EnforcementPlan {
         &self.plan
-    }
-
-    fn report_alert(
-        &mut self,
-        conn: &Connection,
-        app: &str,
-        host: &str,
-        details: &ConnectionDetails,
-        now_ms: u64,
-    ) {
-        let _ = (conn, app, host, details, now_ms);
-        let _ = Alert { app: String::new(), app_name: String::new(), host: String::new(), remote: SocketAddr::new(IpAddr::from([0, 0, 0, 0]), 0), proto: Protocol::Tcp, details: ConnectionDetails::default(), reported_ms: 0 };
-        todo!("R3 report")
     }
 }

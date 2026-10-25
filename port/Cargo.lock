@@ -1244,6 +1244,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rat-ledger"
+version = "0.1.0"
+dependencies = [
+ "rat-core",
+ "rat-types",
+ "serde",
+]
+
+[[package]]
 name = "rat-monitor-linux"
 version = "0.1.0"
 dependencies = [
