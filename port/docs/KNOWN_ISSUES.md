@@ -19,8 +19,6 @@ versions. Severity is our own estimate. Reports and fixes are welcome.
 - **Shared-host list (low).** Whole-program blocks are refused for a fixed list of Windows hosts that work for
   many apps (`svchost.exe`, `dllhost.exe`, `RuntimeBroker.exe`, `taskhostw.exe`, `backgroundTaskHost.exe`,
   `sihost.exe`, `conhost.exe`, `rundll32.exe`, `WmiPrvSE.exe`); other such hosts are not on the list yet.
-- **`cleanup()` keeps in-memory state (low).** After `cleanup()` the enforcer's `current` set still lists the
-  removed rules until the next reconcile.
 - **Silent disable (medium).** On Windows the daemon warns when Defender Firewall is off for a profile. It does
   not detect a third-party firewall that replaced Defender, or group policy that ignores local rules; in those
   cases rules are added but have no effect and nothing is reported. The warning is shown as the app's
