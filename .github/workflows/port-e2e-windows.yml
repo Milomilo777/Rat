@@ -7,6 +7,9 @@ on:
     paths: ['port/**', '.github/workflows/port-e2e-windows.yml']
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   e2e-windows:
     runs-on: windows-latest
