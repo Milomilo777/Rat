@@ -1,0 +1,8 @@
+# cargo-audit settings for the port workspace (read when `cargo audit` runs in port/).
+[advisories]
+ignore = [
+    # maxminddb 0.23: `Reader::open_mmap` is unsound. rat-geo only uses `Reader::open_readfile`, and the crate's
+    # optional "mmap" feature is off (no memmap2 in Cargo.lock), so the API does not exist in our build.
+    # Upgrade to maxminddb >= 0.27 (API change in rat-geo) and drop this entry.
+    "RUSTSEC-2025-0132",
+]
