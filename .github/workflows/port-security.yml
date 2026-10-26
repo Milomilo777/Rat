@@ -1,0 +1,75 @@
+name: Port Security
+
+# Free security scanning for the Windows/Linux port: CodeQL (Rust, TypeScript, GitHub Actions) and known-vulnerability
+# checks of the Rust and npm dependencies. Dependabot alerts only cover the default branch, which does not hold the port.
+on:
+  push:
+    branches: ['v1/**', 'main']
+    paths:
+      - 'port/**'
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - 'port/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [rust, javascript-typescript, actions]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          category: /language:${{ matrix.language }}
+
+  rust-audit:
+    name: cargo audit (RustSec advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit the port workspace
+        working-directory: port
+        run: cargo audit
+
+      - name: Audit the desktop app (src-tauri)
+        working-directory: port/app/src-tauri
+        run: cargo audit
+
+  npm-audit:
+    name: npm audit (desktop app)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Audit production dependencies
+        working-directory: port/app
+        run: npm audit --omit=dev --audit-level=high
